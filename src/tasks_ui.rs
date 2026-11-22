@@ -1714,6 +1714,15 @@ fn restore_step(list: &mut Vec<(bool, String)>, index: usize, step: (bool, Strin
     list.insert(index.min(list.len()), step);
 }
 
+/// What the program does to the view and the filters when it shows a task
+/// from elsewhere: lifts the filters that would hide `task` (only those) and,
+/// for a navigation, goes back to the view "Todas".
+#[derive(Clone)]
+struct NavTarget {
+    task: Option<Task>,
+    reset_view: bool,
+}
+
 /// A chip that opens a list of choices (label, chosen); gives the position of
 /// the one clicked. `current` is the choice on, shown on the chip.
 fn choice_chip(
@@ -1767,13 +1776,18 @@ pub struct TaskPanel {
     attrs: crate::task_filters::AttrFilter,
     /// The preferences of this computer were read (at the first frame).
     prefs_loaded: bool,
-    /// What the preferences file holds, or what the controls were when the
-    /// program last changed them (that is not the person's choice, so it is
-    /// not written).
+    /// What the preferences file holds (`None`: not read yet).
     prefs_saved: Option<crate::task_filters::Saved>,
-    /// The program moved the view or the filters (a task opened from another
-    /// area) before the preferences were read; it wins over them.
-    nav_pending: bool,
+    /// The person's own choice, field by field: what is written. The
+    /// controls show the effective state, which can differ for a while when
+    /// the program lifts a filter that would hide a task it shows.
+    prefs_choice: crate::task_filters::Saved,
+    /// The controls as they were when `prefs_choice` was last brought up to
+    /// date: a field that differs now was changed by the person.
+    prefs_seen: crate::task_filters::Saved,
+    /// What the program did to the view and the filters before the
+    /// preferences were read; it is applied over them.
+    nav_pending: Vec<NavTarget>,
     unplanned_only: bool,
     /// "Gerenciar categorias…" was clicked; the app opens Ajustes.
     open_categories: bool,
@@ -1994,9 +2008,11 @@ impl TaskPanel {
     /// ficha's "Ver todas").
     pub fn focus_document(&mut self, id: i64) {
         self.document_filter = Some(id);
-        self.view = 0;
         self.query.clear();
-        self.navigated();
+        self.apply_nav(NavTarget {
+            task: None,
+            reset_view: true,
+        });
     }
     /// Shows the tasks of every document again.
     pub fn clear_document_filter(&mut self) {
@@ -2008,41 +2024,71 @@ impl TaskPanel {
     }
     /// Keeps a document filter only when it already covers this document, so
     /// the task about to open stays in the list.
-    fn keep_filter_for(&mut self, document_id: Option<i64>) {
-        if self
-            .document_filter
-            .is_some_and(|id| Some(id) != document_id)
-        {
-            self.document_filter = None;
-        }
-        self.view = 0;
+    fn keep_filter_for(&mut self, task: &Task) {
         self.query.clear();
-        // The task about to open (or to be created, which is new, with no
-        // one in charge and "normal"/"pendente") must not be hidden by
-        // these filters: they go off, and the chips show it.
-        self.attrs.clear();
-        self.navigated();
+        self.apply_nav(NavTarget {
+            task: Some(task.clone()),
+            reset_view: true,
+        });
     }
-    /// The program, not the person, changed the view or the filters: it is
-    /// not kept as the person's choice. Before the preferences are read it is
-    /// remembered, to be applied over them.
-    fn navigated(&mut self) {
+
+    /// The program, not the person, changes the view or the filters. A
+    /// filter that would hide the task shown goes off (the chips show it,
+    /// and it stays off for the session); the others stay as they are. None
+    /// of this is the person's choice, so none of it is written. Before the
+    /// preferences are read it is remembered, to be applied over them.
+    fn apply_nav(&mut self, nav: NavTarget) {
         if self.prefs_loaded {
-            self.prefs_saved = Some(self.prefs_now());
+            // What the person changed so far is theirs, not the program's.
+            self.sync_choice();
+            self.lift_state(&nav);
+            self.prefs_seen = self.prefs_now();
         } else {
-            self.nav_pending = true;
+            self.lift_state(&nav);
+            self.nav_pending.push(nav);
         }
+    }
+
+    fn lift_state(&mut self, nav: &NavTarget) {
+        if nav.reset_view {
+            self.view = 0;
+        }
+        if let Some(task) = &nav.task {
+            let mut filters = crate::task_filters::Filters {
+                document: self.document_filter,
+                categories: std::mem::take(&mut self.category_filter),
+                project: std::mem::take(&mut self.project_filter),
+                attrs: std::mem::take(&mut self.attrs),
+            };
+            crate::task_filters::lift_hiding(&mut filters, task);
+            self.document_filter = filters.document;
+            self.category_filter = filters.categories;
+            self.project_filter = filters.project;
+            self.attrs = filters.attrs;
+        }
+    }
+
+    /// Shows the task without hiding it: lifts the filters that would.
+    fn reveal(&mut self, task: &Task) {
+        self.apply_nav(NavTarget {
+            task: Some(task.clone()),
+            reset_view: false,
+        });
     }
     /// Opens a blank task for this document (`None`: a task without document),
     /// unless another edit is pending.
     pub fn start_new(&mut self, document_id: Option<i64>) -> bool {
+        self.begin_new(Task::blank(document_id))
+    }
+
+    fn begin_new(&mut self, task: Task) -> bool {
         if self.dirty() {
             return false;
         }
         self.end_selection();
-        self.keep_filter_for(document_id);
+        self.keep_filter_for(&task);
         self.removed_step = None;
-        self.draft = Some(Task::blank(document_id));
+        self.draft = Some(task);
         self.original = None;
         self.base_version = None;
         self.message.clear();
@@ -2065,27 +2111,25 @@ impl TaskPanel {
     /// Opens a blank task for this project (without document), unless
     /// another edit is pending.
     pub fn start_new_in_project(&mut self, project_uid: &str) -> bool {
-        if !self.start_new(None) {
-            return false;
-        }
-        // The list keeps showing everything, so the new task can be found
-        // after it is saved.
-        self.project_filter = ProjectFilter::Any;
-        self.navigated();
-        if let Some(task) = self.draft.as_mut() {
-            task.project_uid = project_uid.to_owned();
-        }
-        true
+        let mut task = Task::blank(None);
+        task.project_uid = project_uid.to_owned();
+        // The filters that would hide it go off, so it can be found after
+        // it is saved; a project filter on this very project stays.
+        self.begin_new(task)
     }
     pub fn focus_task(&mut self, task: &Task) -> bool {
         if self.dirty() {
-            return self
+            let same = self
                 .draft
                 .as_ref()
                 .is_some_and(|draft| draft.id == task.id && draft.document_id == task.document_id);
+            if same {
+                self.reveal(task);
+            }
+            return same;
         }
         self.end_selection();
-        self.keep_filter_for(task.document_id);
+        self.keep_filter_for(task);
         self.removed_step = None;
         self.draft = Some(task.clone());
         self.original = Some(task.clone());
@@ -2169,19 +2213,21 @@ impl TaskPanel {
         self.draft.as_ref().map(|t| t.id).filter(|id| *id > 0)
     }
 
-    /// Opens a task from the list, keeping the current view and filter.
+    /// Opens a task, keeping the current view and filters. A click on a row
+    /// of the list changes none of them (the task is listed, so no filter
+    /// hides it); a task that comes from elsewhere (a document's list, the
+    /// chain of dependencies) lifts only the filters that would hide it.
     /// Refused (false) while a different task has unsaved changes.
     pub fn open_task(&mut self, task: &Task, store: &Store) -> bool {
         if self.draft.as_ref().is_some_and(|t| t.id == task.id) {
+            self.reveal(task);
             return true;
         }
         if self.dirty() {
             return false;
         }
         self.end_selection();
-        // Opened from a document: the filters must not hide it.
-        self.attrs.clear();
-        self.navigated();
+        self.reveal(task);
         self.original = Some(task.clone());
         self.draft = Some(task.clone());
         self.base_version = store.item_version("task", task.id).ok().map(|v| v.version);
@@ -2241,7 +2287,7 @@ impl TaskPanel {
     /// `start_new` leaves them.
     fn open_prepared(&mut self, task: Task) {
         self.end_selection();
-        self.keep_filter_for(task.document_id);
+        self.keep_filter_for(&task);
         self.draft = Some(task);
         self.original = None;
         self.base_version = None;
@@ -3388,6 +3434,11 @@ impl TaskPanel {
         let moved = std::mem::take(&mut self.nav_pending);
         let Some(saved) = saved else {
             self.prefs_saved = Some(crate::task_filters::Saved::default());
+            self.prefs_choice = crate::task_filters::Saved::default();
+            for nav in &moved {
+                self.lift_state(nav);
+            }
+            self.prefs_seen = self.prefs_now();
             return;
         };
         let categories = store.list_categories().unwrap_or_default();
@@ -3400,11 +3451,22 @@ impl TaskPanel {
         self.category_filter = restored.categories;
         self.project_filter = restored.project;
         self.attrs = restored.attrs;
-        if moved {
-            self.view = 0;
-            self.attrs.clear();
+        // What the person chose is what was read; what the program did
+        // before (a task shown from elsewhere) is applied over all of it.
+        self.prefs_saved = Some(saved);
+        self.prefs_choice = self.prefs_now();
+        for nav in &moved {
+            self.lift_state(nav);
         }
-        self.prefs_saved = Some(self.prefs_now());
+        self.prefs_seen = self.prefs_now();
+    }
+
+    /// Brings the person's choice up to date with what they changed since
+    /// the last time: only the fields they touched.
+    fn sync_choice(&mut self) {
+        let now = self.prefs_now();
+        self.prefs_choice = self.prefs_choice.with_changes(&self.prefs_seen, &now);
+        self.prefs_seen = now;
     }
 
     fn prefs_now(&self) -> crate::task_filters::Saved {
@@ -3416,18 +3478,19 @@ impl TaskPanel {
         )
     }
 
-    /// The preferences to write now: the person changed the view or a filter
-    /// since they were read or last written.
+    /// The preferences to write now: the person's choice, when it differs
+    /// from what the file holds. What the program changed is never in it.
     fn prefs_to_save(&mut self) -> Option<crate::task_filters::Saved> {
         if !self.prefs_loaded {
             return None;
         }
-        let now = self.prefs_now();
-        if !crate::task_filters::needs_saving(self.prefs_saved.as_ref(), &now) {
+        self.sync_choice();
+        let choice = self.prefs_choice.clone();
+        if !crate::task_filters::needs_saving(self.prefs_saved.as_ref(), &choice) {
             return None;
         }
-        self.prefs_saved = Some(now.clone());
-        Some(now)
+        self.prefs_saved = Some(choice.clone());
+        Some(choice)
     }
 
     /// Keeps the view and the filters on this computer when they changed.
@@ -4840,7 +4903,9 @@ mod navigation_tests {
         };
         panel.restore_from(&store, Some(saved));
         assert_eq!(panel.view, 0);
-        assert!(!panel.attrs.is_active());
+        // The task is Ana's and "normal": only the priority filter hid it.
+        assert!(panel.attrs.is_mine("Ana"));
+        assert_eq!(panel.attrs.priority, None);
         panel.ensure_view(&store);
         assert_eq!(panel.derived.as_ref().unwrap().visible.len(), 1);
         assert_eq!(
@@ -4848,6 +4913,141 @@ mod navigation_tests {
             None,
             "what the program did is not the person's choice"
         );
+    }
+
+    #[test]
+    fn clicking_a_task_of_the_list_changes_no_filter() {
+        let (_dir, store, _) = store_with_task_of("Ana");
+        let task = store.list_tasks().unwrap().remove(0);
+        let mut panel = TaskPanel::default();
+        panel.restore_from(&store, None);
+        panel.view = 2;
+        panel.attrs.assignee = crate::task_filters::AssigneeFilter::Named("Ana".into());
+        panel.attrs.priority = Some("normal".into());
+        panel.attrs.status = Some("pendente".into());
+        let before = panel.prefs_now();
+        assert!(panel.open_task(&task, &store));
+        assert_eq!(panel.prefs_now(), before, "view and filters untouched");
+        // Back to the same task from elsewhere: still nothing hides it.
+        assert!(panel.open_task(&task, &store));
+        assert_eq!(panel.prefs_now(), before);
+        // Another task of the chain that the filters would hide: only that
+        // filter goes off.
+        panel.close_form();
+        let mut other = task.clone();
+        other.id += 1;
+        other.priority = "alta".into();
+        assert!(panel.open_task(&other, &store));
+        assert_eq!(panel.attrs.priority, None);
+        assert!(panel.attrs.is_mine("Ana"));
+        assert_eq!(panel.attrs.status.as_deref(), Some("pendente"));
+        assert_eq!(panel.view, 2, "a click never changes the view");
+    }
+
+    #[test]
+    fn going_back_to_the_task_already_open_lifts_what_hides_it() {
+        let (_dir, store, _) = store_with_task_of("Ana");
+        let task = store.list_tasks().unwrap().remove(0);
+        let mut panel = TaskPanel::default();
+        panel.restore_from(&store, None);
+        assert!(panel.focus_task(&task));
+        panel.draft.as_mut().unwrap().notes = "ainda não salvo".into();
+        panel.attrs.priority = Some("urgente".into());
+        assert!(panel.focus_task(&task), "the same open task");
+        assert_eq!(panel.attrs.priority, None);
+        assert_eq!(panel.draft.as_ref().unwrap().notes, "ainda não salvo");
+    }
+
+    #[test]
+    fn a_task_of_a_project_made_before_the_first_draw_is_not_hidden_by_another_project() {
+        use crate::task_filters::Saved;
+        let (_dir, mut store, _) = store_with_task_of("Ana");
+        let project = |name: &str| crate::projects::Project {
+            name: name.into(),
+            ..Default::default()
+        };
+        let a = store.save_project(&project("A")).unwrap();
+        let b = store.save_project(&project("B")).unwrap();
+        let mut panel = TaskPanel::default();
+        assert!(panel.start_new_in_project(&b.uid));
+        panel.restore_from(
+            &store,
+            Some(Saved {
+                project: Some(a.uid.clone()),
+                priority: Some("alta".into()),
+                no_category: true,
+                ..Saved::default()
+            }),
+        );
+        assert_eq!(panel.project_filter, ProjectFilter::Any);
+        // "Sem categoria" does not hide a task with no category: it stays.
+        assert!(panel.category_filter.none);
+        assert_eq!(panel.attrs.priority, None);
+        panel.draft.as_mut().unwrap().title = "Do projeto B".into();
+        panel.save_draft(&mut store).unwrap();
+        panel.ensure_view(&store);
+        assert_eq!(panel.derived.as_ref().unwrap().visible.len(), 2);
+        // The file keeps the person's choice.
+        assert_eq!(panel.prefs_to_save(), None);
+
+        // With a filter on the very project, it stays on.
+        let mut other = TaskPanel::default();
+        other.restore_from(
+            &store,
+            Some(Saved {
+                project: Some(b.uid.clone()),
+                ..Saved::default()
+            }),
+        );
+        assert!(other.start_new_in_project(&b.uid));
+        assert_eq!(other.project_filter, ProjectFilter::Only(b.uid));
+    }
+
+    #[test]
+    fn a_later_change_of_another_filter_does_not_write_what_navigation_changed() {
+        use crate::task_filters::Saved;
+        let (_dir, store, _) = store_with_task_of("Ana");
+        let task = store.list_tasks().unwrap().remove(0);
+        let mut panel = TaskPanel::default();
+        let saved = Saved {
+            view: 4,
+            assignee: Some("Rui".into()),
+            ..Saved::default()
+        };
+        // Rui has no task in this library: use Ana, who has.
+        let saved = Saved {
+            assignee: Some("Ana".into()),
+            ..saved
+        };
+        panel.restore_from(&store, Some(saved.clone()));
+        assert!(panel.focus_task(&task), "navigation resets the view");
+        assert_eq!(panel.view, 0);
+        // The person then picks a category: only that goes into the file.
+        panel.category_filter.none = true;
+        let written = panel.prefs_to_save().expect("the person changed it");
+        assert_eq!(written.view, 4, "the saved view survives");
+        assert_eq!(written.assignee.as_deref(), Some("Ana"));
+        assert!(written.no_category);
+        // The screen keeps showing the effective state, not the saved one.
+        assert_eq!(panel.view, 0);
+        assert!(panel.category_filter.none);
+        // Restarting brings the saved view back.
+        let mut again = TaskPanel::default();
+        again.restore_from(&store, Some(written));
+        assert_eq!(again.view, 4);
+    }
+
+    #[test]
+    fn a_change_of_the_person_and_a_navigation_before_the_next_frame_both_count() {
+        let (_dir, store, _) = store_with_task_of("Ana");
+        let task = store.list_tasks().unwrap().remove(0);
+        let mut panel = TaskPanel::default();
+        panel.restore_from(&store, None);
+        panel.attrs.status = Some("pendente".into());
+        // A navigation arrives before the frame that would have saved it.
+        assert!(panel.focus_task(&task));
+        let written = panel.prefs_to_save().expect("the person's change");
+        assert_eq!(written.status.as_deref(), Some("pendente"));
     }
 
     #[test]
@@ -4874,7 +5074,6 @@ mod navigation_tests {
         assert_eq!(panel.prefs_to_save(), None);
 
         // The program opens a task: the view reset is not written.
-        panel.attrs.priority = Some("baixa".into());
         let task = store.list_tasks().unwrap().remove(0);
         assert!(panel.focus_task(&task));
         assert_eq!(panel.view, 0);

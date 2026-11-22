@@ -13,6 +13,9 @@ pub const STATUSES: [&str; 3] = ["pendente", "em analise", "aguardando"];
 /// The priorities of a task, from the most to the least urgent.
 pub const PRIORITIES: [&str; 4] = ["urgente", "alta", "normal", "baixa"];
 
+/// The name the library gives the person when none was set up.
+const DEFAULT_NAME: &str = "Integrante";
+
 /// The library's own fold, to compare names: lowercase, no accents, one
 /// space between words, none at the ends.
 fn fold(text: &str) -> String {
@@ -27,7 +30,8 @@ fn fold(text: &str) -> String {
 pub fn own_name<'a>(actor: &'a str, names: &[String]) -> Option<&'a str> {
     let name = actor.trim();
     let key = fold(name);
-    (!key.is_empty() && names.iter().any(|n| fold(n) == key)).then_some(name)
+    (!key.is_empty() && name != DEFAULT_NAME && names.iter().any(|n| fold(n) == key))
+        .then_some(name)
 }
 
 /// Who the list is narrowed to.
@@ -68,14 +72,23 @@ impl AttrFilter {
     }
 
     pub fn matches(&self, task: &Task) -> bool {
-        let assignee = match &self.assignee {
+        self.matches_assignee(task) && self.matches_priority(task) && self.matches_status(task)
+    }
+
+    fn matches_assignee(&self, task: &Task) -> bool {
+        match &self.assignee {
             AssigneeFilter::Any => true,
             AssigneeFilter::Without => task.assignee.trim().is_empty(),
             AssigneeFilter::Named(name) => fold(&task.assignee) == fold(name),
-        };
-        assignee
-            && self.priority.as_ref().is_none_or(|p| task.priority == *p)
-            && self.status.as_ref().is_none_or(|s| task.status == *s)
+        }
+    }
+
+    fn matches_priority(&self, task: &Task) -> bool {
+        self.priority.as_ref().is_none_or(|p| task.priority == *p)
+    }
+
+    fn matches_status(&self, task: &Task) -> bool {
+        self.status.as_ref().is_none_or(|s| task.status == *s)
     }
 
     /// True when "Minhas tarefas" is on for this person.
@@ -150,6 +163,52 @@ pub struct Saved {
     pub status: Option<String>,
 }
 
+/// The filters a task being shown can be hidden by (the view and the search
+/// are not here: they are not filters of the list's contents).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Filters {
+    pub document: Option<i64>,
+    pub categories: CategoryFilter,
+    pub project: ProjectFilter,
+    pub attrs: AttrFilter,
+}
+
+/// The one rule for a task shown from elsewhere (opened, created, taken from
+/// a document or an atendimento): a filter is lifted only when it would hide
+/// that task, and only that filter. A task that the filters already let
+/// through changes nothing. True when something was lifted.
+pub fn lift_hiding(filters: &mut Filters, task: &Task) -> bool {
+    let mut lifted = false;
+    if filters
+        .document
+        .is_some_and(|id| task.document_id != Some(id))
+    {
+        filters.document = None;
+        lifted = true;
+    }
+    if !filters.categories.matches(&task.categories) {
+        filters.categories.clear();
+        lifted = true;
+    }
+    if !filters.project.matches(&task.project_uid) {
+        filters.project = ProjectFilter::Any;
+        lifted = true;
+    }
+    if !filters.attrs.matches_assignee(task) {
+        filters.attrs.assignee = AssigneeFilter::Any;
+        lifted = true;
+    }
+    if !filters.attrs.matches_priority(task) {
+        filters.attrs.priority = None;
+        lifted = true;
+    }
+    if !filters.attrs.matches_status(task) {
+        filters.attrs.status = None;
+        lifted = true;
+    }
+    lifted
+}
+
 /// The state of the controls, with everything that no longer exists dropped.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Restored {
@@ -183,6 +242,33 @@ impl Saved {
             priority: attrs.priority.clone(),
             status: attrs.status.clone(),
         }
+    }
+
+    /// The person's choice after the controls went from `seen` to `now`:
+    /// each field the person changed takes its new value, and a field the
+    /// program changed on its own (it is in `seen` already) keeps the choice.
+    pub fn with_changes(&self, seen: &Saved, now: &Saved) -> Saved {
+        let mut choice = self.clone();
+        if seen.view != now.view {
+            choice.view = now.view;
+        }
+        if seen.categories != now.categories || seen.no_category != now.no_category {
+            choice.categories = now.categories.clone();
+            choice.no_category = now.no_category;
+        }
+        if seen.project != now.project {
+            choice.project = now.project.clone();
+        }
+        if seen.assignee != now.assignee {
+            choice.assignee = now.assignee.clone();
+        }
+        if seen.priority != now.priority {
+            choice.priority = now.priority.clone();
+        }
+        if seen.status != now.status {
+            choice.status = now.status.clone();
+        }
+        choice
     }
 
     /// Brings the saved choices back, silently dropping each one whose target
@@ -383,6 +469,79 @@ mod tests {
             task("Ana Souza", "normal", "pendente"),
         ];
         assert_eq!(assignee_names(&tasks, true).len(), 1);
+    }
+
+    #[test]
+    fn a_filter_is_lifted_only_when_it_hides_the_task_and_only_that_one() {
+        let mut categories = CategoryFilter::default();
+        categories.chosen.insert("c1".into());
+        let mut filters = Filters {
+            document: Some(7),
+            categories,
+            project: ProjectFilter::Only("pa".into()),
+            attrs: AttrFilter {
+                assignee: AssigneeFilter::Named("Ana".into()),
+                priority: Some("alta".into()),
+                status: Some("pendente".into()),
+            },
+        };
+        // A task the filters let through changes nothing.
+        let mut shown = task("ana", "alta", "pendente");
+        shown.document_id = Some(7);
+        shown.categories = vec!["c1".into()];
+        shown.project_uid = "pa".into();
+        let before = filters.clone();
+        assert!(!lift_hiding(&mut filters, &shown));
+        assert_eq!(filters, before);
+
+        // Another project, another priority: just those two go off.
+        let mut other = shown.clone();
+        other.project_uid = "pb".into();
+        other.priority = "baixa".into();
+        assert!(lift_hiding(&mut filters, &other));
+        assert_eq!(filters.project, ProjectFilter::Any);
+        assert_eq!(filters.attrs.priority, None);
+        assert_eq!(filters.attrs.assignee, before.attrs.assignee);
+        assert_eq!(filters.attrs.status, before.attrs.status);
+        assert_eq!(filters.document, Some(7));
+        assert_eq!(filters.categories, before.categories);
+
+        // A task of no document, no category and no one in charge lifts the rest.
+        let blank = task("", "normal", "aguardando");
+        assert!(lift_hiding(&mut filters, &blank));
+        assert_eq!(filters, Filters::default());
+    }
+
+    #[test]
+    fn only_the_fields_the_person_changed_take_the_new_value() {
+        let choice = Saved {
+            view: 4,
+            assignee: Some("Ana".into()),
+            ..Saved::default()
+        };
+        // The program took the view to Todas and cleared the assignee...
+        let seen = Saved::default();
+        // ...and the person then picked a category.
+        let now = Saved {
+            categories: vec!["c1".into()],
+            ..Saved::default()
+        };
+        let merged = choice.with_changes(&seen, &now);
+        assert_eq!(merged.view, 4, "the program's change is not the choice");
+        assert_eq!(merged.assignee.as_deref(), Some("Ana"));
+        assert_eq!(merged.categories, vec!["c1".to_owned()]);
+        // The person changing a field the program had changed takes it over.
+        let later = Saved {
+            view: 2,
+            ..now.clone()
+        };
+        assert_eq!(merged.with_changes(&now, &later).view, 2);
+    }
+
+    #[test]
+    fn the_placeholder_name_never_offers_my_tasks() {
+        let names = vec!["Integrante".to_owned()];
+        assert_eq!(own_name("Integrante", &names), None);
     }
 
     #[test]
