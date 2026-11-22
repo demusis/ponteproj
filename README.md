@@ -18,7 +18,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
 | **Celular (Android)** | **Ponte de bolso**, que acompanha o Ponte pela pasta compartilhada: [`mobile/README.md`](mobile/README.md) |
 | **Para quem mexe no código** | [`CONTRIBUINDO.md`](CONTRIBUINDO.md): módulos, build, testes e publicação |
-| **Versão** | 0.49.0 (extensão 0.4.1; Ponte de bolso 0.23.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.50.0 (extensão 0.4.1; Ponte de bolso 0.26.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -65,7 +65,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.49.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.50.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -97,7 +97,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | **Versão importada** | Uma fotografia do documento no momento da importação. Importar de novo depois de um despacho cria uma nova versão; as anteriores ficam guardadas. |
 | **Registro manual** | Um documento que você mesmo cria, para o que não está no SIGADOC: uma ligação, um e-mail, um ofício em papel, uma conversa do WhatsApp. Recebe um número próprio, como `MANUAL-2026/0007`. |
 | **Ficha** | A tela de um documento, com quatro abas: Resumo, Documento, Notas e minutas, Mais. |
-| **Tarefa** | Uma providência a tomar sobre um documento, com responsável e prazo. Toda tarefa pertence a um documento. |
+| **Tarefa** | Uma providência a tomar sobre um documento, com responsável e prazo. Em geral pertence a um documento, mas pode existir sem documento ([6.1](#61-a-área-tarefas)). |
 | **Atendimento** | Uma **passagem** de um documento ou de uma demanda pelo gabinete: quando entrou, com quem está, em que situação, quando saiu. É o que muitos gabinetes controlam em planilha. O mesmo documento pode ter várias passagens, e um atendimento pode existir sem documento. |
 | **Recurso** | Uma sala, um livro, um equipamento ou outra coisa que o gabinete reserva ou empresta, com uma quantidade (por exemplo, `Sala de reuniões do 2º andar`, ou `Projetor`). |
 | **Uso** | Uma reserva ou um empréstimo de um recurso, com data e hora de início e de fim previsto, quem usa e, no fim, a devolução. Fica na área **Recursos**. |
@@ -162,7 +162,7 @@ Na área **Modelos**, **Ctrl+F** (buscar modelo), **Ctrl+N** (**Novo modelo**), 
 | **Lembretes** | Resumo diário de prazos e avisos das tarefas, no Windows: ligar ou desligar, **Horário do resumo diário** e **Mostrar um aviso de teste** ([6.6](#66-lembretes-de-prazos)) |
 | **Feriados** | O **Estado**, para contar também os feriados estaduais, e **Outros dias sem expediente** (feriado da cidade, recesso, ponto facultativo; **Todo ano** vale o dia e o mês de todos os anos). Vale para todos os aparelhos que sincronizam o acervo ([6.8](#68-planejar-o-trabalho)) |
 | **Inteligência artificial** | Escolher onde a IA roda ([seção 9](#9-ia-opcional)). Salva com **Salvar** ou ao sair da seção |
-| **Cópia de segurança e exportação** | **Fazer cópia agora**, onde as cópias ficam (**Abrir pasta**), **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) e o card **Calendário (.ics)** ([6.9](#69-calendário-ics)) |
+| **Cópia de segurança e exportação** | **Fazer cópia agora**, a cópia automática por dia, onde as cópias ficam (**Abrir pasta**), **Restaurar cópia…**, **Exportar cópia portátil…** e **Importar cópia portátil…**, **Acervos deste computador**, **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) e o card **Calendário (.ics)** ([6.9](#69-calendário-ics)) |
 | **Categorias** | criar, renomear, colorir, arquivar e apagar as categorias de tarefas e documentos ([6.7](#67-categorias)) |
 | **Lixeira** | Restaurar itens excluídos e definir o prazo de limpeza |
 | **Aparência** | Tema: *Como o Windows*, *Claro* ou *Escuro*; **Tamanho do texto**: *Normal*, *Grande* ou *Maior* |
@@ -354,7 +354,7 @@ Para o que não está no SIGADOC. Clique em **Novo ▸ Registro manual…** (ou 
 
 Ao salvar, o registro recebe o número `MANUAL-ano/sequência`, que nunca se confunde com um número do SIGADOC, e aparece com a etiqueta âmbar **Manual** na lista, na ficha e nas tarefas. E-mails importados (por arquivo ou pela conta) têm numeração própria, `EMAIL-ano/sequência`, e a etiqueta **E-mail**; os importados pelas versões 0.22 e 0.23 recebem o número novo na primeira abertura da 0.23.2, quando o acervo é usado sem equipe (em equipe mantêm o número antigo, com a etiqueta **E-mail**). Tarefas, notas, minutas, anexos, análise por IA, Lixeira e compartilhamento com a equipe funcionam como em qualquer documento. **Editar registro…** salva uma nova versão; as anteriores ficam em Mais ▸ Versões. Para guardar o arquivo original (o e-mail, a foto do papel), use **Documento ▸ Anexos**.
 
-Em equipe, o número é dado pelo computador principal. Se ele estiver fora de alcance, o registro fica como "pendente" até a próxima sincronização.
+Em equipe, o número é dado pelo computador principal. Se ele estiver fora de alcance, o registro fica como "pendente" até a próxima sincronização. Enquanto o registro não foi enviado, o número aparece como **Número provisório** e pode mudar ao sincronizar ([8.6](#86-registro-manual-que-muda-de-número-ao-sincronizar)).
 
 **E-mails salvos como arquivo.** Um e-mail pode entrar pronto, sem digitar: salve-o como `.eml` (no Gmail, abra a mensagem ▸ ⋮ ▸ **Mostrar original** ▸ **Baixar original**; no Outlook, **Salvar como**) e use **Novo ▸ Importar e-mail de um arquivo (.eml)…** ou **Ajustes ▸ E-mail ▸ Importar um e-mail salvo em arquivo (.eml)…**. O Ponte lê o arquivo neste computador (nada é lido da sua conta de e-mail) e cria um registro manual do tipo *E-mail recebido* com remetente, destinatários, data e assunto no texto, o corpo da mensagem (texto simples, ou o HTML convertido) e os arquivos anexados como **Anexos** do registro. Imagens embutidas sem nome e partes ilegíveis são deixadas de fora, com aviso. O mesmo e-mail importado duas vezes é reconhecido pelo identificador da mensagem e não é duplicado. Nos modelos de trabalho, um `.eml` anexado a um exemplo tem o texto extraído só com assunto e corpo, sem endereços.
 
@@ -441,6 +441,8 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 - **Ordenar:** à direita das visões, *Prazo*, *Prioridade* ou *Documento*.
 - **Lista vazia:** a área diz por quê (por exemplo, nenhuma tarefa na visão escolhida ou na busca).
 - **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando*, *Para começar* (abertas cujo início planejado já chegou, ou com lembrete antigo vencido) e *Sem prazo*. A caixa **Ainda não planejadas**, junto das visões, mostra só as tarefas sem horário de trabalho ([6.8](#68-planejar-o-trabalho)).
+- **Filtros.** Ao lado de **Categorias** e **Projeto**, escolha o **Responsável**, a **Prioridade** e a **Situação** (*Pendente*, *Em análise* ou *Aguardando*). Os filtros se combinam entre si e com os demais. **Minhas tarefas** aparece quando o seu nome (o de **Ajustes**) é o responsável de alguma tarefa e mostra só essas. **Limpar filtros** tira todos de uma vez.
+- **O que o Ponte lembra.** A visão escolhida e os filtros ficam guardados neste computador e voltam quando o Ponte é reaberto. Se uma categoria, um projeto ou um responsável deixar de existir, o filtro correspondente é descartado sem aviso. Abrir uma tarefa a partir de outra área (a ficha, um projeto, a tela Hoje, **Ctrl+K**) desliga, só naquela sessão, o filtro, a busca ou a visão que a esconderia; a sua escolha guardada volta na próxima abertura. Clicar numa tarefa da própria lista não muda nada.
 - **Mostrar concluídas** inclui as já concluídas na lista.
 - **Tarefa sem documento.** Na área **Tarefas**, **Nova tarefa** (ou **Ctrl+N**) cria uma tarefa que não pertence a nenhum documento; na lista ela aparece como **Sem documento**. Com a lista filtrada por um documento (faixa "Mostrando só as tarefas de…"), a tarefa nova é dele. No painel da tarefa, **Vincular a um documento…** abre uma busca por número, assunto ou texto; depois, **Trocar de documento…** e **Desvincular do documento** mudam ou desfazem o vínculo. A tarefa é a mesma o tempo todo: anexos, lista de providências e histórico ficam com ela.
 - O painel da tarefa mostra o número e o assunto do documento a que ela pertence.
@@ -617,7 +619,7 @@ Um **projeto** reúne as tarefas de um mesmo objetivo (a organização de uma re
 
 ### 6.11 Atualizar entre versões: formato do acervo
 
-Algumas versões mudam o formato do acervo (o arquivo do Ponte no computador) e o do arquivo da pasta compartilhada. Desde a 0.48.0 o acervo está no formato **21** e o arquivo da pasta, no **8** (a 0.48.0 trouxe os projetos; as versões 0.48.1 a 0.49.0 não mudaram o formato). O que fazer:
+Algumas versões mudam o formato do acervo (o arquivo do Ponte no computador) e o do arquivo da pasta compartilhada. Desde a 0.48.0 o acervo está no formato **21** e o arquivo da pasta, no **8** (a 0.48.0 trouxe os projetos; as versões 0.48.1 a 0.50.0 não mudaram o formato). O que fazer:
 
 1. **Atualize primeiro o computador principal**, depois os outros computadores e o celular. Com a pasta compartilhada, atualize todos os aparelhos que usam a pasta.
 2. Uma versão mais antiga **recusa o acervo e o arquivo novos e não muda nada neles**: o Ponte 0.47.x e o Ponte de bolso 0.20.x dizem para atualizar (*Este acervo foi criado por uma versão mais nova do Ponte; atualize o Ponte antes de abri-lo.*, ou *O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte.*). Nada se perde: instale a versão nova e abra de novo.
@@ -679,7 +681,7 @@ Só a **referência ou o assunto** é obrigatório.
 
 **Ligar a um documento.** Em **Ligar a um documento do acervo**, digite parte do número, do assunto ou do texto e escolha o documento na lista (setas e Enter também servem). A referência passa a ser o número do documento e fica travada enquanto ligado; **Desligar do documento** libera. O Resumo do documento passa a mostrar o atendimento.
 
-**Tarefas deste atendimento.** Lista as tarefas criadas a partir dele, com situação, prazo e **Abrir**. O botão **Criar tarefa** cria, na área Tarefas, uma tarefa do documento ligado, com a prioridade, o prazo e o responsável do atendimento. Como toda tarefa pertence a um documento, o botão só fica ativo com um documento ligado. A tarefa e o registro dela na linha do tempo são gravados juntos: ou ficam os dois, ou nenhum.
+**Tarefas deste atendimento.** Lista as tarefas criadas a partir dele, com situação, prazo e **Abrir**. O botão **Criar tarefa** cria, na área Tarefas, uma tarefa com a prioridade, o prazo e o responsável do atendimento. Com um documento ligado, a tarefa é desse documento (sem título, chama-se *Analisar atendimento …*); sem documento ligado, ela é criada sem documento, aparece na área Tarefas como **Sem documento** e, sem título, chama-se *Dar andamento ao atendimento …*. A tarefa e o registro dela na linha do tempo são gravados juntos: ou ficam os dois, ou nenhum.
 
 **Anexos.** Depois de salvo, o atendimento aceita arquivos seus ([5.6](#56-anexos)).
 
@@ -735,7 +737,7 @@ No alto da página, um resumo diz como este computador está trabalhando, mostra
 
 Os botões principais de cada modo ficam logo depois dos campos, com a etiqueta **Não salvo** enquanto houver alterações sem salvar.
 
-Um aviso que vale para todos: **não instale o Ponte nem copie o acervo para dentro do Google Drive ou do OneDrive.** O acervo é cifrado pela sua conta do Windows e só abre na máquina que o gravou; além disso, um banco de dados dentro de pasta sincronizada se corrompe. Os modos abaixo são a forma segura.
+Um aviso que vale para todos: **não instale o Ponte nem copie o acervo para dentro do Google Drive ou do OneDrive.** O acervo é cifrado pela sua conta do Windows e só abre na máquina que o gravou; além disso, um banco de dados dentro de pasta sincronizada se corrompe. Os modos abaixo são a forma segura. Para levar o acervo a outro computador sem montar uma equipe, há também a **cópia portátil**, com senha ([10.3](#103-backup)).
 
 ### 8.1 Equipe na rede interna
 
@@ -756,7 +758,7 @@ Um computador do gabinete é o **principal**; os outros se conectam a ele. Nada 
 
 1. *Seu nome na equipe*: `FULANA`.
 2. Escolha o cartão **Conectar ao computador principal**, cole o código em *Código de conexão* e clique em **Usar código**. O Ponte testa a conexão na hora. **Testar conexão** repete o teste, e o resultado aparece logo abaixo do botão.
-3. Clique em **Salvar e sincronizar acervo agora**. A partir daí vale neste computador o acervo do gabinete. Se ele já tinha documentos próprios, faça antes uma cópia de segurança (**Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora**): o conteúdo local dá lugar ao do computador principal.
+3. Clique em **Salvar e sincronizar acervo agora**. A partir daí vale neste computador o acervo do gabinete. Se ele já tem qualquer item (documentos, tarefas, projetos, recursos, categorias, modelos, feriados salvos ou itens na Lixeira), o Ponte pergunta antes de substituir o conteúdo local pelo do computador principal e guarda uma cópia conferida do acervo daqui; enquanto você não confirma, nada é enviado.
 
 Pronto: importações, notas, minutas, tarefas e atendimentos de todos vão para o mesmo acervo, com o nome de quem fez cada coisa.
 
@@ -777,7 +779,7 @@ Cada computador guarda também, ao lado do próprio acervo, a última cópia que
 3. Crie a **senha de sincronização** (mínimo de 8 caracteres) e repita. Anote-a em lugar seguro: sem ela, o arquivo não abre em lugar nenhum, nem para os autores do Ponte.
 4. **Salvar e sincronizar agora**. O arquivo é criado a partir do seu acervo.
 
-**No segundo computador:** instale o Ponte, escolha o mesmo modo, aponte para a mesma pasta e informe a mesma senha. Se ele já tiver documentos próprios, o Ponte pede confirmação antes de substituí-los pelo conteúdo da pasta.
+**No segundo computador:** instale o Ponte, escolha o mesmo modo, aponte para a mesma pasta e informe a mesma senha. Se ele já tiver qualquer item (documentos, tarefas, projetos, recursos, categorias, modelos, feriados salvos ou itens na Lixeira), o Ponte pergunta antes de substituí-lo pelo conteúdo da pasta e guarda uma cópia conferida do acervo daqui; enquanto você não confirma, nada é enviado.
 
 Como funciona no dia a dia:
 
@@ -840,6 +842,18 @@ Quando não precisar mais dessas cópias, pode apagar a pasta.
 **Uma pasta que não foi regravada.** Quando uma pasta não pôde ser gravada (sem espaço, somente leitura, Drive travado) ou a cópia de segurança dela não pôde ser feita, o resumo da sincronização traz *⚠ N pasta(s) não regravada(s)* (por exemplo, `gravado em 1 pasta • ⚠ 1 pasta não regravada (revisão 42)`) e uma nota *… não foi regravada, para não perder o que só ela tem: <motivo>*. Nada se perde: a pasta fica como estava e as alterações continuam neste computador. Resolva o motivo mostrado e sincronize de novo.
 
 No Ponte de bolso, as mesmas proteções valem para o arquivo do Drive; o celular só adota um arquivo novo quando não tem alterações a enviar, e conserva a cópia pendente (`pendente.ponte`) até o Ponte confirmar que ela foi reunida ou guardada ([`mobile/README.md`](mobile/README.md)).
+
+### 8.6 Registro manual que muda de número ao sincronizar
+
+Um registro manual criado sem acesso à cópia compartilhada (sem o computador principal, ou sem a pasta) pode receber outro número ao sincronizar, porque a cópia já tinha um registro com aquele número. Vale para a pasta compartilhada e para a equipe.
+
+- **Enquanto não foi enviado**, o número vem marcado como **Número provisório**: ele pode mudar ao sincronizar.
+- **O aviso.** Quando o número muda, a tela Hoje mostra o cartão **Registro com número alterado**, com o botão **Abrir o registro**; ele fica até você tocar em **Entendi**. O resumo da sincronização repete a frase: *O registro “…” passou de … para … ao sincronizar.*
+- **O número antigo não se perde.** Ele continua na busca deste computador e aparece na ficha como **Número anterior neste computador**.
+- **As edições acompanham o registro.** O que foi alterado nesse intervalo vai para o número novo. Se o Ponte não consegue confirmar a qual registro uma edição pertence, ele não a aplica: ela vira um aviso em **Edições em conflito**, que guarda o texto, com o botão **Copiar o texto**.
+- **Com o formulário do registro aberto**, se a sincronização mudar o registro por baixo, **Salvar** grava no registro certo e avisa quando o número mudou. Se o Ponte não consegue confirmar que é o mesmo registro, não grava e mantém o texto na janela: copie-o, reabra o registro e cole.
+
+**Limites conhecidos.** Se um registro manual é apagado de vez (da Lixeira) e o número dele é dado a um registro novo enquanto uma edição do registro antigo ainda está a caminho, essa edição pode ser gravada no registro novo: a edição leva só o número do registro, não a identidade dele, e corrigir isso exigiria mudar o formato, o que fica para uma versão futura. Registros que ainda estão na Lixeira mantêm o número e não são afetados. O mesmo vale quando a criação de um registro foi renumerada por outro computador, já saiu do diário da pasta e a única versão que os dois computadores ainda tinham em comum foi apagada. Um aviso antigo pode perder o botão **Abrir o registro** se todas as versões que identificavam o registro forem apagadas de vez.
 
 ---
 
@@ -993,7 +1007,7 @@ Para levar modelos e instruções a outro computador ou a um colega, sem passar 
 | O quê | Onde |
 |---|---|
 | Acervo | `%LOCALAPPDATA%\PonteProj\acervo.sqlite3` |
-| Backups | `%LOCALAPPDATA%\PonteProj\backups\` |
+| Backups | `%LOCALAPPDATA%\PonteProj\backups\` (as cópias automáticas, em `backups\automaticas`) |
 | Exportações | `%LOCALAPPDATA%\PonteProj\exportados\` |
 | Cópias temporárias de anexos abertos | `%LOCALAPPDATA%\PonteProj\temp\` (apagadas ao abrir e ao fechar o Ponte) |
 | Programa | `%LOCALAPPDATA%\Programs\PonteProj\` |
@@ -1006,13 +1020,36 @@ Todo conteúdo é gravado cifrado com a **DPAPI** da sua conta do Windows: texto
 
 - outra conta do Windows no mesmo computador não consegue ler;
 - o arquivo copiado para outro computador não abre;
-- um backup só abre na mesma conta do Windows que o criou.
+- uma cópia de segurança comum, feita neste computador, só abre na mesma conta do Windows que a criou.
 
-Por isso, **trocar de computador ou reinstalar o Windows exige planejamento**: use a pasta compartilhada ou a equipe ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) para levar o acervo, não a cópia do arquivo.
+Por isso, **trocar de computador ou reinstalar o Windows exige planejamento**: use a **cópia portátil**, com senha ([10.3](#103-backup)), a pasta compartilhada ou a equipe ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) para levar o acervo, não a cópia do arquivo.
 
 ### 10.3 Backup
 
-**Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora** cria uma cópia consistente na pasta de backups. A página mostra onde as cópias ficam, com o botão **Abrir pasta** (a pasta só existe depois da primeira cópia), e a data da última cópia feita nesta sessão; **Copiar o caminho da última cópia** copia o caminho dela. O instalador também faz uma cópia consistente antes de cada atualização, na mesma pasta de backups do acervo em uso (`antes-de-instalar-…`); se ela falhar, a instalação não segue sem a sua escolha.
+Em **Ajustes ▸ Cópia de segurança e exportação** você vê onde estão as cópias, quantas são, quanto ocupam e como foi a última.
+
+**Cópias automáticas e cópia feita por você.** O Ponte faz sozinho uma cópia do acervo por dia, na primeira abertura do dia, na pasta `backups\automaticas`; a opção pode ser desligada na mesma página. **Fazer cópia agora** cria uma cópia na pasta de backups, quando você quiser. A página mostra onde as cópias ficam, com o botão **Abrir pasta** (a pasta só existe depois da primeira cópia), e a data da última cópia feita nesta sessão; **Copiar o caminho da última cópia** copia o caminho dela. O instalador também faz uma cópia antes de cada atualização, na mesma pasta de backups do acervo em uso (`antes-de-instalar-…`); se ela falhar, a instalação não segue sem a sua escolha.
+
+- **Cada cópia é conferida** como uma restauração conferiria. Se algum item do acervo não puder ser aberto, a cópia fica guardada, mas não conta como boa, e o cartão diz qual item está danificado; o mesmo vale para **Fazer cópia agora**.
+- **Quantas ficam.** As 7 cópias automáticas boas mais recentes e mais uma de cada uma das últimas 4 semanas. As cópias que você faz com **Fazer cópia agora** e as do instalador nunca são apagadas, e um arquivo posto no lugar de uma cópia também nunca é apagado.
+- **Espaço no disco.** Antes de copiar, o Ponte confere se o disco tem espaço para a cópia e mais uma reserva para o próprio acervo; se não tiver, não copia e avisa *Sem espaço*.
+- **Quem abre.** Essas cópias são protegidas pela sua conta do Windows e só abrem nela.
+
+**Restaurar não apaga nada.** **Restaurar cópia…** monta, a partir da cópia escolhida, um *acervo de recuperação* numa pasta nova (`PonteProj-recuperacao-…`) e o abre numa janela separada, só para olhar. Nessa janela o Ponte não sincroniza e não se conecta a nenhum computador principal, pasta ou caixa de e-mail; o acervo em uso continua como estava.
+
+- **Se for o acervo que você quer**, feche as outras janelas do Ponte e clique em **Usar este acervo neste computador…**, e então em **Usar este acervo**. O Ponte fecha (perguntando antes, se houver algo por salvar) e abre de novo no acervo escolhido. Daí em diante a janela, o navegador e o instalador passam a usá-lo, e o acervo anterior fica guardado, inteiro, em **Acervos deste computador**, de onde você pode voltar a ele (**Voltar a usar este acervo…**).
+- **Se o Ponte já não abre**, no Prompt de Comando: `ponteproj.exe --restaurar-copia "caminho da cópia.sqlite3"`.
+- **Para voltar a sincronizar**, conecte o acervo restaurado em **Equipe e sincronização**: o Ponte avisa que o conteúdo da pasta ou do computador principal vai substituir o dele, guarda uma cópia antes e não fala com o computador principal enquanto você não confirmar.
+- **Versões anteriores do Ponte** sempre abrem o acervo principal: antes de voltar a uma versão anterior, volte a usar o acervo principal aqui. O Ponte não apaga acervos antigos; para liberar espaço, apague a pasta pelo Windows quando tiver certeza.
+
+**Cópia portátil.** **Exportar cópia portátil…** grava um arquivo `.pontecopia`, protegido por uma senha que você escolhe (pelo menos 8 caracteres), que abre em qualquer computador e em qualquer conta do Windows. É o caminho para trocar de computador ou para não depender da sua conta do Windows. **Importar cópia portátil…** confere a senha antes de criar qualquer coisa e monta um acervo de recuperação, como em Restaurar. **Anote a senha:** ela não fica guardada em lugar nenhum, e sem ela a cópia não abre.
+
+- **Limite de tamanho:** até 200 MB de conteúdo (PDFs, anexos e textos).
+- **O que não vai na cópia portátil:** a chave da IA, as contas de e-mail, a configuração de sincronização, os lembretes e a aparência deste computador, nem os resultados guardados da conferência das minutas. Depois de importar, configure de novo o que é seu do computador.
+
+**Entrar numa pasta ou num computador principal com itens próprios.** Um acervo que já tem qualquer item (documentos, tarefas, projetos, recursos, categorias, modelos, feriados salvos ou itens na Lixeira) pergunta antes de ser substituído pelo conteúdo da pasta ou do principal e guarda uma cópia conferida antes. Enquanto você não confirma, nada é enviado ([8.1](#81-equipe-na-rede-interna), [8.2](#82-uma-pessoa-dois-computadores-pasta-compartilhada)).
+
+**Limites conhecidos.** A conferência das cópias prova que cada item abre com a sua conta do Windows, não que o conteúdo está no formato esperado. Um pedido do navegador que chegue no instante exato da troca de acervo ainda pode ser atendido no acervo anterior. Uma janela do Ponte que descobre que o acervo em uso mudou por baixo dela passa a "só olhar" em até 5 segundos. Versões anteriores do Ponte ignoram a troca de acervo.
 
 ### 10.4 Lixeira
 
@@ -1116,7 +1153,7 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | *"A pasta ainda não recebeu a versão mais recente"* | Espere o Google Drive ou o OneDrive terminar de sincronizar e tente de novo. |
 | `● pasta fora de alcance` | A pasta não está acessível (nuvem parada, pendrive ausente). O Ponte segue com o acervo local e envia depois. |
 | *"O computador principal voltou a uma cópia mais antiga do acervo…"* ou *"O acervo do computador principal foi trocado por outro…"*, com **Substituir o acervo deste computador e sincronizar** | O principal foi restaurado de uma cópia de segurança. Não é erro, e nada foi enviado nem trocado: veja [8.5](#85-quando-a-sincronização-pede-confirmação-ou-deixa-algo-de-lado) antes de confirmar. |
-| *"Este computador ainda não sincronizou com esta pasta e tem N documentos no acervo…"* | Primeira sincronização com a pasta, num computador que já tem documentos: o acervo daqui será substituído pelo da pasta. Faça uma cópia de segurança antes ([10.3](#103-backup)) e confirme se é isso mesmo. |
+| *"Este computador ainda não sincronizou com esta pasta e tem N documentos no acervo…"* | Primeira sincronização com a pasta, num computador que já tem documentos: o acervo daqui será substituído pelo da pasta. O Ponte guarda uma cópia conferida do acervo daqui antes de substituir; confirme se é isso mesmo ([10.3](#103-backup)). |
 | *"A cópia de … tinha alterações que não puderam ser reaplicadas; ela foi guardada em …-divergente-….ponte"* | Nada se perdeu: é a cópia de segurança de uma pasta que ia ser regravada ([8.5](#85-quando-a-sincronização-pede-confirmação-ou-deixa-algo-de-lado)). |
 | `⚠ N pasta(s) não regravada(s)` no resumo, ou *"… não foi regravada, para não perder o que só ela tem"* | A pasta ficou como estava (sem espaço, somente leitura, nuvem travada). Resolva o motivo que a mensagem mostra e sincronize de novo; as alterações seguem guardadas neste computador. |
 
@@ -1124,7 +1161,10 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 
 | Mensagem | O que fazer |
 |---|---|
-| *"Não foi possível proteger/abrir os dados deste perfil Windows"* | O acervo pertence a outra conta do Windows. Entre com a conta que fez a instalação. |
+| *"Não foi possível proteger/abrir os dados deste perfil Windows"* | O acervo pertence a outra conta do Windows. Entre com a conta que fez a instalação. Se essa conta não existe mais, só uma cópia portátil (com a senha) abre em outra conta ([10.3](#103-backup)). |
+| *"Sem espaço"* ao fazer uma cópia | O disco não tem espaço para a cópia e para a reserva do acervo. Libere espaço e tente de novo; nenhuma cópia foi feita. |
+| A cópia automática ficou "guardada, mas não conta como boa" | Algum item do acervo não pôde ser aberto; o cartão em **Ajustes ▸ Cópia de segurança e exportação** diz qual. Enquanto ele não for corrigido (levado para a Lixeira e excluído, ou restaurado de uma cópia boa), as cópias novas também não contam, e nenhuma cópia antiga é apagada ([10.3](#103-backup)). |
+| O Ponte não abre | No Prompt de Comando, `ponteproj.exe --restaurar-copia "caminho da cópia.sqlite3"` monta um acervo de recuperação a partir de uma cópia ([10.3](#103-backup)). |
 | *"Item na lixeira; restaure antes de editar"* | O item foi excluído. Restaure-o em Ajustes ▸ Lixeira. |
 | O aviso diário de prazos não aparece | Confira em **Ajustes ▸ Lembretes** se está ligado e se o horário já passou; o Ponte precisa estar aberto ou minimizado, e só avisa quando algo vence. Use **Mostrar um aviso de teste** e, se nem ele aparecer, veja *Configurações do Windows ▸ Sistema ▸ Notificações*. |
 | Em Tarefas, uma ação em lote deixou tarefas de fora | Não é erro: a linha de resultado diz quais e por quê ([6.5](#65-ações-em-lote)). **Desfazer** vale por 30 segundos; tarefas excluídas estão em Ajustes ▸ Lixeira. |
@@ -1144,6 +1184,15 @@ Só para acessar o SIGADOC e, se quiser, para a IA em nuvem, a pasta compartilha
 
 **Posso usar em dois computadores?**
 Sim, pelo modo pasta compartilhada ([8.2](#82-uma-pessoa-dois-computadores-pasta-compartilhada)). Copiar o arquivo do acervo de um para o outro não funciona.
+
+**Como levo o acervo para um computador novo?**
+Pelo modo pasta compartilhada ou pela equipe ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)), ou com a **cópia portátil**: no computador antigo, **Ajustes ▸ Cópia de segurança e exportação ▸ Exportar cópia portátil…**, com uma senha que você anota; no novo, instale o Ponte e use **Importar cópia portátil…** ([10.3](#103-backup)). A cópia portátil não leva a chave da IA, as contas de e-mail, a configuração de sincronização, os lembretes e a aparência; configure-os de novo.
+
+**Perdi meu perfil do Windows (ou reinstalei o Windows). Perdi o acervo?**
+As cópias de segurança comuns só abrem na conta do Windows que as criou, então um perfil perdido as deixa sem uso. Só uma **cópia portátil** (com a senha) ou a pasta compartilhada, a equipe ou o computador principal permitem recuperar o acervo. Por isso vale exportar uma cópia portátil de vez em quando e guardá-la fora do computador, com a senha anotada em outro lugar.
+
+**Posso restaurar uma cópia de segurança?**
+Sim. **Ajustes ▸ Cópia de segurança e exportação ▸ Restaurar cópia…** monta um acervo de recuperação numa janela separada, só para olhar, sem mexer no acervo em uso. Se for o que você quer, **Usar este acervo neste computador…**; o acervo anterior fica guardado em **Acervos deste computador** ([10.3](#103-backup)).
 
 **Posso instalar o Ponte dentro do Google Drive para usar em vários computadores?**
 Não. O acervo é cifrado pela conta do Windows de cada máquina, e um banco de dados em pasta sincronizada se corrompe. Use a pasta compartilhada.
@@ -1174,6 +1223,11 @@ Em **Ajustes ▸ Sobre o Ponte**, ou no ícone da extensão. Lá também está *
 ## 13. Para desenvolvedores
 
 Quem vai mexer no código encontra tudo em [`CONTRIBUINDO.md`](CONTRIBUINDO.md): a arquitetura, o mapa dos módulos de `src/`, as decisões de projeto, os formatos do acervo, como compilar e testar (`scripts/build.ps1`, `cargo test --lib`, os testes da extensão e do Android), a linha de comando, o celular e como publicar uma versão.
+
+Dois comandos do `ponteproj.exe` valem a pena conhecer:
+
+- `ponteproj.exe --import-plan arquivo.json [--dry-run] [--saida resultado.json]` cria, de uma vez, um registro (ou usa um documento existente pelo número) com várias tarefas ligadas, a partir de um arquivo JSON. Repetir o mesmo arquivo no mesmo computador não duplica nada e termina o que uma interrupção tenha deixado por fazer. O formato e os limites estão em [`CONTRIBUINDO.md`](CONTRIBUINDO.md), seção 7.
+- `ponteproj.exe --restaurar-copia "caminho da cópia.sqlite3"` monta um acervo de recuperação a partir de uma cópia, mesmo quando o Ponte não abre ([10.3](#103-backup)).
 
 O que o repositório contém: o aplicativo (`src/`, `Cargo.*`), a extensão (`extension/`), o celular (`mobile/`), o instalador e os scripts (`installer/`, `scripts/`), os testes (`tests/`) e os documentos [`README.md`](README.md), [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), [`CONTRIBUINDO.md`](CONTRIBUINDO.md) e [`mobile/README.md`](mobile/README.md). Os instaladores e as notas de cada versão estão nas [Releases](https://github.com/demusis/ponteproj/releases).
 

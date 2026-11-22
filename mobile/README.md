@@ -2,9 +2,23 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (versão 0.25.0)
+## O que faz (versão 0.26.0)
 
 Cada item abaixo traz a versão em que entrou; vale o que está aqui, e a versão instalada aparece no aplicativo.
+
+- **Sincronizar ao voltar (0.26.0):** ao voltar para o aplicativo, o celular sincroniza sozinho se a última sincronização boa tem 5 minutos ou mais. Isso respeita o bloqueio (só depois de desbloquear), o aviso de dados móveis e uma sincronização em andamento. Não pede a digital por conta própria, e uma tentativa que falhou, como sem rede, não se repete antes de 5 minutos. Com um formulário aberto (tarefa, nota, projeto, compartilhar, Ajustes) a volta não sincroniza, para não mexer no que está sendo digitado; a sincronização vem depois de salvar ou na próxima volta.
+
+- **Filtros guardados (0.26.0):** os filtros de Tarefas (categorias, projeto e documento), o filtro de categorias e o chip de Documentos, e a área escolhida na aba Tarefas ficam guardados ao fechar o aplicativo. Uma categoria, um projeto ou um documento que deixou de existir é descartado. O documento é reconhecido pelo número e título, mesmo que o código interno mude depois de sincronizar; se não houver como identificá-lo com certeza (por exemplo, dois documentos com o mesmo número e título), o filtro é limpo. **Recomeçar o acervo** e a troca do arquivo de sincronização limpam os filtros.
+
+- **Excluir tarefa (0.26.0):** no ⋮ da tarefa, **Excluir tarefa…** manda a tarefa para a Lixeira, depois de confirmar. O aviso *Tarefa excluída.* traz **Desfazer**. O celular não tem tela de Lixeira: para trazer a tarefa de volta mais tarde, restaure-a no computador. Como no computador, uma tarefa de que outras dependem, ou que tem subtarefas, não pode ser excluída até esses vínculos serem desfeitos.
+
+- **Situação da tarefa (0.26.0):** o formulário da tarefa tem o campo **Situação** (*Pendente*, *Em análise*, *Aguardando*), como no computador. Nas listas, as tarefas em análise ou aguardando mostram isso no início da segunda linha. Concluir e Reabrir continuam como estavam.
+
+- **Número de registro alterado (0.26.0):** se o número de um registro criado no celular mudar ao sincronizar, o resumo da sincronização traz a frase *O registro “…” passou de … para … ao sincronizar.* (a mesma do computador).
+<!-- A CONFIRMAR NA INTEGRAÇÃO: cartão do aviso de renumeração no celular -->
+
+- **Entrar numa pasta com itens próprios (0.26.0):** um celular que já tem itens próprios e entra numa pasta guarda antes uma cópia conferida do seu acervo; se a cópia não puder ser feita, a entrada não acontece.
+- **Limite conhecido (0.26.0):** se uma sincronização já estiver em andamento e você digitar uma hora pela metade numa tarefa sem nenhuma outra edição, a chegada de uma versão mais nova da tarefa pode apagar esse texto.
 
 - **Painel de filtros renovado (0.25.0):** as **categorias** viraram pílulas coloridas (toque para marcar várias); **Projeto** e **Documento** são seções que abrem uma por vez e, fechadas, mostram a escolha atual ou **Todos**. Cada seção aceita uma escolha: o ✓ aparece só nela, e tocar de novo desfaz. Em Documento, cada linha traz o título e, abaixo, o número e quantas tarefas em aberto tem; a lista mostra os documentos com tarefas em aberto (o escolhido primeiro) e a busca, que aparece quando há mais de 8 documentos, alcança todos. O botão do rodapé diz o que o filtro deixa: **Ver 10 tarefas**.
 
