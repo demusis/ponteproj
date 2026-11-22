@@ -29,6 +29,8 @@ pub mod mail;
 #[cfg(feature = "desktop")]
 pub mod mail_ui;
 pub mod manual;
+#[cfg(test)]
+mod renumber;
 pub mod model;
 pub mod native;
 /// How the program reaches the internet: certificates, proxy, failures, the connection test.
