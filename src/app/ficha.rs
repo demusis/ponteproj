@@ -355,7 +355,8 @@ impl PonteApp {
                         .on_hover_text("Altera tipo, título, origem, data ou texto. Cada edição fica guardada como uma versão.")
                         .clicked()
                 {
-                    self.manual_form.open_edit(detail);
+                    let opened = self.store.manual_record_ref(detail.summary.id).ok();
+                    self.manual_form.open_edit(detail, opened);
                 }
                 if !detail.summary.manual
                     && ui

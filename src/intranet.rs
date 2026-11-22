@@ -937,6 +937,12 @@ pub struct SyncConflict {
     /// reached the team's library: it cannot be applied again, only redone.
     #[serde(default)]
     pub unresolved: bool,
+    /// For the edit of a manual record: the request ids of the record it was
+    /// written against, so that it is never applied again by number to
+    /// another record (see `Store::revalidated_manual_edit`). Local to this
+    /// library, like the whole conflict.
+    #[serde(default)]
+    pub identity: Vec<String>,
 }
 
 /// One field that differs between the host and the offline edit.
@@ -3599,10 +3605,19 @@ impl Store {
             // stored, so a connection that drops halfway loses nothing.
             let mut ids = crate::idmap::load(&self.conn)?;
             let mut host_frame = host_snapshot;
-            let creations = crate::renumber::pending_creations(
-                outbox.iter().map(|e| (&e.mutation, e.created.as_slice())),
-            );
+            // What became of each creation sent in this drain, by the document
+            // (here) it made; an earlier, interrupted drain left its own in
+            // `ids`.
+            let mut creation_results: BTreeMap<i64, crate::renumber::CreationOutcome> =
+                BTreeMap::new();
             for entry in outbox {
+                let edit_source = crate::renumber::EditSource {
+                    records: &*self,
+                    written: crate::renumber::Written::Here,
+                    creations: &creation_results,
+                    receipt_doc: crate::renumber::receipt_document(&entry.created),
+                };
+                let identity = crate::renumber::edit_identity(&entry.mutation, &edit_source);
                 let remapped = ids
                     .remap(
                         &entry.mutation,
@@ -3615,18 +3630,14 @@ impl Store {
                         // record, before anything is sent.
                         crate::renumber::retarget_manual_edit(
                             mutation,
-                            &crate::renumber::EditSource {
-                                records: &*self,
-                                written: crate::renumber::Written::Here,
-                                creations: &creations,
-                                receipt_doc: crate::renumber::receipt_document(&entry.created),
-                            },
+                            &edit_source,
                             &ids,
                             host_frame
                                 .as_deref()
                                 .map(|s| s as &dyn crate::renumber::Records),
                         )
                     });
+                let creation = crate::renumber::creation_document(&entry.mutation, &entry.created);
                 let sent = match remapped {
                     Ok(mutation) => OutboxEntry {
                         mutation,
@@ -3638,9 +3649,13 @@ impl Store {
                     },
                     Err(reason) => {
                         let learned = ids.learn(&entry.created, None);
+                        if let Some(doc) = creation {
+                            creation_results.insert(doc, crate::renumber::CreationOutcome::Refused);
+                        }
                         let mut conflict =
                             build_sync_conflict(&entry, &reason, host_frame.as_deref());
                         conflict.unresolved = true;
+                        conflict.identity = identity;
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
                         pushed_offline = true;
                         continue;
@@ -3669,6 +3684,11 @@ impl Store {
                             None => crate::idmap::created_ids(&*snapshot, &sent.mutation, &reply)?,
                         };
                         let learned = ids.learn(&entry.created, Some(&there));
+                        if let (Some(doc), Some(outcome)) =
+                            (creation, crate::renumber::creation_outcome(Some(&there)))
+                        {
+                            creation_results.insert(doc, outcome);
+                        }
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
                         host_frame = Some(snapshot);
                         pushed_offline = true;
@@ -3685,7 +3705,12 @@ impl Store {
                     }
                     Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
                         let learned = ids.learn(&entry.created, None);
-                        let conflict = build_sync_conflict(&sent, &message, host_frame.as_deref());
+                        if let Some(doc) = creation {
+                            creation_results.insert(doc, crate::renumber::CreationOutcome::Refused);
+                        }
+                        let mut conflict =
+                            build_sync_conflict(&sent, &message, host_frame.as_deref());
+                        conflict.identity = identity;
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
                         pushed_offline = true;
                     }
@@ -4475,6 +4500,25 @@ impl Store {
                     &resolved,
                     &applied,
                 );
+                // What became of the creations of that copy's journal, each by
+                // its own entry (the receipt of an edit says nothing of them).
+                let creations: BTreeMap<i64, crate::renumber::CreationOutcome> = source
+                    .payload
+                    .journal
+                    .iter()
+                    .filter_map(|e| {
+                        let doc = crate::renumber::creation_document(&e.mutation, &e.created)?;
+                        let known = resolved.get(&e.uid)?;
+                        Some((doc, crate::renumber::creation_outcome(known.as_deref())?))
+                    })
+                    .collect();
+                let edit_source = crate::renumber::EditSource {
+                    records: &source.payload.snapshot,
+                    written: crate::renumber::Written::InCopy,
+                    creations: &creations,
+                    receipt_doc: crate::renumber::receipt_document(&entry.created),
+                };
+                let identity = crate::renumber::edit_identity(&entry.mutation, &edit_source);
                 let remapped = ids
                     .remap(&entry.mutation, &source.payload.snapshot, Some(&store))
                     .and_then(|mutation| {
@@ -4485,21 +4529,9 @@ impl Store {
                     .and_then(|mutation| {
                         // That copy's own record of the edit says which
                         // document of its library the edit landed on.
-                        let creations = crate::renumber::pending_creations(
-                            source
-                                .payload
-                                .journal
-                                .iter()
-                                .map(|e| (&e.mutation, e.created.as_slice())),
-                        );
                         crate::renumber::retarget_manual_edit(
                             mutation,
-                            &crate::renumber::EditSource {
-                                records: &source.payload.snapshot,
-                                written: crate::renumber::Written::InCopy,
-                                creations: &creations,
-                                receipt_doc: crate::renumber::receipt_document(&entry.created),
-                            },
+                            &edit_source,
                             &ids,
                             Some(&store),
                         )
@@ -4547,12 +4579,14 @@ impl Store {
                             created: Vec::new(),
                             attempted: false,
                         };
-                        conflicts.push(conflict_for(
+                        let mut conflict = conflict_for(
                             &as_entry,
                             &format!("{error} (alteração vinda de {from})"),
                             base_snapshot,
                             unresolved,
-                        ));
+                        );
+                        conflict.identity = identity;
+                        conflicts.push(conflict);
                         applied.insert(entry.uid.clone());
                         report.conflicts += 1;
                     }
@@ -4577,9 +4611,8 @@ impl Store {
                 &resolved,
                 &applied,
             ));
-            let creations = crate::renumber::pending_creations(
-                outbox.iter().map(|e| (&e.mutation, e.created.as_slice())),
-            );
+            let mut creation_results: BTreeMap<i64, crate::renumber::CreationOutcome> =
+                BTreeMap::new();
             for entry in &outbox {
                 processed_outbox.push((entry.id, entry.uid.clone()));
                 if applied.contains(&entry.uid) {
@@ -4589,6 +4622,14 @@ impl Store {
                     // history: same numbers.
                     if let Some(Some(there)) = resolved.get(&entry.uid) {
                         ids.learn(&entry.created, Some(there));
+                    }
+                    if let (Some(doc), Some(known)) = (
+                        crate::renumber::creation_document(&entry.mutation, &entry.created),
+                        resolved.get(&entry.uid),
+                    ) {
+                        if let Some(outcome) = crate::renumber::creation_outcome(known.as_deref()) {
+                            creation_results.insert(doc, outcome);
+                        }
                     }
                     continue;
                 }
@@ -4635,6 +4676,13 @@ impl Store {
                 // A change queued before the upgrade (or from a copy that
                 // never saw the projects) does not clear the link it did not
                 // touch.
+                let edit_source = crate::renumber::EditSource {
+                    records: &*self,
+                    written: crate::renumber::Written::Here,
+                    creations: &creation_results,
+                    receipt_doc: crate::renumber::receipt_document(&entry.created),
+                };
+                let identity = crate::renumber::edit_identity(&entry.mutation, &edit_source);
                 let remapped = ids
                     .remap(&entry.mutation, &*self, Some(&store))
                     .and_then(|mutation| {
@@ -4647,12 +4695,7 @@ impl Store {
                         // this library.
                         crate::renumber::retarget_manual_edit(
                             mutation,
-                            &crate::renumber::EditSource {
-                                records: &*self,
-                                written: crate::renumber::Written::Here,
-                                creations: &creations,
-                                receipt_doc: crate::renumber::receipt_document(&entry.created),
-                            },
+                            &edit_source,
                             &ids,
                             Some(&store),
                         )
@@ -4667,6 +4710,12 @@ impl Store {
                     (Ok(mutation), Ok(reply)) => {
                         let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
                         ids.learn(&entry.created, Some(&created));
+                        if let (Some(doc), Some(outcome)) = (
+                            crate::renumber::creation_document(&entry.mutation, &entry.created),
+                            crate::renumber::creation_outcome(Some(&created)),
+                        ) {
+                            creation_results.insert(doc, outcome);
+                        }
                         report.pushed += 1;
                         let revision = store.cabinet_revision()?;
                         applied.insert(entry.uid.clone());
@@ -4688,6 +4737,11 @@ impl Store {
                     }
                     (remapped, outcome) => {
                         ids.learn(&entry.created, None);
+                        if let Some(doc) =
+                            crate::renumber::creation_document(&entry.mutation, &entry.created)
+                        {
+                            creation_results.insert(doc, crate::renumber::CreationOutcome::Refused);
+                        }
                         let unresolved = remapped.is_err();
                         let error = outcome.err().unwrap_or_default();
                         let sent = OutboxEntry {
@@ -4698,7 +4752,9 @@ impl Store {
                             }),
                             ..entry.clone()
                         };
-                        conflicts.push(conflict_for(&sent, &error, base_snapshot, unresolved));
+                        let mut conflict = conflict_for(&sent, &error, base_snapshot, unresolved);
+                        conflict.identity = identity;
+                        conflicts.push(conflict);
                         applied.insert(entry.uid.clone());
                         report.conflicts += 1;
                     }
@@ -5784,7 +5840,12 @@ impl Store {
                 // Mantém a versão que já está no anfitrião (e sincronizada localmente) e remove o alerta de choque.
             }
             ConflictResolution::KeepLocal => {
-                let rebased = self.rebase_mutation_to_current(conflict.mutation)?;
+                // An edit of a manual record is addressed by number: it is
+                // applied again only to the record it was written against.
+                let mutation = self
+                    .revalidated_manual_edit(&conflict)
+                    .map_err(anyhow::Error::msg)?;
+                let rebased = self.rebase_mutation_to_current(mutation)?;
                 let cfg = self.load_intranet_config()?;
                 if cfg.mode.queues_changes() {
                     self.remote_mutate(&cfg, rebased)?;
@@ -5793,11 +5854,11 @@ impl Store {
                 }
             }
             ConflictResolution::Merge => {
-                let merged = self.build_merged_mutation(
-                    &conflict.actor,
-                    conflict.mutation,
-                    conflict.base.as_ref(),
-                )?;
+                let mutation = self
+                    .revalidated_manual_edit(&conflict)
+                    .map_err(anyhow::Error::msg)?;
+                let merged =
+                    self.build_merged_mutation(&conflict.actor, mutation, conflict.base.as_ref())?;
                 let cfg = self.load_intranet_config()?;
                 if cfg.mode.queues_changes() {
                     self.remote_mutate(&cfg, merged)?;
@@ -6942,6 +7003,10 @@ pub struct ConflictInfo {
     pub waiting_sync: bool,
     /// The library could not be read to check the item: no shortcut offered.
     pub unchecked: bool,
+    /// The edit of a manual record that cannot be applied again with
+    /// certainty (the record it was written against cannot be found by
+    /// identity): only copying its text and dismissing the card are offered.
+    pub reapply_unsafe: bool,
 }
 
 /// What a mutation touches, before looking anything up in the library.
@@ -7743,7 +7808,10 @@ impl Store {
     pub fn conflict_info(&self, conflict: &SyncConflict) -> ConflictInfo {
         let origin = ConflictOrigin::of(&conflict.item_label);
         let pending = crate::idmap::has_pending(&self.conn);
-        if !matches!(pending, Ok(false)) {
+        // The text of an edit that was refused (copy it, dismiss it) does not
+        // depend on the translation of numbers: it is offered at once.
+        if !matches!(pending, Ok(false)) && crate::renumber::refused_manual_edit(conflict).is_none()
+        {
             return ConflictInfo {
                 id: conflict.id,
                 title: "Alteração aguardando a sincronização".to_owned(),
@@ -7757,6 +7825,7 @@ impl Store {
                 equal: false,
                 waiting_sync: true,
                 unchecked: false,
+                reapply_unsafe: false,
             };
         }
         let mut subject = self.conflict_subject(&conflict.mutation);
@@ -7824,6 +7893,9 @@ impl Store {
             equal,
             waiting_sync: false,
             unchecked,
+            reapply_unsafe: !conflict.unresolved
+                && crate::renumber::is_manual_edit(&conflict.mutation)
+                && self.revalidated_manual_edit(conflict).is_err(),
         }
     }
 
@@ -8809,6 +8881,7 @@ fn build_sync_conflict(
         reason: reason.to_owned(),
         mutation: entry.mutation.clone(),
         unresolved: false,
+        identity: Vec::new(),
     }
 }
 
@@ -10451,11 +10524,14 @@ impl IntranetPanel {
             return;
         }
         match outcome.result {
-            Ok(SyncDone { changed, .. }) => {
+            Ok(SyncDone { changed, summary }) => {
                 self.offline = false;
                 store.note_host_reachability(true);
                 self.last_sync_finished = Some((Instant::now(), changed));
                 let mut suffix = String::new();
+                if !summary.is_empty() {
+                    suffix.push_str(&format!(" • {}", summary.trim_end_matches('.')));
+                }
                 if conflicts > 0 {
                     suffix.push_str(&format!(
                         " • ⚠ {} para decidir",
@@ -10474,7 +10550,11 @@ impl IntranetPanel {
                 );
                 if outcome.manual {
                     self.error = false;
-                    self.message = "Acervo sincronizado com o computador principal.".into();
+                    self.message = if summary.is_empty() {
+                        "Acervo sincronizado com o computador principal.".into()
+                    } else {
+                        format!("Acervo sincronizado com o computador principal. {summary}")
+                    };
                 }
             }
             Err(error) if error.starts_with(CONFIRM_REPLACE) => {
@@ -11460,7 +11540,7 @@ impl IntranetPanel {
             soft_note(ui, Tone::Warn, icon::WARNING, &waiting_sync_note(mode));
             return;
         }
-        let kind = if conflict.unresolved {
+        let kind = if conflict.unresolved || info.reapply_unsafe {
             CardKind::Unresolved
         } else if info.block.is_some() {
             CardKind::Blocked
@@ -11595,7 +11675,7 @@ impl IntranetPanel {
                 }
             }
             None if kind == CardKind::Unresolved => {
-                if let Some(edit) = crate::renumber::refused_manual_edit(conflict) {
+                if let Some(edit) = crate::renumber::manual_edit_in(conflict) {
                     // What the person wrote is not lost with the notice: it is
                     // here to be read and copied.
                     ui.add(egui::Label::new(egui::RichText::new(&conflict.reason)).wrap());
@@ -11622,7 +11702,7 @@ impl IntranetPanel {
                         ui.ctx().copy_text(edit.text.clone());
                     }
                     ui.add_space(theme::S1);
-                    widgets::small_muted(ui, "Esta edição não foi aplicada em nenhum registro. Cole o texto no registro certo e, depois, dispense o aviso.");
+                    widgets::small_muted(ui, "Esta edição não será aplicada por número, para não cair em outro registro. Cole o texto no registro certo e, depois, dispense o aviso.");
                 } else {
                     widgets::small_muted(ui, "Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.");
                 }
@@ -13322,6 +13402,7 @@ mod tests {
                 no_project: false,
             }),
             unresolved: false,
+            identity: Vec::new(),
         };
         let diffs = store.conflict_differences(&conflict);
         let by_label = |label: &str| {
@@ -14149,6 +14230,7 @@ mod conflict_card_tests {
             mutation,
             base: None,
             unresolved: false,
+            identity: Vec::new(),
         }
     }
 
@@ -15149,6 +15231,7 @@ mod resources_sync_tests {
             mutation,
             base: None,
             unresolved: false,
+            identity: Vec::new(),
         };
         let save_use = |item: &ResourceUse| {
             conflict(IntranetMutation::SaveResourceUse {
@@ -16275,6 +16358,7 @@ mod resources_sync_tests {
             },
             base: None,
             unresolved: false,
+            identity: Vec::new(),
         };
         // Same thing but for the kind: equal, with nothing to compare.
         let mut other_kind = held.clone();
@@ -17824,5 +17908,61 @@ mod tied_mirror_tests {
                 "the creation is neither in the library nor kept aside (order {order:?})"
             );
         }
+    }
+
+    /// The sentence that tells which record the main computer renumbered
+    /// reaches the window: the status of the bar and the answer of a manual
+    /// synchronization (it used to be dropped on the way).
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn the_renumber_sentence_of_a_team_synchronization_reaches_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        let cfg = IntranetConfig {
+            mode: IntranetMode::Client,
+            member_name: "SERVIDOR-A".into(),
+            host_url: "http://127.0.0.1:7878".into(),
+            ..IntranetConfig::default()
+        };
+        let sentence =
+            "O registro “Ligação” passou de MANUAL-2026/0005 para MANUAL-2026/0006 ao sincronizar.";
+        let mut panel = IntranetPanel::default();
+        panel.apply_sync_outcome(
+            &mut store,
+            &cfg,
+            SyncOutcome {
+                result: Ok(SyncDone {
+                    changed: true,
+                    summary: sentence.into(),
+                }),
+                manual: true,
+            },
+        );
+        assert!(
+            panel
+                .status_summary
+                .contains("passou de MANUAL-2026/0005 para MANUAL-2026/0006"),
+            "{}",
+            panel.status_summary
+        );
+        assert!(panel.message.contains(sentence), "{}", panel.message);
+        // Without a renumbering the words are what they always were.
+        let mut quiet = IntranetPanel::default();
+        quiet.apply_sync_outcome(
+            &mut store,
+            &cfg,
+            SyncOutcome {
+                result: Ok(SyncDone {
+                    changed: true,
+                    summary: String::new(),
+                }),
+                manual: true,
+            },
+        );
+        assert_eq!(
+            quiet.message,
+            "Acervo sincronizado com o computador principal."
+        );
+        assert!(!quiet.status_summary.contains("passou de"));
     }
 }
