@@ -12,13 +12,18 @@ fn main() {
         {
             show_startup_error(&format!("Não foi possível abrir o PonteProj.\n\n{err}"));
         }
-        // A plan that was applied but whose result could not be written has its
-        // own exit code: it must not look like a plan that failed.
+        // A plan that was applied has its own exit codes (see
+        // `plan_import::execute`): it must not look like one that failed.
         let code = if err
             .downcast_ref::<ponteproj::plan_import::AppliedButUnreported>()
             .is_some()
         {
             ponteproj::plan_import::EXIT_APPLIED_UNREPORTED
+        } else if err
+            .downcast_ref::<ponteproj::plan_import::AppliedWithManualSteps>()
+            .is_some()
+        {
+            ponteproj::plan_import::EXIT_APPLIED_MANUAL_STEPS
         } else {
             1
         };

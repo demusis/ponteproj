@@ -822,23 +822,40 @@ pub struct PlanResult {
     /// automatic triage of the record was not found open: nothing was
     /// concluded), `interrompida_nao_repetida` or `nao_verificavel`.
     pub triage: String,
+    /// One sentence for each step (note, categories, triage) that was started
+    /// by a run that was interrupted: it is not performed again, and the
+    /// person must check it and finish it by hand.
+    pub pendencias_manuais: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
 // The library
 // ---------------------------------------------------------------------------
 
-/// How long a run keeps its reservation of the request id without renewing
-/// it. A run renews it before every step; a run that died frees the id when
-/// this time is over.
-const LEASE_SECS: i64 = 60;
+/// What the person has to check by hand: a step whose "started" mark is
+/// there may or may not have had its effect, and it is never repeated.
+fn manual_steps(plan: &Plan, run: Option<&PlanRun>, elsewhere: bool) -> Vec<String> {
+    let Some(run) = run.filter(|_| !elsewhere) else {
+        return Vec::new();
+    };
+    let mut steps = Vec::new();
+    let doc = plan.document.as_ref();
+    if run.note_step == STEP_STARTED && doc.is_some_and(|d| !d.note.is_empty()) {
+        steps.push("A nota do registro pode não ter sido gravada: confira na ficha do documento e, se faltar, cole o texto de document.note do plano.".to_owned());
+    }
+    if run.categories_step == STEP_STARTED && doc.is_some_and(|d| !d.categories.is_empty()) {
+        steps.push("As categorias do registro podem não ter sido aplicadas: confira na ficha do documento e, se faltarem, marque as de document.categories do plano.".to_owned());
+    }
+    if run.triage_step == STEP_STARTED && plan.complete_triage {
+        steps.push("A conclusão da triagem automática pode não ter sido feita: confira a tarefa \"Triar documento\" do registro e, se ainda estiver aberta, conclua-a.".to_owned());
+    }
+    steps
+}
 
 const CHANGED_PLAN: &str = "request_id: este identificador já foi usado por um plano diferente (o conteúdo do arquivo mudou desde a primeira execução). Para repetir o plano use o arquivo original; para um plano novo use um request_id novo.";
 const PLAN_TABLE: &str = "CREATE TABLE IF NOT EXISTS plan_import_log(
                 request_id TEXT PRIMARY KEY,
                 digest TEXT NOT NULL,
-                lease_owner TEXT NOT NULL DEFAULT '',
-                lease_until INTEGER NOT NULL DEFAULT 0,
                 doc_created INTEGER NOT NULL DEFAULT 0,
                 tasks_created INTEGER NOT NULL DEFAULT 0,
                 note_step INTEGER NOT NULL DEFAULT 0,
@@ -848,7 +865,6 @@ const PLAN_TABLE: &str = "CREATE TABLE IF NOT EXISTS plan_import_log(
                 target TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )";
-const BUSY_PLAN: &str = "Este plano já está sendo aplicado por outra execução (ou uma execução anterior foi interrompida há menos de 60 segundos). Aguarde um instante e repita o mesmo comando: ele continua de onde parou.";
 
 /// The steps of the record that are written once: 0 not started, 1 started,
 /// 2 done. A step that was started is never performed again, whatever the
@@ -934,10 +950,6 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
         .collect::<Option<Vec<u8>>>()
 }
-fn now_secs() -> i64 {
-    chrono::Utc::now().timestamp()
-}
-
 impl Store {
     // ---- the receipt ---------------------------------------------------------
 
@@ -970,83 +982,46 @@ impl Store {
             )
             .optional()?)
     }
-    /// Reserves the request id for this run, durably and exclusively, BEFORE
-    /// anything is written: the row (request id, digest of the normalised
-    /// plan, who holds it and until when) is committed in a transaction of its
-    /// own, and the id is UNIQUE. Answers whether the row is new. A row that
-    /// exists with the same digest is resumed unless another run holds it; a
-    /// different digest is refused.
-    fn reserve_plan_run(
-        &mut self,
-        request: &str,
-        digest: &str,
-        target: &str,
-        owner: &str,
-    ) -> Result<bool> {
+    /// Reserves the request id, durably, BEFORE anything is written: the row
+    /// (request id, digest of the normalised plan) is committed in a
+    /// transaction of its own, and the id is UNIQUE. Answers whether the row is
+    /// new. A row that exists with the same digest is a previous run that was
+    /// interrupted (the caller holds the lock of the import, so nobody else is
+    /// running it) and is resumed; a different digest is refused.
+    fn reserve_plan_run(&mut self, request: &str, digest: &str, target: &str) -> Result<bool> {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(PLAN_TABLE)?;
-        let held: Option<(String, String, i64)> = tx
+        let stored: Option<String> = tx
             .query_row(
-                "SELECT digest,lease_owner,lease_until FROM plan_import_log WHERE request_id=?1",
+                "SELECT digest FROM plan_import_log WHERE request_id=?1",
                 [request],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| r.get(0),
             )
             .optional()?;
-        let until = now_secs() + LEASE_SECS;
-        let fresh = match held {
+        let fresh = match stored {
             None => {
                 tx.execute(
-                    "INSERT INTO plan_import_log(request_id,digest,lease_owner,lease_until,target,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
-                    rusqlite::params![
-                        request,
-                        digest,
-                        owner,
-                        until,
-                        target,
-                        chrono::Utc::now().to_rfc3339()
-                    ],
+                    "INSERT INTO plan_import_log(request_id,digest,target,created_at) VALUES(?1,?2,?3,?4)",
+                    rusqlite::params![request, digest, target, chrono::Utc::now().to_rfc3339()],
                 )?;
                 true
             }
-            Some((stored, holder, lease)) => {
+            Some(stored) => {
                 ensure!(stored == digest, CHANGED_PLAN);
-                ensure!(holder == owner || lease <= now_secs(), BUSY_PLAN);
-                tx.execute(
-                    "UPDATE plan_import_log SET lease_owner=?2,lease_until=?3 WHERE request_id=?1",
-                    rusqlite::params![request, owner, until],
-                )?;
                 false
             }
         };
         tx.commit()?;
         Ok(fresh)
     }
-    /// Renews the reservation; fails if another run took it over.
-    fn renew_plan_run(&self, request: &str, owner: &str) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE plan_import_log SET lease_until=?3 WHERE request_id=?1 AND lease_owner=?2",
-            rusqlite::params![request, owner, now_secs() + LEASE_SECS],
-        )?;
-        ensure!(
-            changed == 1,
-            "A reserva deste plano passou para outra execução; esta parou sem gravar mais nada. Repita o comando."
-        );
-        Ok(())
-    }
-    fn release_plan_run(&self, request: &str, owner: &str) {
-        let _ = self.conn.execute(
-            "UPDATE plan_import_log SET lease_owner='',lease_until=0 WHERE request_id=?1 AND lease_owner=?2",
-            rusqlite::params![request, owner],
-        );
-    }
     /// Deletes the reservation of a run that wrote nothing at all, so a
     /// corrected file can use the same request id.
-    fn abandon_plan_run(&self, request: &str, owner: &str) -> Result<()> {
+    fn abandon_plan_run(&self, request: &str) -> Result<()> {
         self.conn.execute(
-            "DELETE FROM plan_import_log WHERE request_id=?1 AND lease_owner=?2 AND doc_created=0 AND tasks_created=0 AND note_step=0 AND categories_step=0 AND triage_step=0 AND triage_uid=''",
-            rusqlite::params![request, owner],
+            "DELETE FROM plan_import_log WHERE request_id=?1 AND doc_created=0 AND tasks_created=0 AND note_step=0 AND categories_step=0 AND triage_step=0 AND triage_uid=''",
+            [request],
         )?;
         Ok(())
     }
@@ -1484,6 +1459,7 @@ impl Store {
             })
             .to_owned(),
             triage: triage.to_owned(),
+            pendencias_manuais: manual_steps(plan, run.as_ref(), elsewhere),
         })
     }
 
@@ -1615,18 +1591,15 @@ impl Store {
             return self.plan_outcome(plan, &checked, true, &Written::default(), false);
         }
 
-        let owner = uuid::Uuid::new_v4().to_string();
-        let reserved_now =
-            self.reserve_plan_run(&checked.request, &checked.digest, &target, &owner)?;
-        let result = self.apply_plan(plan, &checked, &owner);
+        let reserved_now = self.reserve_plan_run(&checked.request, &checked.digest, &target)?;
+        let result = self.apply_plan(plan, &checked);
         if result.is_err() && reserved_now && !self.plan_effects(plan, &checked).unwrap_or(true) {
-            let _ = self.abandon_plan_run(&checked.request, &owner);
+            let _ = self.abandon_plan_run(&checked.request);
         }
-        self.release_plan_run(&checked.request, &owner);
         result
     }
 
-    fn apply_plan(&mut self, plan: &Plan, checked: &Checked, owner: &str) -> Result<PlanResult> {
+    fn apply_plan(&mut self, plan: &Plan, checked: &Checked) -> Result<PlanResult> {
         let request = checked.request.as_str();
         // What the reservation found may differ from what was read before it.
         let run = self
@@ -1648,7 +1621,6 @@ impl Store {
                 .as_ref()
                 .expect("a plan with document has its record");
             let id = if state.doc_pending {
-                self.renew_plan_run(request, owner)?;
                 match self
                     .create_record_with_attachments(record, &[])
                     .map_err(|e| anyhow!("document: não foi possível criar o registro: {e}"))?
@@ -1657,8 +1629,9 @@ impl Store {
                         written.document = true;
                         document_id
                     }
-                    // The reservation is ours, so this is the record an
-                    // earlier run of this very plan made.
+                    // The reservation is ours (and so is the lock of the
+                    // import), so this is the record an earlier, interrupted
+                    // run of this very plan made.
                     Created::Already { document_id } => document_id,
                 }
             } else {
@@ -1668,24 +1641,25 @@ impl Store {
                     .expect("a present document has its row")
                     .id
             };
-            if !run.doc_created {
-                self.mark_plan(request, "doc_created", 1)?;
-            }
-            if run.triage_uid.is_empty() && plan.complete_triage {
+            // The automatic triage is identified only here, in the run that
+            // created the record, right after creating it: it is then the
+            // only task of the document. It is never inferred on a resume.
+            if written.document && plan.complete_triage {
                 if let Some(uid) = self.sole_automatic_task(id)? {
                     self.set_triage_uid(request, &uid)?;
                 }
             }
+            if !run.doc_created {
+                self.mark_plan(request, "doc_created", 1)?;
+            }
             let doc = plan.document.as_ref().expect("new document");
             if state.note_pending {
-                self.renew_plan_run(request, owner)?;
                 self.mark_plan(request, "note_step", STEP_STARTED)?;
                 self.save_note(id, &doc.note)?;
                 self.mark_plan(request, "note_step", STEP_DONE)?;
                 written.content = true;
             }
             if state.categories_pending {
-                self.renew_plan_run(request, owner)?;
                 self.mark_plan(request, "categories_step", STEP_STARTED)?;
                 self.set_document_categories(id, &document_categories)?;
                 self.mark_plan(request, "categories_step", STEP_DONE)?;
@@ -1712,7 +1686,6 @@ impl Store {
                 .collect();
             if self.client_config()?.is_none() {
                 // One transaction for all of them: every task or none.
-                self.renew_plan_run(request, owner)?;
                 let batch: Vec<Task> = to_write.iter().map(|(_, task)| task.clone()).collect();
                 self.save_repeated_tasks_counted(&batch).map_err(|e| {
                     anyhow!(
@@ -1724,7 +1697,6 @@ impl Store {
                     .extend(to_write.iter().map(|(index, _)| *index));
             } else {
                 for (index, task) in &to_write {
-                    self.renew_plan_run(request, owner)?;
                     self.save_task(task).map_err(|e| {
                         invalid(format!(
                             "tasks[{}]: não foi possível gravar a tarefa: {e}. As tarefas anteriores já foram gravadas; repita o mesmo comando para continuar de onde parou.",
@@ -1743,7 +1715,6 @@ impl Store {
         // The triage is concluded last, when the tasks exist: a record whose
         // only task is concluded would look finished to the team meanwhile.
         if state.triage_pending {
-            self.renew_plan_run(request, owner)?;
             self.mark_plan(request, "triage_step", STEP_STARTED)?;
             let (step, concluded) = self.conclude_automatic_triage(request)?;
             self.mark_plan(request, "triage_step", step)?;
@@ -1873,6 +1844,10 @@ fn read_limited(file: &str) -> Result<Vec<u8>> {
 /// Exit code of a plan that WAS applied but whose result could not be
 /// written to the `--saida` file (the JSON is on the standard output).
 pub const EXIT_APPLIED_UNREPORTED: i32 = 3;
+/// Exit code of a plan that was applied but left steps (the note, the
+/// categories or the triage of the record) that the person must check and
+/// finish by hand; they are listed in `pendencias_manuais`.
+pub const EXIT_APPLIED_MANUAL_STEPS: i32 = 4;
 
 /// The import was applied, but the result could not be written where
 /// `--saida` said. It must never be reported as a plain failure.
@@ -1885,12 +1860,29 @@ impl std::fmt::Display for AppliedButUnreported {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "A importação FOI aplicada, mas o resultado não pôde ser gravado em {}: {}. O resultado completo está na saída padrão. Não a repita por engano: repetir o mesmo comando só informa o estado atual.",
+            "A importação FOI aplicada, mas o resultado não pôde ser gravado em {}: {}. O resultado completo está na saída padrão. Pode ter ficado um arquivo incompleto nesse caminho; apague-o antes de reutilizar o nome. Não repita o comando por engano: repetir só informa o estado atual.",
             self.path, self.reason
         )
     }
 }
 impl std::error::Error for AppliedButUnreported {}
+
+/// The plan was applied (the record and the tasks), but some steps are left
+/// for the person.
+#[derive(Debug)]
+pub struct AppliedWithManualSteps {
+    pub steps: Vec<String>,
+}
+impl std::fmt::Display for AppliedWithManualSteps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "O plano foi aplicado (o registro e as tarefas), mas há etapas a conferir e concluir à mão: {}",
+            self.steps.join(" ")
+        )
+    }
+}
+impl std::error::Error for AppliedWithManualSteps {}
 
 /// `--saida` names a file that must not exist yet (so it can never be the
 /// library or anything else of the person). It is created exclusively
@@ -1926,6 +1918,29 @@ fn create_output(path: &str) -> Result<std::fs::File> {
         })
 }
 
+/// The lock of the import: held, with no sharing, for the whole of an
+/// `--import-plan` that writes, on a file of the data folder (as the window
+/// holds `janela.lock`). The system releases it when the process ends,
+/// however it ends. A second import cannot take it and stops at once, so two
+/// runs never interleave and a receipt left "started" is always a run that
+/// ended.
+fn lock_import(db: &Path) -> Result<std::fs::File> {
+    let folder = db
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(folder).context("Não foi possível criar a pasta do acervo.")?;
+    crate::single_instance::open_exclusive(&folder.join("importacao-plano.lock")).map_err(
+        |error| {
+            if cfg!(windows) && error.raw_os_error() == Some(32) {
+                anyhow!("Já há uma importação de plano em andamento neste computador; tente de novo quando ela terminar. Nada foi gravado.")
+            } else {
+                anyhow!("Não foi possível reservar a importação de plano neste computador: {error}")
+            }
+        },
+    )
+}
+
 /// A dry run must not change the library: it refuses a library that the
 /// opening would have to migrate (the window does that), and one that does
 /// not exist yet.
@@ -1949,13 +1964,17 @@ fn check_readable_as_is(db: &Path) -> Result<()> {
 }
 
 /// The command: creates the `--saida` file, reads the file, validates it,
+/// takes the lock of the import (not for `--dry-run`, which writes nothing),
 /// runs the plan on the library at `db` and prints the result as JSON to
 /// `stdout` (and writes it to `--saida`). On failure the error is returned
 /// (the caller prints it to the error output and exits 1) and, when `--saida`
 /// was given, written there too as `{"ok":false,"erro":"..."}`. A plan that
 /// was applied but whose result could not be written to `--saida` returns
-/// [`AppliedButUnreported`] (exit code [`EXIT_APPLIED_UNREPORTED`]), after the
-/// JSON went to `stdout`.
+/// [`AppliedButUnreported`] (exit code [`EXIT_APPLIED_UNREPORTED`]); a plan
+/// applied with steps left for the person returns [`AppliedWithManualSteps`]
+/// (exit code [`EXIT_APPLIED_MANUAL_STEPS`]); both after the JSON went to
+/// `stdout`. In a dry run nothing was imported, so a result that cannot be
+/// written is a plain failure that says so.
 pub fn execute(options: &CliOptions, db: &Path, stdout: &mut dyn Write) -> Result<()> {
     execute_with(options, db, stdout, &|file, bytes| {
         file.write_all(bytes)?;
@@ -1979,9 +1998,12 @@ fn execute_with(
         let plan = parse_plan(&read_limited(&options.file)?)?;
         // Everything that needs no library is settled before it is opened.
         check_plan(&plan)?;
-        if options.dry_run {
+        let _lock = if options.dry_run {
             check_readable_as_is(db)?;
-        }
+            None
+        } else {
+            Some(lock_import(db)?)
+        };
         let mut store = Store::open(db).map_err(friendly)?;
         store.import_plan(&plan, options.dry_run).map_err(friendly)
     })();
@@ -1993,12 +2015,23 @@ fn execute_with(
             let _ = writeln!(stdout, "{json}");
             if let Some((path, file)) = &mut output {
                 if let Err(error) = write_result(file, json.as_bytes()) {
+                    if options.dry_run {
+                        bail!(
+                            "Simulação (--dry-run): nada foi importado. O resultado não pôde ser gravado em {path}: {error}. Pode ter ficado um arquivo incompleto nesse caminho; apague-o antes de reutilizar o nome."
+                        );
+                    }
                     return Err(AppliedButUnreported {
                         path: (*path).clone(),
                         reason: error.to_string(),
                     }
                     .into());
                 }
+            }
+            if !options.dry_run && !result.pendencias_manuais.is_empty() {
+                return Err(AppliedWithManualSteps {
+                    steps: result.pendencias_manuais,
+                }
+                .into());
             }
             Ok(())
         }
@@ -2511,39 +2544,206 @@ mod tests {
         }
     }
 
+    /// The mutual exclusion comes from the system, for the whole import. (The
+    /// lock is a share-mode-0 open, as the window's, so it exists on Windows.)
+    #[cfg(windows)]
     #[test]
-    fn a_second_run_of_the_same_plan_does_not_interleave_with_a_running_one() {
-        let (_dir, mut store) = library();
-        let checked = check_plan(&plan()).unwrap();
-        // Another run holds the reservation (a row "started" with a live lease).
-        assert!(store
-            .reserve_plan_run(&checked.request, &checked.digest, "", "outra-execucao")
-            .unwrap());
-        let before = traces(&store);
-        let said = run_error(&mut store, &plan());
+    fn a_second_import_cannot_take_the_lock_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        drop(Store::open(&db).unwrap());
+        let file = dir.path().join("plano.json");
+        std::fs::write(&file, FIXTURE).unwrap();
+        let options = |dry_run: bool| CliOptions {
+            file: file.to_str().unwrap().to_owned(),
+            dry_run,
+            output: None,
+        };
+        // Another import is running: it holds the lock.
+        let held = lock_import(&db).unwrap();
+        let said = execute(&options(false), &db, &mut Vec::new())
+            .unwrap_err()
+            .to_string();
         assert!(
-            said.contains("já está sendo aplicado por outra execução"),
+            said.contains("Já há uma importação de plano em andamento neste computador")
+                && said.contains("tente de novo quando ela terminar"),
             "{said}"
         );
-        assert_eq!(traces(&store), before, "nothing was written");
-        // A dry run only reads, and reports what is left.
-        assert!(store.import_plan(&plan(), true).unwrap().dry_run);
-        // The reservation of a run that died expires, and the plan resumes.
-        store
-            .conn
-            .execute("UPDATE plan_import_log SET lease_until=0", [])
-            .unwrap();
-        let done = store.import_plan(&plan(), false).unwrap();
-        assert!(done.created);
-        assert_eq!(store.list_tasks().unwrap().len(), 3);
-        // The same run may take its own reservation again.
-        assert!(!store
-            .reserve_plan_run(&checked.request, &checked.digest, "", "outra-execucao")
-            .unwrap());
-        // A run with another digest never takes it.
+        assert!(Store::open(&db)
+            .unwrap()
+            .list_documents("")
+            .unwrap()
+            .is_empty());
+        // A dry run writes nothing, so it does not need the lock.
+        let mut out = Vec::new();
+        execute(&options(true), &db, &mut out).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&out).unwrap()["dry_run"],
+            true
+        );
+        // When the holder ends (the system releases the lock), the import runs.
+        drop(held);
+        execute(&options(false), &db, &mut Vec::new()).unwrap();
+        assert_eq!(
+            Store::open(&db).unwrap().list_documents("").unwrap().len(),
+            1
+        );
+        assert!(lock_import(&db).is_ok(), "released again at the end");
+    }
+
+    #[test]
+    fn a_row_left_started_by_an_interrupted_run_is_resumed_and_has_no_owner_or_expiry() {
+        let (_dir, mut store) = library();
+        let checked = check_plan(&plan()).unwrap();
+        // The run that reserved the request ended without writing more.
         assert!(store
-            .reserve_plan_run(&checked.request, "outro-resumo", "", "x")
+            .reserve_plan_run(&checked.request, &checked.digest, "")
+            .unwrap());
+        let done = store.import_plan(&plan(), false).unwrap();
+        assert!(done.created && done.document.created_now);
+        assert_eq!(store.list_tasks().unwrap().len(), 3);
+        // The same digest reserves again without a new row; another one never.
+        assert!(!store
+            .reserve_plan_run(&checked.request, &checked.digest, "")
+            .unwrap());
+        assert!(store
+            .reserve_plan_run(&checked.request, "outro-resumo", "")
             .is_err());
+        let columns: Vec<String> = store
+            .conn
+            .prepare("SELECT name FROM pragma_table_info('plan_import_log')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(columns
+            .iter()
+            .all(|c| !c.contains("lease") && !c.contains("owner")));
+    }
+
+    #[test]
+    fn the_triage_is_never_inferred_on_a_resume() {
+        let (_dir, mut store) = library();
+        // The record is created; the run dies before its triage uid is kept.
+        fail_receipt_update(&store, "NEW.triage_uid<>''");
+        assert!(store.import_plan(&plan(), false).is_err());
+        stop_failing(&store);
+        let id = store.list_documents("").unwrap()[0].id;
+        let checked = check_plan(&plan()).unwrap();
+        assert_eq!(
+            store
+                .plan_run(&checked.request)
+                .unwrap()
+                .unwrap()
+                .triage_uid,
+            ""
+        );
+        // The automatic triage is purged, and the person adds ONE task of
+        // their own with the action "triar": now the only such task.
+        let automatic: i64 = store
+            .conn
+            .query_row("SELECT id FROM tasks WHERE document_id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        purge(&mut store, Kind::Task, automatic);
+        let theirs = store.save_task(&Task::new(id)).unwrap();
+        let done = store.import_plan(&plan(), false).unwrap();
+        assert_eq!(done.triage, "nao_encontrada");
+        assert!(store
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .any(|t| t.id == theirs && !t.is_done()));
+    }
+
+    #[test]
+    fn a_started_step_is_reported_for_manual_completion_with_its_own_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        let file = dir.path().join("plano.json");
+        std::fs::write(&file, FIXTURE).unwrap();
+        let out = dir.path().join("resultado.json");
+        // The note step is marked as started, and the note is never written.
+        {
+            let mut store = Store::open(&db).unwrap();
+            fail_on(&store, "notes", "1");
+            assert!(store.import_plan(&plan(), false).is_err());
+            stop_failing(&store);
+        }
+        let options = |dry_run: bool, output: Option<&std::path::Path>| CliOptions {
+            file: file.to_str().unwrap().to_owned(),
+            dry_run,
+            output: output.map(|p| p.to_str().unwrap().to_owned()),
+        };
+        let mut stdout = Vec::new();
+        let error = execute(&options(false, Some(&out)), &db, &mut stdout).unwrap_err();
+        let said = error.to_string();
+        assert!(
+            error.downcast_ref::<AppliedWithManualSteps>().is_some()
+                && said.contains("foi aplicado")
+                && said.contains("A nota do registro pode não ter sido gravada"),
+            "{said}"
+        );
+        assert_ne!(EXIT_APPLIED_MANUAL_STEPS, EXIT_APPLIED_UNREPORTED);
+        assert!(![0, 1].contains(&EXIT_APPLIED_MANUAL_STEPS));
+        let printed: Value = serde_json::from_slice(&stdout).unwrap();
+        let written: Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        assert_eq!(printed, written);
+        assert_eq!(printed["ok"], true);
+        assert_eq!(printed["note"], "interrompida_nao_repetida");
+        assert_eq!(printed["pendencias_manuais"].as_array().unwrap().len(), 1);
+        // A simulation applies nothing, so it exits 0 and only lists them.
+        let mut stdout = Vec::new();
+        execute(&options(true, None), &db, &mut stdout).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&stdout).unwrap()["pendencias_manuais"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // A plan applied without leftovers exits 0 (see the other command tests).
+    }
+
+    #[test]
+    fn a_dry_run_whose_result_cannot_be_written_says_nothing_was_imported() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        drop(Store::open(&db).unwrap());
+        let file = dir.path().join("plano.json");
+        std::fs::write(&file, FIXTURE).unwrap();
+        let options = CliOptions {
+            file: file.to_str().unwrap().to_owned(),
+            dry_run: true,
+            output: Some(
+                dir.path()
+                    .join("simulacao.json")
+                    .to_str()
+                    .unwrap()
+                    .to_owned(),
+            ),
+        };
+        let error = execute_with(&options, &db, &mut Vec::new(), &|_, _| {
+            Err(std::io::Error::other("disco cheio"))
+        })
+        .unwrap_err();
+        let said = error.to_string();
+        assert!(
+            error.downcast_ref::<AppliedButUnreported>().is_none()
+                && error.downcast_ref::<AppliedWithManualSteps>().is_none()
+                && said.contains("nada foi importado")
+                && said.contains("disco cheio")
+                && said.contains("arquivo incompleto")
+                && !said.contains("FOI aplicada"),
+            "{said}"
+        );
+        assert!(Store::open(&db)
+            .unwrap()
+            .list_documents("")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -2566,6 +2766,12 @@ mod tests {
                 "queued: {queued}"
             );
             assert_eq!(done.note, "interrompida_nao_repetida");
+            assert_eq!(
+                done.pendencias_manuais.len(),
+                1,
+                "{:?}",
+                done.pendencias_manuais
+            );
             assert_eq!(
                 store.load_document(done.document.id.unwrap()).unwrap().note,
                 "",
