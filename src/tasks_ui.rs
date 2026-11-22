@@ -3068,25 +3068,25 @@ impl TaskPanel {
                                 }
                             });
                             ui.checkbox(&mut self.unplanned_only, "Ainda não planejadas");
-                            if !categories.is_empty() || self.category_filter.is_active() {
-                                if crate::category_ui::category_filter_button(
+                            if (!categories.is_empty() || self.category_filter.is_active())
+                                && crate::category_ui::category_filter_button(
                                     ui,
                                     "tasks",
                                     &mut self.category_filter,
                                     &categories,
-                                ) {
-                                    self.chose(&[crate::task_filters::Field::Categories]);
-                                }
+                                )
+                            {
+                                self.chose(&[crate::task_filters::Field::Categories]);
                             }
-                            if !projects.is_empty() || self.project_filter.is_active() {
-                                if crate::project_ui::project_filter_button(
+                            if (!projects.is_empty() || self.project_filter.is_active())
+                                && crate::project_ui::project_filter_button(
                                     ui,
                                     "tasks",
                                     &mut self.project_filter,
                                     &projects,
-                                ) {
-                                    self.chose(&[crate::task_filters::Field::Project]);
-                                }
+                                )
+                            {
+                                self.chose(&[crate::task_filters::Field::Project]);
                             }
                             if let Some(me) = crate::task_filters::own_name(&actor, &everyone) {
                                 let on = self.attrs.is_mine(me);
