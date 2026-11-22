@@ -2090,8 +2090,12 @@ impl Store {
         let mut att = load_attendance_tx(&tx, attendance_id)?;
         let task_id = match task {
             Some(task) => {
+                // A task without document is accepted whatever the document
+                // of the atendimento is now (it may have been linked while
+                // the task waited to be replayed); it can be linked later.
                 ensure!(
-                    task.id == 0 && att.document_id == task.document_id,
+                    task.id == 0
+                        && (task.document_id.is_none() || att.document_id == task.document_id),
                     "O atendimento mudou de documento; abra-o de novo e repita."
                 );
                 let saved = crate::tasks::write_task(&tx, &actor, task, None)?;
@@ -2118,7 +2122,7 @@ impl Store {
     }
 
     /// Removes one atendimento for good, with its attachments (there is no
-    /// trash for atendimentos). Tasks it created stay with their documents.
+    /// trash for atendimentos). Tasks it created stay (with their documents, or without one).
     /// On a client computer the request goes to the main computer.
     pub fn delete_saiop_attendance(&mut self, id: i64) -> Result<()> {
         if let Some(cfg) = self.client_config()? {
@@ -6627,6 +6631,60 @@ mod tests {
             .unwrap();
         assert_eq!(att.task_ids, vec![task_id]);
     }
+    #[test]
+    fn a_queued_task_without_document_survives_the_atendimento_being_linked_meanwhile() {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut manual = SaiopAttendance::new_manual();
+        manual.reference_raw = "OF-2/2026".into();
+        manual.subject = "Ofício que ganha documento".into();
+        let id = store.save_saiop_attendance(&manual, None).unwrap();
+
+        // The task was made (and queued) while the atendimento had no document.
+        let mut task = Task::standalone();
+        task.title = "Dar andamento".into();
+
+        // Meanwhile another computer linked the atendimento to a document.
+        let receipt = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let mut linked = store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+        linked.document_id = Some(receipt.document_id);
+        store.save_saiop_attendance(&linked, None).unwrap();
+
+        // The replay still creates the task, which stays without document.
+        let task_id = store
+            .write_task_for_saiop(id, Some(&task), "Dar andamento", None)
+            .unwrap()
+            .expect("the task is created");
+        let stored = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == task_id)
+            .unwrap();
+        assert_eq!(stored.document_id, None);
+        let att = store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+        assert_eq!(att.task_ids, vec![task_id]);
+
+        // A task of another document is still refused.
+        let mut wrong = Task::new(receipt.document_id + 1000);
+        wrong.title = "De outro documento".into();
+        assert!(store
+            .write_task_for_saiop(id, Some(&wrong), "De outro documento", None)
+            .is_err());
+    }
+
     #[test]
     fn a_task_created_from_an_atendimento_is_written_with_its_record_or_not_at_all() {
         let dir = TempDir::new().unwrap();

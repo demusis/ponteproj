@@ -13,19 +13,21 @@ pub const STATUSES: [&str; 3] = ["pendente", "em analise", "aguardando"];
 /// The priorities of a task, from the most to the least urgent.
 pub const PRIORITIES: [&str; 4] = ["urgente", "alta", "normal", "baixa"];
 
-/// The name the library gives the person when none was set up.
-const DEFAULT_NAME: &str = "Integrante";
-
-/// Lowercase without accents, to compare names.
+/// The library's own fold, to compare names: lowercase, no accents, one
+/// space between words, none at the ends.
 fn fold(text: &str) -> String {
-    crate::labels::strip_accents(text.trim())
+    crate::labels::fold(text)
 }
 
-/// The person's own name for "Minhas tarefas": the name of the team member of
-/// this computer, unless none was configured.
-pub fn own_name(actor: &str) -> Option<&str> {
+/// The person's own name for "Minhas tarefas". The name of the team member of
+/// this computer is, without a saved one, the Windows user name, which is
+/// often not the name written in the tasks; so the filter is offered only
+/// when some task has exactly this person (`names`, from
+/// [`assignee_names`]) in charge, and it can then give a list.
+pub fn own_name<'a>(actor: &'a str, names: &[String]) -> Option<&'a str> {
     let name = actor.trim();
-    (!name.is_empty() && name != DEFAULT_NAME).then_some(name)
+    let key = fold(name);
+    (!key.is_empty() && names.iter().any(|n| fold(n) == key)).then_some(name)
 }
 
 /// Who the list is narrowed to.
@@ -112,11 +114,13 @@ impl AttrFilter {
     }
 }
 
-/// The names in charge of the tasks still open, once each (the first
-/// spelling met), in alphabetical order.
-pub fn assignee_names(tasks: &[Task]) -> Vec<String> {
+/// The names in charge of the tasks, once each (the first spelling met), in
+/// alphabetical order: of the tasks still open (what the Responsável list
+/// offers) or of all of them (what decides whether a saved name or "Minhas
+/// tarefas" still makes sense).
+pub fn assignee_names(tasks: &[Task], open_only: bool) -> Vec<String> {
     let mut names: Vec<(String, String)> = Vec::new();
-    for task in tasks.iter().filter(|t| !t.is_done()) {
+    for task in tasks.iter().filter(|t| !open_only || !t.is_done()) {
         let name = task.assignee.trim();
         if name.is_empty() {
             continue;
@@ -234,10 +238,10 @@ impl Saved {
     }
 }
 
-/// Where the preferences are kept; none while testing, so a test never
-/// touches the data folder of the person running it.
+/// Where the preferences are kept: the data folder of this computer.
 fn path() -> Option<std::path::PathBuf> {
     if cfg!(test) {
+        // A test never touches the data folder of the person running it.
         return None;
     }
     crate::paths::data_dir()
@@ -245,18 +249,45 @@ fn path() -> Option<std::path::PathBuf> {
         .map(|dir| dir.join("tarefas-filtros.json"))
 }
 
-/// What was kept on this computer; nothing when there is no file or it does
-/// not read.
-pub fn load() -> Option<Saved> {
-    let bytes = std::fs::read(path()?).ok()?;
-    serde_json::from_slice(&bytes).ok()
+/// The bytes of the file.
+pub fn encode(saved: &Saved) -> Option<Vec<u8>> {
+    serde_json::to_vec(saved).ok()
 }
 
-/// Keeps the choices; a failure is of no consequence (they are only a
-/// convenience).
+/// The choices in these bytes; nothing when they do not read.
+pub fn decode(bytes: &[u8]) -> Option<Saved> {
+    serde_json::from_slice(bytes).ok()
+}
+
+/// Whether `now` has to be written, given what was last written or read
+/// (`None`: nothing known yet).
+pub fn needs_saving(baseline: Option<&Saved>, now: &Saved) -> bool {
+    baseline != Some(now)
+}
+
+/// What the file at `path` holds; nothing when there is none or it does not
+/// read.
+pub fn load_from(path: &std::path::Path) -> Option<Saved> {
+    decode(&std::fs::read(path).ok()?)
+}
+
+/// Writes the choices to `path`; a failure is of no consequence (they are
+/// only a convenience).
+pub fn save_to(path: &std::path::Path, saved: &Saved) {
+    if let Some(bytes) = encode(saved) {
+        let _ = crate::atomic_file::write_atomic(path, &bytes);
+    }
+}
+
+/// What was kept on this computer.
+pub fn load() -> Option<Saved> {
+    load_from(&path()?)
+}
+
+/// Keeps the choices on this computer.
 pub fn save(saved: &Saved) {
-    if let (Some(path), Ok(bytes)) = (path(), serde_json::to_vec(saved)) {
-        let _ = crate::atomic_file::write_atomic(&path, &bytes);
+    if let Some(path) = path() {
+        save_to(&path, saved);
     }
 }
 
@@ -323,10 +354,56 @@ mod tests {
     }
 
     #[test]
-    fn the_own_name_is_unknown_until_set_up() {
-        assert_eq!(own_name("Integrante"), None);
-        assert_eq!(own_name("  "), None);
-        assert_eq!(own_name(" Ana Souza "), Some("Ana Souza"));
+    fn my_tasks_is_offered_only_when_some_task_has_my_name() {
+        let names = vec!["Ana  Souza".to_owned(), "Rui".to_owned()];
+        // Without a saved team name the actor is the Windows user name.
+        assert_eq!(own_name("maria.souza", &names), None);
+        assert_eq!(own_name("  ", &names), None);
+        assert_eq!(own_name("Integrante", &names), None);
+        assert_eq!(own_name(" ana souza ", &names), Some("ana souza"));
+        assert_eq!(own_name("ANA SOUZA", &names), Some("ANA SOUZA"));
+        assert_eq!(own_name("Ana Souza", &[]), None);
+        let accented = vec!["José".to_owned()];
+        assert_eq!(own_name("jose", &accented), Some("jose"));
+    }
+
+    #[test]
+    fn the_names_of_all_tasks_include_those_of_done_ones() {
+        let mut done = task("Zeca", "normal", "concluida");
+        done.completed_at = Some("2026-01-01T00:00:00Z".into());
+        let tasks = vec![task("Ana", "normal", "pendente"), done];
+        assert_eq!(assignee_names(&tasks, true), vec!["Ana"]);
+        assert_eq!(assignee_names(&tasks, false), vec!["Ana", "Zeca"]);
+    }
+
+    #[test]
+    fn spaces_inside_a_name_do_not_make_two_names() {
+        let tasks = vec![
+            task("Ana  Souza", "normal", "pendente"),
+            task("Ana Souza", "normal", "pendente"),
+        ];
+        assert_eq!(assignee_names(&tasks, true).len(), 1);
+    }
+
+    #[test]
+    fn the_file_is_written_read_and_only_written_when_it_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("tarefas-filtros.json");
+        assert_eq!(load_from(&file), None, "no file: nothing");
+        let saved = Saved {
+            view: 2,
+            priority: Some("alta".into()),
+            ..Saved::default()
+        };
+        save_to(&file, &saved);
+        assert_eq!(load_from(&file), Some(saved.clone()));
+        std::fs::write(&file, b"not json").unwrap();
+        assert_eq!(load_from(&file), None, "a broken file reads as nothing");
+        assert_eq!(decode(&encode(&saved).unwrap()), Some(saved.clone()));
+
+        assert!(needs_saving(None, &saved));
+        assert!(!needs_saving(Some(&saved), &saved));
+        assert!(needs_saving(Some(&Saved::default()), &saved));
     }
 
     #[test]
@@ -340,7 +417,7 @@ mod tests {
             task("", "normal", "pendente"),
             done,
         ];
-        assert_eq!(assignee_names(&tasks), vec!["ana", "Rui"]);
+        assert_eq!(assignee_names(&tasks, true), vec!["ana", "Rui"]);
     }
 
     #[test]
