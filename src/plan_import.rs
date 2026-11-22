@@ -7,15 +7,21 @@
 //! - Nothing is written until the file has been read, parsed and checked
 //!   without the library (`parse_plan`, `check_plan`), and a dry run writes
 //!   nothing at all, not even the receipt table.
-//! - The receipt (`plan_import_runs`, a LOCAL table: it is not part of the
-//!   synchronised snapshot) holds only what survives a synchronisation: the
-//!   request id, a digest of the canonical plan and how far the run got. The
-//!   record is found through `requests` (request id -> document, which
-//!   travels in snapshots) and the tasks through their uids (derived from
-//!   the request id and the position in the plan). Local ids, the manual
-//!   number and the titles are read again on every run.
-//! - A rerun never recreates what the person deleted and never updates what
-//!   already exists: it creates only what was never created.
+//! - The receipt (`plan_import_log`, a LOCAL table: it is not part of the
+//!   synchronised snapshot) is RESERVED before the first write, in a
+//!   transaction of its own, with the request id UNIQUE. It holds only what
+//!   survives a synchronisation: the request id, a digest of the canonical
+//!   plan, who holds the reservation and how far the run got (step markers
+//!   written before and after each step). The record is found through
+//!   `requests` (request id -> document, which travels in snapshots) and the
+//!   tasks through their uids (derived from the request id and the position
+//!   in the plan). Local ids, the manual number and the titles are read again
+//!   on every run.
+//! - A rerun creates what was not created yet and, normally, leaves alone
+//!   what the person deleted or edited. It is NOT a guarantee in every
+//!   window (see "Limites" in `CONTRIBUINDO.md`): the plan is never one
+//!   transaction, and a task purged for good between its write and its
+//!   progress mark is created again.
 use crate::{
     manual::{ManualFields, KINDS},
     model::{Capture, MAX_CAPTURE_TEXT_BYTES},
@@ -29,7 +35,6 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -793,8 +798,12 @@ pub struct PlanResult {
     pub request_id: String,
     pub dry_run: bool,
     /// Something was written by THIS run (never true for a dry run or for a
-    /// complete plan that was only reported).
+    /// plan that was only reported).
     pub created: bool,
+    /// This computer holds no receipt of the plan, but the library already
+    /// shows its effects: it was applied on another computer of the same
+    /// shared library. Nothing was written here.
+    pub applied_elsewhere: bool,
     /// The library follows a team (shared folder or main computer): ids and
     /// the number are the ones of this copy and may change after the next
     /// synchronisation. `request_id` (for the record) and each task's `uid`
@@ -802,9 +811,16 @@ pub struct PlanResult {
     pub ids_provisional: bool,
     pub document: DocumentOutcome,
     pub tasks: Vec<TaskOutcome>,
+    /// The note of the record: `nao_solicitada`, `sera_feita`, `feita`,
+    /// `interrompida_nao_repetida` (started by a run that was interrupted: it
+    /// is not written again) or `nao_verificavel` (applied elsewhere).
+    pub note: String,
+    /// The categories of the record; same values as `note`.
+    pub categories: String,
     /// `nao_solicitada`, `sera_concluida` (dry run or pending),
-    /// `concluida_agora`, `ja_concluida_antes` (an earlier run did it; the
-    /// task is not touched again) or `nao_encontrada` (no open triage).
+    /// `concluida_agora`, `ja_concluida_antes`, `nao_encontrada` (the
+    /// automatic triage of the record was not found open: nothing was
+    /// concluded), `interrompida_nao_repetida` or `nao_verificavel`.
     pub triage: String,
 }
 
@@ -812,11 +828,50 @@ pub struct PlanResult {
 // The library
 // ---------------------------------------------------------------------------
 
+/// How long a run keeps its reservation of the request id without renewing
+/// it. A run renews it before every step; a run that died frees the id when
+/// this time is over.
+const LEASE_SECS: i64 = 60;
+
+const CHANGED_PLAN: &str = "request_id: este identificador já foi usado por um plano diferente (o conteúdo do arquivo mudou desde a primeira execução). Para repetir o plano use o arquivo original; para um plano novo use um request_id novo.";
+const PLAN_TABLE: &str = "CREATE TABLE IF NOT EXISTS plan_import_log(
+                request_id TEXT PRIMARY KEY,
+                digest TEXT NOT NULL,
+                lease_owner TEXT NOT NULL DEFAULT '',
+                lease_until INTEGER NOT NULL DEFAULT 0,
+                doc_created INTEGER NOT NULL DEFAULT 0,
+                tasks_created INTEGER NOT NULL DEFAULT 0,
+                note_step INTEGER NOT NULL DEFAULT 0,
+                categories_step INTEGER NOT NULL DEFAULT 0,
+                triage_step INTEGER NOT NULL DEFAULT 0,
+                triage_uid TEXT NOT NULL DEFAULT '',
+                target TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )";
+const BUSY_PLAN: &str = "Este plano já está sendo aplicado por outra execução (ou uma execução anterior foi interrompida há menos de 60 segundos). Aguarde um instante e repita o mesmo comando: ele continua de onde parou.";
+
+/// The steps of the record that are written once: 0 not started, 1 started,
+/// 2 done. A step that was started is never performed again, whatever the
+/// person did since (the note or the categories may have been removed on
+/// purpose).
+const STEP_STARTED: i64 = 1;
+const STEP_DONE: i64 = 2;
+/// The triage ended without concluding anything (the automatic task was not
+/// found open).
+const STEP_NOT_FOUND: i64 = 3;
+
+/// The local receipt of a plan.
+#[derive(Clone)]
 struct PlanRun {
     digest: String,
-    document_ready: bool,
+    doc_created: bool,
     tasks_created: usize,
-    triage_done: bool,
+    note_step: i64,
+    categories_step: i64,
+    triage_step: i64,
+    triage_uid: String,
+    /// Stable identity of the document a `document_number` plan targets.
+    target: String,
 }
 struct DocRow {
     id: i64,
@@ -825,7 +880,6 @@ struct DocRow {
 }
 struct TaskRow {
     id: i64,
-    document_id: Option<i64>,
     trashed: bool,
     title: String,
 }
@@ -835,11 +889,61 @@ struct Entry {
     name: String,
     archived: bool,
 }
+/// What is left to do for a plan, and where each item stands.
+struct State {
+    tasks: Vec<(Option<TaskRow>, ItemState)>,
+    doc_state: ItemState,
+    doc: Option<DocRow>,
+    /// The document the NUMBER of the file names now (`document_number`).
+    number_doc: Option<(i64, bool)>,
+    pending_tasks: Vec<usize>,
+    doc_pending: bool,
+    note_pending: bool,
+    categories_pending: bool,
+    triage_pending: bool,
+}
+impl State {
+    fn nothing_pending(&self) -> bool {
+        !self.doc_pending
+            && !self.note_pending
+            && !self.categories_pending
+            && !self.triage_pending
+            && self.pending_tasks.is_empty()
+    }
+}
+#[derive(Default)]
+struct Written {
+    document: bool,
+    content: bool,
+    tasks: Vec<usize>,
+    triage_concluded: bool,
+}
+impl Written {
+    fn any(&self) -> bool {
+        self.document || self.content || !self.tasks.is_empty() || self.triage_concluded
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    text.len().is_multiple_of(2).then_some(())?;
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()
+}
+fn now_secs() -> i64 {
+    chrono::Utc::now().timestamp()
+}
 
 impl Store {
+    // ---- the receipt ---------------------------------------------------------
+
     fn plan_run(&self, request: &str) -> Result<Option<PlanRun>> {
         let table: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='plan_import_runs')",
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='plan_import_log')",
             [],
             |r| r.get(0),
         )?;
@@ -849,60 +953,120 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT digest,document_ready,tasks_created,triage_done FROM plan_import_runs WHERE request_id=?1",
+                "SELECT digest,doc_created,tasks_created,note_step,categories_step,triage_step,triage_uid,target FROM plan_import_log WHERE request_id=?1",
                 [request],
                 |r| {
                     Ok(PlanRun {
                         digest: r.get(0)?,
-                        document_ready: r.get::<_, i64>(1)? != 0,
+                        doc_created: r.get::<_, i64>(1)? != 0,
                         tasks_created: usize::try_from(r.get::<_, i64>(2)?).unwrap_or(0),
-                        triage_done: r.get::<_, i64>(3)? != 0,
+                        note_step: r.get(3)?,
+                        categories_step: r.get(4)?,
+                        triage_step: r.get(5)?,
+                        triage_uid: r.get(6)?,
+                        target: r.get(7)?,
                     })
                 },
             )
             .optional()?)
     }
-    /// Writes the receipt, once, AFTER the first thing was written: a plan
-    /// that failed before that leaves nothing behind and can be corrected
-    /// and run again with the same request id.
-    fn start_plan_run(&mut self, request: &str, digest: &str, document_ready: bool) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS plan_import_runs(
-                request_id TEXT PRIMARY KEY,
-                digest TEXT NOT NULL,
-                document_ready INTEGER NOT NULL DEFAULT 0,
-                tasks_created INTEGER NOT NULL DEFAULT 0,
-                triage_done INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
-            )",
-        )?;
-        tx.execute(
-            "INSERT OR IGNORE INTO plan_import_runs(request_id,digest,document_ready,created_at) VALUES(?1,?2,?3,?4)",
-            rusqlite::params![
-                request,
-                digest,
-                i64::from(document_ready),
-                chrono::Utc::now().to_rfc3339()
-            ],
-        )?;
-        let stored: String = tx.query_row(
-            "SELECT digest FROM plan_import_runs WHERE request_id=?1",
-            [request],
-            |r| r.get(0),
-        )?;
-        ensure!(stored == digest, CHANGED_PLAN);
+    /// Reserves the request id for this run, durably and exclusively, BEFORE
+    /// anything is written: the row (request id, digest of the normalised
+    /// plan, who holds it and until when) is committed in a transaction of its
+    /// own, and the id is UNIQUE. Answers whether the row is new. A row that
+    /// exists with the same digest is resumed unless another run holds it; a
+    /// different digest is refused.
+    fn reserve_plan_run(
+        &mut self,
+        request: &str,
+        digest: &str,
+        target: &str,
+        owner: &str,
+    ) -> Result<bool> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(PLAN_TABLE)?;
+        let held: Option<(String, String, i64)> = tx
+            .query_row(
+                "SELECT digest,lease_owner,lease_until FROM plan_import_log WHERE request_id=?1",
+                [request],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let until = now_secs() + LEASE_SECS;
+        let fresh = match held {
+            None => {
+                tx.execute(
+                    "INSERT INTO plan_import_log(request_id,digest,lease_owner,lease_until,target,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
+                    rusqlite::params![
+                        request,
+                        digest,
+                        owner,
+                        until,
+                        target,
+                        chrono::Utc::now().to_rfc3339()
+                    ],
+                )?;
+                true
+            }
+            Some((stored, holder, lease)) => {
+                ensure!(stored == digest, CHANGED_PLAN);
+                ensure!(holder == owner || lease <= now_secs(), BUSY_PLAN);
+                tx.execute(
+                    "UPDATE plan_import_log SET lease_owner=?2,lease_until=?3 WHERE request_id=?1",
+                    rusqlite::params![request, owner, until],
+                )?;
+                false
+            }
+        };
         tx.commit()?;
+        Ok(fresh)
+    }
+    /// Renews the reservation; fails if another run took it over.
+    fn renew_plan_run(&self, request: &str, owner: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE plan_import_log SET lease_until=?3 WHERE request_id=?1 AND lease_owner=?2",
+            rusqlite::params![request, owner, now_secs() + LEASE_SECS],
+        )?;
+        ensure!(
+            changed == 1,
+            "A reserva deste plano passou para outra execução; esta parou sem gravar mais nada. Repita o comando."
+        );
         Ok(())
     }
-    fn note_plan_progress(&self, request: &str, column: &str, value: i64) -> Result<()> {
-        // `column` is one of ours, never from the file.
+    fn release_plan_run(&self, request: &str, owner: &str) {
+        let _ = self.conn.execute(
+            "UPDATE plan_import_log SET lease_owner='',lease_until=0 WHERE request_id=?1 AND lease_owner=?2",
+            rusqlite::params![request, owner],
+        );
+    }
+    /// Deletes the reservation of a run that wrote nothing at all, so a
+    /// corrected file can use the same request id.
+    fn abandon_plan_run(&self, request: &str, owner: &str) -> Result<()> {
         self.conn.execute(
-            &format!("UPDATE plan_import_runs SET {column}=MAX({column},?2) WHERE request_id=?1"),
+            "DELETE FROM plan_import_log WHERE request_id=?1 AND lease_owner=?2 AND doc_created=0 AND tasks_created=0 AND note_step=0 AND categories_step=0 AND triage_step=0 AND triage_uid=''",
+            rusqlite::params![request, owner],
+        )?;
+        Ok(())
+    }
+    /// `column` is one of ours, never from the file.
+    fn mark_plan(&self, request: &str, column: &str, value: i64) -> Result<()> {
+        self.conn.execute(
+            &format!("UPDATE plan_import_log SET {column}=MAX({column},?2) WHERE request_id=?1"),
             rusqlite::params![request, value],
         )?;
         Ok(())
     }
+    fn set_triage_uid(&self, request: &str, uid: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE plan_import_log SET triage_uid=?2 WHERE request_id=?1",
+            rusqlite::params![request, uid],
+        )?;
+        Ok(())
+    }
+
+    // ---- reading the library -------------------------------------------------
 
     fn doc_row(&self, id: i64) -> Result<Option<DocRow>> {
         let blob: Option<Vec<u8>> = self
@@ -945,7 +1109,6 @@ impl Store {
             };
         Ok(Some(TaskRow {
             id,
-            document_id,
             trashed,
             title: task.title,
         }))
@@ -961,6 +1124,75 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+    /// A stable identity of a document, for a plan that targets it by number:
+    /// the id of a request that created it (it travels in the snapshots) or,
+    /// when it has none, its identity hash (for an official document the
+    /// number itself, which does not change).
+    fn identity_of_document(&self, id: i64) -> Result<String> {
+        let request: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT request_id FROM requests WHERE document_id=?1 ORDER BY request_id LIMIT 1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(request) = request {
+            return Ok(format!("request:{request}"));
+        }
+        let hash: Vec<u8> = self.conn.query_row(
+            "SELECT identity_hash FROM documents WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        Ok(format!("identity:{}", hex(&hash)))
+    }
+    fn resolve_target(&self, target: &str) -> Result<Option<i64>> {
+        if let Some(request) = target.strip_prefix("request:") {
+            return self.document_of_request(request);
+        }
+        let Some(hash) = target.strip_prefix("identity:").and_then(unhex) else {
+            return Ok(None);
+        };
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM documents WHERE identity_hash=?1",
+                [hash],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+    /// The only task of a document that was just created: the automatic
+    /// triage the record is born with (see `ensure_document_task`). It is the
+    /// only thing that tells it from a task the person adds later with the
+    /// same title and action.
+    fn sole_automatic_task(&self, document_id: i64) -> Result<Option<String>> {
+        let rows: Vec<(String, Vec<u8>)> = self
+            .conn
+            .prepare("SELECT uid,payload FROM tasks WHERE document_id=?1")?
+            .query_map([document_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let [(uid, blob)] = rows.as_slice() else {
+            return Ok(None);
+        };
+        let task: Task = serde_json::from_slice(&crate::protection::unseal(blob)?)?;
+        Ok((task.action == "triar").then(|| uid.clone()))
+    }
+    /// Whether the library already shows an effect of the plan: its record's
+    /// `requests` row, or a task with one of its uids (in use or in the
+    /// Lixeira).
+    fn plan_effects(&self, plan: &Plan, checked: &Checked) -> Result<bool> {
+        if plan.document.is_some() && self.document_of_request(&checked.request)?.is_some() {
+            return Ok(true);
+        }
+        for task in &checked.tasks {
+            if self.task_row(&task.uid)?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Categories (or projects) by name, accents and case ignored; a uid is
@@ -994,7 +1226,11 @@ impl Store {
             ))),
             n => Err(invalid(format!(
                 "{field}: {n} {what}s se chamam \"{wanted}\"; informe o uid da escolhida ({}).",
-                active.iter().map(|e| e.uid.as_str()).collect::<Vec<_>>().join(", ")
+                active
+                    .iter()
+                    .map(|e| e.uid.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ))),
         }
     }
@@ -1026,8 +1262,7 @@ impl Store {
         &self,
         plan: &Plan,
         tasks: &mut [Task],
-        pending: &[usize],
-        document_too: bool,
+        state: &State,
     ) -> Result<Vec<String>> {
         let categories: Vec<Entry> = self
             .list_categories()?
@@ -1039,7 +1274,7 @@ impl Store {
             })
             .collect();
         let mut document_categories = Vec::new();
-        if let (true, Some(doc)) = (document_too, &plan.document) {
+        if let (true, Some(doc)) = (state.categories_pending, &plan.document) {
             document_categories = Self::resolve_all(
                 &doc.categories,
                 &categories,
@@ -1056,7 +1291,7 @@ impl Store {
                 name: p.name,
             })
             .collect();
-        for &index in pending {
+        for &index in &state.pending_tasks {
             let input = &plan.tasks[index];
             let path = format!("tasks[{}]", index + 1);
             tasks[index].categories = Self::resolve_all(
@@ -1079,49 +1314,40 @@ impl Store {
         Ok(document_categories)
     }
 
-    /// Where the document of the plan stands, from stable identities only.
-    fn look_at_document(
+    // ---- where everything stands ---------------------------------------------
+
+    /// Where the plan stands, from stable identities only. `elsewhere`: the
+    /// effects are in the library but this computer holds no receipt, so what
+    /// is not there was not made here (and is not made now).
+    fn plan_state(
         &self,
         plan: &Plan,
         checked: &Checked,
         run: Option<&PlanRun>,
-        tasks: &[(Option<TaskRow>, ItemState)],
-    ) -> Result<(ItemState, Option<DocRow>)> {
-        let found = if plan.document.is_some() {
-            self.document_of_request(&checked.request)?
-                .map(|id| self.doc_row(id))
-                .transpose()?
-                .flatten()
-        } else {
-            let number = plan.document_number.as_deref().unwrap_or_default();
-            match self.document_by_number_any(number)? {
-                Some((id, _)) => self.doc_row(id)?,
-                // The number may have changed with a synchronisation: the
-                // tasks of this plan know the document they hang from.
-                None => match tasks
-                    .iter()
-                    .filter_map(|(row, _)| row.as_ref().and_then(|r| r.document_id))
-                    .next()
-                {
-                    Some(id) if run.is_some() => self.doc_row(id)?,
-                    _ => None,
-                },
-            }
+        elsewhere: bool,
+    ) -> Result<State> {
+        let new_document = plan.document.is_some();
+        let number_doc = match &plan.document_number {
+            Some(number) => self.document_by_number_any(number)?,
+            None => None,
         };
-        Ok(match found {
-            Some(row) if row.trashed => (ItemState::Trashed, Some(row)),
-            Some(row) => (ItemState::Present, Some(row)),
-            None if run.is_some() => (ItemState::Missing, None),
-            None => (ItemState::ToCreate, None),
-        })
-    }
-    fn look_at_tasks(
-        &self,
-        checked: &Checked,
-        run: Option<&PlanRun>,
-    ) -> Result<Vec<(Option<TaskRow>, ItemState)>> {
+        let found = if new_document {
+            self.document_of_request(&checked.request)?
+        } else if let Some(run) = run.filter(|r| !r.target.is_empty()) {
+            self.resolve_target(&run.target)?
+        } else {
+            number_doc.map(|(id, _)| id)
+        };
+        let doc = found.map(|id| self.doc_row(id)).transpose()?.flatten();
+        let created_before = run.is_some_and(|r| !new_document || r.doc_created);
+        let doc_state = match &doc {
+            Some(row) if row.trashed => ItemState::Trashed,
+            Some(_) => ItemState::Present,
+            None if elsewhere || created_before => ItemState::Missing,
+            None => ItemState::ToCreate,
+        };
         let done = run.map_or(0, |r| r.tasks_created);
-        checked
+        let tasks: Vec<_> = checked
             .tasks
             .iter()
             .enumerate()
@@ -1130,209 +1356,353 @@ impl Store {
                 let state = match &row {
                     Some(r) if r.trashed => ItemState::Trashed,
                     Some(_) => ItemState::Present,
-                    None if index < done => ItemState::Missing,
+                    None if elsewhere || index < done => ItemState::Missing,
                     None => ItemState::ToCreate,
                 };
                 Ok((row, state))
             })
-            .collect()
+            .collect::<Result<_>>()?;
+        let pending_tasks = if elsewhere {
+            Vec::new()
+        } else {
+            tasks
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, state))| *state == ItemState::ToCreate)
+                .map(|(index, _)| index)
+                .collect()
+        };
+        let step = |select: fn(&PlanRun) -> i64| run.map_or(0, select);
+        let doc_plan = plan.document.as_ref();
+        Ok(State {
+            doc_pending: !elsewhere && new_document && doc_state == ItemState::ToCreate,
+            note_pending: !elsewhere
+                && doc_plan.is_some_and(|d| !d.note.is_empty())
+                && step(|r| r.note_step) == 0,
+            categories_pending: !elsewhere
+                && doc_plan.is_some_and(|d| !d.categories.is_empty())
+                && step(|r| r.categories_step) == 0,
+            triage_pending: !elsewhere
+                && new_document
+                && plan.complete_triage
+                && step(|r| r.triage_step) == 0,
+            pending_tasks,
+            tasks,
+            doc_state,
+            doc,
+            number_doc,
+        })
     }
 
-    /// The current state of everything the plan names, plus whatever the
-    /// triage did in this run.
-    #[allow(clippy::too_many_arguments)]
+    /// The answer: the current state of everything the plan names, plus what
+    /// this run did.
     fn plan_outcome(
         &self,
         plan: &Plan,
         checked: &Checked,
         dry_run: bool,
-        created_now: &Written,
-        triage: &str,
+        written: &Written,
+        elsewhere: bool,
     ) -> Result<PlanResult> {
         let run = self.plan_run(&checked.request)?;
-        let task_rows = self.look_at_tasks(checked, run.as_ref())?;
-        let (doc_state, doc_row) =
-            self.look_at_document(plan, checked, run.as_ref(), &task_rows)?;
+        let state = self.plan_state(plan, checked, run.as_ref(), elsewhere)?;
+        let new_document = plan.document.is_some();
         let document = DocumentOutcome {
-            state: doc_state,
-            state_label: doc_state.label().to_owned(),
+            state: state.doc_state,
+            state_label: state.doc_state.label().to_owned(),
             existing: plan.document_number.is_some(),
-            id: doc_row.as_ref().map(|d| d.id),
-            number: doc_row.as_ref().map(|d| d.capture.document_number.clone()),
-            title: doc_row
+            id: state.doc.as_ref().map(|d| d.id),
+            number: state
+                .doc
+                .as_ref()
+                .map(|d| d.capture.document_number.clone()),
+            title: state
+                .doc
                 .as_ref()
                 .map(|d| d.capture.title.clone())
                 .or_else(|| plan.document.as_ref().map(|d| d.title.trim().to_owned())),
-            created_now: created_now.document,
+            created_now: written.document,
         };
-        let tasks = task_rows
+        let tasks = state
+            .tasks
             .into_iter()
             .enumerate()
-            .map(|(index, (row, state))| TaskOutcome {
+            .map(|(index, (row, item))| TaskOutcome {
                 index: index + 1,
                 uid: checked.tasks[index].uid.clone(),
-                state,
-                state_label: state.label().to_owned(),
+                state: item,
+                state_label: item.label().to_owned(),
                 id: row.as_ref().map(|r| r.id),
                 title: row
                     .map(|r| r.title)
                     .unwrap_or_else(|| checked.tasks[index].title.clone()),
-                created_now: created_now.tasks.contains(&index),
+                created_now: written.tasks.contains(&index),
             })
             .collect();
+        let doc_plan = plan.document.as_ref();
+        let write_step = |wanted: bool, select: fn(&PlanRun) -> i64| -> &'static str {
+            if !wanted {
+                "nao_solicitada"
+            } else if elsewhere {
+                "nao_verificavel"
+            } else {
+                match run.as_ref().map_or(0, select) {
+                    0 => "sera_feita",
+                    STEP_STARTED => "interrompida_nao_repetida",
+                    _ => "feita",
+                }
+            }
+        };
+        let triage = if !(new_document && plan.complete_triage) {
+            "nao_solicitada"
+        } else if elsewhere {
+            "nao_verificavel"
+        } else {
+            match run.as_ref().map_or(0, |r| r.triage_step) {
+                0 => "sera_concluida",
+                STEP_STARTED => "interrompida_nao_repetida",
+                STEP_DONE if written.triage_concluded => "concluida_agora",
+                STEP_DONE => "ja_concluida_antes",
+                _ => "nao_encontrada",
+            }
+        };
         Ok(PlanResult {
             ok: true,
             request_id: checked.request.clone(),
             dry_run,
-            created: created_now.any(),
+            created: written.any(),
+            applied_elsewhere: elsewhere,
             ids_provisional: self.client_config()?.is_some(),
             document,
             tasks,
+            note: write_step(doc_plan.is_some_and(|d| !d.note.is_empty()), |r| {
+                r.note_step
+            })
+            .to_owned(),
+            categories: write_step(doc_plan.is_some_and(|d| !d.categories.is_empty()), |r| {
+                r.categories_step
+            })
+            .to_owned(),
             triage: triage.to_owned(),
         })
     }
 
-    /// Runs a plan: validates it, and creates what has never been created.
+    /// Refuses, before writing, a plan that still has something to create
+    /// but whose record is not where the receipt says.
+    fn guard_pending(&self, plan: &Plan, state: &State, run: Option<&PlanRun>) -> Result<()> {
+        let Some(run) = run else {
+            return Ok(());
+        };
+        match state.doc_state {
+            ItemState::Trashed => bail!(
+                "O plano ainda tem o que criar, mas o documento dele está na Lixeira. Restaure-o (ou conclua o que falta à mão) e repita o comando; nada é criado numa Lixeira."
+            ),
+            ItemState::Missing => {
+                if let (Some(number), Some((other, _))) =
+                    (&plan.document_number, state.number_doc)
+                {
+                    let held = self
+                        .doc_row(other)?
+                        .map(|d| format!("{} — {}", d.capture.document_number, d.capture.title))
+                        .unwrap_or_default();
+                    bail!(
+                        "document_number: o documento original deste plano não existe mais, mas o número {} agora pertence a outro documento ({held}). Nada foi gravado, para não colocar as tarefas no documento errado. Crie o que falta à mão.",
+                        number.trim()
+                    );
+                }
+                bail!(
+                    "O plano ainda tinha o que criar, mas o documento dele não existe mais (foi excluído definitivamente) e não é recriado. Use um request_id novo para um plano novo."
+                );
+            }
+            _ => {}
+        }
+        if let (Some(number), Some((other, _)), Some(doc)) =
+            (&plan.document_number, state.number_doc, &state.doc)
+        {
+            if !run.target.is_empty() && other != doc.id {
+                bail!(
+                    "document_number: o documento deste plano agora é {} — {}, mas o número {} que o arquivo usa passou a pertencer a outro documento. Nada foi gravado, para não colocar as tarefas no documento errado. Crie o que falta à mão.",
+                    doc.capture.document_number,
+                    doc.capture.title,
+                    number.trim()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The document of a first run on an existing record, as the app finds it
+    /// by number; the two ways it can be missing are told apart.
+    fn existing_document_to_use(&self, plan: &Plan) -> Result<i64> {
+        let number = plan.document_number.as_deref().unwrap_or_default().trim();
+        match self.document_by_number_any(number)? {
+            Some((id, false)) => Ok(id),
+            Some((_, true)) => bail!(
+                "document_number: o documento {number} está na Lixeira; restaure-o antes de criar tarefas nele."
+            ),
+            None => bail!(
+                "document_number: nenhum documento com o número {number} neste acervo (a busca ignora maiúsculas, minúsculas e espaços). Confira o número na ficha do documento."
+            ),
+        }
+    }
+
+    /// The answer for a plan that this computer holds no receipt for but
+    /// whose effects are in the library: it was applied on another computer
+    /// of the same shared library. Nothing is written.
+    fn applied_elsewhere(
+        &self,
+        plan: &Plan,
+        checked: &Checked,
+        dry_run: bool,
+    ) -> Result<PlanResult> {
+        if let (Some(doc), Some(id)) = (&plan.document, self.document_of_request(&checked.request)?)
+        {
+            if let Some(row) = self.doc_row(id)? {
+                let kind = row.capture.metadata.get("manual_kind").map(String::as_str);
+                ensure!(
+                    row.capture.title == doc.title.trim()
+                        && row.capture.text == doc.text.trim_end()
+                        && kind == Some(doc.kind.as_str()),
+                    "request_id: este identificador já foi usado, neste acervo, para outro registro ({}). Use um request_id novo para este plano.",
+                    row.capture.document_number
+                );
+            }
+        }
+        self.plan_outcome(plan, checked, dry_run, &Written::default(), true)
+    }
+
+    // ---- running a plan --------------------------------------------------------
+
+    /// Runs a plan: validates it, reserves its request id, and creates what
+    /// has never been created.
     ///
     /// The order is: the checks that need no library; the receipt of an
-    /// earlier run (a finished plan is only reported, with the current state
-    /// of each item); the references by name (only for what is still to be
-    /// created); then the writes. Nothing is written for an invalid plan or
-    /// a dry run.
+    /// earlier run (a plan with nothing left is only reported, with the
+    /// current state of each item); the references by name (only for what is
+    /// still to be created); the reservation of the request id (committed,
+    /// exclusive, before any effect); then the writes. Nothing is written for
+    /// an invalid plan or a dry run. A run that fails before writing anything
+    /// gives the reservation back.
     ///
     /// Atomicity, by mode (see `CONTRIBUINDO.md`): on a library used alone or
     /// on the main computer the tasks are one transaction (all or none); in
     /// shared-folder mode and on a computer connected to a main computer each
     /// task is its own change (queued or sent, like the screens do), so an
     /// interruption can leave some of them, and the same command finishes
-    /// the job.
+    /// the job. The plan as a whole is never one transaction.
     pub fn import_plan(&mut self, plan: &Plan, dry_run: bool) -> Result<PlanResult> {
         let checked = check_plan(plan)?;
         let run = self.plan_run(&checked.request)?;
         if let Some(run) = &run {
             ensure!(run.digest == checked.digest, CHANGED_PLAN);
         }
-        let task_rows = self.look_at_tasks(&checked, run.as_ref())?;
-        let (doc_state, doc_row) =
-            self.look_at_document(plan, &checked, run.as_ref(), &task_rows)?;
+        if run.is_none() && self.plan_effects(plan, &checked)? {
+            return self.applied_elsewhere(plan, &checked, dry_run);
+        }
+        let mut target = String::new();
+        if run.is_none() && plan.document_number.is_some() {
+            target = self.identity_of_document(self.existing_document_to_use(plan)?)?;
+        }
+        let state = self.plan_state(plan, &checked, run.as_ref(), false)?;
+        if state.nothing_pending() {
+            return self.plan_outcome(plan, &checked, dry_run, &Written::default(), false);
+        }
+        self.guard_pending(plan, &state, run.as_ref())?;
+        // The references are settled before anything is reserved, so a plan
+        // that names a category wrongly leaves no trace at all.
+        self.resolve_references(plan, &mut checked.tasks.clone(), &state)?;
+        if dry_run {
+            return self.plan_outcome(plan, &checked, true, &Written::default(), false);
+        }
+
+        let owner = uuid::Uuid::new_v4().to_string();
+        let reserved_now =
+            self.reserve_plan_run(&checked.request, &checked.digest, &target, &owner)?;
+        let result = self.apply_plan(plan, &checked, &owner);
+        if result.is_err() && reserved_now && !self.plan_effects(plan, &checked).unwrap_or(true) {
+            let _ = self.abandon_plan_run(&checked.request, &owner);
+        }
+        self.release_plan_run(&checked.request, &owner);
+        result
+    }
+
+    fn apply_plan(&mut self, plan: &Plan, checked: &Checked, owner: &str) -> Result<PlanResult> {
+        let request = checked.request.as_str();
+        // What the reservation found may differ from what was read before it.
+        let run = self
+            .plan_run(request)?
+            .context("A reserva do plano não foi encontrada.")?;
+        let state = self.plan_state(plan, checked, Some(&run), false)?;
+        let mut written = Written::default();
+        if state.nothing_pending() {
+            return self.plan_outcome(plan, checked, false, &written, false);
+        }
+        self.guard_pending(plan, &state, Some(&run))?;
+        let mut tasks = checked.tasks.clone();
+        let document_categories = self.resolve_references(plan, &mut tasks, &state)?;
         let new_document = plan.document.is_some();
 
-        // A request id that the library already knows without a receipt is
-        // an interrupted run of this plan, or someone else's id.
-        if let (None, Some(row), Some(doc)) = (&run, &doc_row, &plan.document) {
-            let kind = row.capture.metadata.get("manual_kind").map(String::as_str);
-            ensure!(
-                row.capture.title == doc.title.trim()
-                    && row.capture.text == doc.text.trim_end()
-                    && kind == Some(doc.kind.as_str()),
-                "request_id: este identificador já foi usado, neste acervo, para outro registro ({}). Use um request_id novo para este plano.",
-                row.capture.document_number
-            );
-        }
-        if run.is_none() && !new_document {
-            let number = plan.document_number.as_deref().unwrap_or_default().trim();
-            match doc_state {
-                ItemState::Present => {}
-                ItemState::Trashed => bail!(
-                    "document_number: o documento {number} está na Lixeira; restaure-o antes de criar tarefas nele."
-                ),
-                _ => bail!(
-                    "document_number: nenhum documento com o número {number} neste acervo (a busca ignora maiúsculas, minúsculas e espaços). Confira o número na ficha do documento."
-                ),
-            }
-        }
-
-        let done = run.as_ref().map_or(0, |r| r.tasks_created);
-        let pending_tasks: Vec<usize> = task_rows
-            .iter()
-            .enumerate()
-            .filter(|(index, (_, state))| {
-                *state == ItemState::ToCreate && (run.is_none() || *index >= done)
-            })
-            .map(|(index, _)| index)
-            .collect();
-        let document_pending = new_document
-            && (doc_state == ItemState::ToCreate
-                || run.as_ref().is_some_and(|r| !r.document_ready));
-        let triage_pending =
-            new_document && plan.complete_triage && !run.as_ref().is_some_and(|r| r.triage_done);
-        let nothing_to_do = !document_pending && pending_tasks.is_empty() && !triage_pending;
-
-        if nothing_to_do {
-            let triage = triage_label(plan, new_document, true);
-            return self.plan_outcome(plan, &checked, dry_run, &Written::default(), triage);
-        }
-        // Something is left to create: the record has to be there to hold it.
-        if run.is_some() {
-            match doc_state {
-                ItemState::Trashed => bail!(
-                    "O plano ainda tem o que criar, mas o documento dele está na Lixeira. Restaure-o (ou conclua o que falta à mão) e repita o comando; nada é criado numa Lixeira."
-                ),
-                ItemState::Missing => bail!(
-                    "O plano ainda tinha o que criar, mas o documento dele não existe mais (foi excluído definitivamente) e não é recriado. Use um request_id novo para um plano novo."
-                ),
-                _ => {}
-            }
-        }
-
-        let mut tasks = checked.tasks.clone();
-        let document_categories =
-            self.resolve_references(plan, &mut tasks, &pending_tasks, document_pending)?;
-        if dry_run {
-            let triage = triage_label(plan, new_document, false);
-            return self.plan_outcome(plan, &checked, true, &Written::default(), triage);
-        }
-
-        // ---- writes ------------------------------------------------------
-        let mut written = Written::default();
-        let mut receipt_exists = run.is_some();
         let document_id = if new_document {
             let record = checked
                 .record
                 .as_ref()
                 .expect("a plan with document has its record");
-            let id = if doc_state == ItemState::ToCreate {
-                let created = self
+            let id = if state.doc_pending {
+                self.renew_plan_run(request, owner)?;
+                match self
                     .create_record_with_attachments(record, &[])
-                    .map_err(|e| anyhow!("document: não foi possível criar o registro: {e}"))?;
-                match created {
+                    .map_err(|e| anyhow!("document: não foi possível criar o registro: {e}"))?
+                {
                     Created::New { document_id, .. } => {
                         written.document = true;
                         document_id
                     }
+                    // The reservation is ours, so this is the record an
+                    // earlier run of this very plan made.
                     Created::Already { document_id } => document_id,
                 }
             } else {
-                doc_row.as_ref().expect("a present document has its row").id
+                state
+                    .doc
+                    .as_ref()
+                    .expect("a present document has its row")
+                    .id
             };
-            if !receipt_exists {
-                self.start_plan_run(&checked.request, &checked.digest, false)?;
-                receipt_exists = true;
+            if !run.doc_created {
+                self.mark_plan(request, "doc_created", 1)?;
             }
-            if run.as_ref().is_none_or(|r| !r.document_ready) {
-                // Only into what is still empty: never over what the person
-                // wrote since an interrupted run.
-                let doc = plan.document.as_ref().expect("new document");
-                if !doc.note.is_empty() && self.load_document(id)?.note.is_empty() {
-                    self.save_note(id, &doc.note)?;
-                    written.document_content = true;
+            if run.triage_uid.is_empty() && plan.complete_triage {
+                if let Some(uid) = self.sole_automatic_task(id)? {
+                    self.set_triage_uid(request, &uid)?;
                 }
-                if !document_categories.is_empty() && self.document_categories(id)?.is_empty() {
-                    self.set_document_categories(id, &document_categories)?;
-                    written.document_content = true;
-                }
-                self.note_plan_progress(&checked.request, "document_ready", 1)?;
+            }
+            let doc = plan.document.as_ref().expect("new document");
+            if state.note_pending {
+                self.renew_plan_run(request, owner)?;
+                self.mark_plan(request, "note_step", STEP_STARTED)?;
+                self.save_note(id, &doc.note)?;
+                self.mark_plan(request, "note_step", STEP_DONE)?;
+                written.content = true;
+            }
+            if state.categories_pending {
+                self.renew_plan_run(request, owner)?;
+                self.mark_plan(request, "categories_step", STEP_STARTED)?;
+                self.set_document_categories(id, &document_categories)?;
+                self.mark_plan(request, "categories_step", STEP_DONE)?;
+                written.content = true;
             }
             id
         } else {
-            doc_row
+            state
+                .doc
                 .as_ref()
                 .expect("an existing document was checked")
                 .id
         };
 
-        if !pending_tasks.is_empty() {
-            let mut to_write: Vec<(usize, Task)> = pending_tasks
+        if !state.pending_tasks.is_empty() {
+            let to_write: Vec<(usize, Task)> = state
+                .pending_tasks
                 .iter()
                 .map(|&index| {
                     let mut task = tasks[index].clone();
@@ -1342,6 +1712,7 @@ impl Store {
                 .collect();
             if self.client_config()?.is_none() {
                 // One transaction for all of them: every task or none.
+                self.renew_plan_run(request, owner)?;
                 let batch: Vec<Task> = to_write.iter().map(|(_, task)| task.clone()).collect();
                 self.save_repeated_tasks_counted(&batch).map_err(|e| {
                     anyhow!(
@@ -1351,101 +1722,59 @@ impl Store {
                 written
                     .tasks
                     .extend(to_write.iter().map(|(index, _)| *index));
-                if !receipt_exists {
-                    self.start_plan_run(&checked.request, &checked.digest, true)?;
-                }
             } else {
-                for (index, task) in to_write.drain(..) {
-                    self.save_task(&task).map_err(|e| {
+                for (index, task) in &to_write {
+                    self.renew_plan_run(request, owner)?;
+                    self.save_task(task).map_err(|e| {
                         invalid(format!(
-                            "tasks[{}]: não foi possível gravar a tarefa: {e}. As tarefas anteriores já foram gravadas; repita o mesmo comando para continuar de onde parou, sem duplicar nada.",
+                            "tasks[{}]: não foi possível gravar a tarefa: {e}. As tarefas anteriores já foram gravadas; repita o mesmo comando para continuar de onde parou.",
                             index + 1
                         ))
                     })?;
-                    written.tasks.push(index);
-                    if !receipt_exists {
-                        self.start_plan_run(&checked.request, &checked.digest, !new_document)?;
-                        receipt_exists = true;
-                    }
-                    self.note_plan_progress(&checked.request, "tasks_created", index as i64 + 1)?;
+                    written.tasks.push(*index);
+                    self.mark_plan(request, "tasks_created", *index as i64 + 1)?;
                 }
             }
-            self.note_plan_progress(
-                &checked.request,
-                "tasks_created",
-                checked.tasks.len() as i64,
-            )?;
-        } else if receipt_exists {
-            self.note_plan_progress(
-                &checked.request,
-                "tasks_created",
-                checked.tasks.len() as i64,
-            )?;
+            self.mark_plan(request, "tasks_created", checked.tasks.len() as i64)?;
+        } else if run.tasks_created < checked.tasks.len() {
+            self.mark_plan(request, "tasks_created", checked.tasks.len() as i64)?;
         }
 
-        // The triage is completed last, when the tasks exist: a record whose
+        // The triage is concluded last, when the tasks exist: a record whose
         // only task is concluded would look finished to the team meanwhile.
-        let mut triage = triage_label(plan, new_document, true);
-        if triage_pending {
-            triage = self.complete_automatic_triage(document_id, &checked)?;
-            if triage == "concluida_agora" {
-                written.document_content = true;
-            }
-            self.note_plan_progress(&checked.request, "triage_done", 1)?;
+        if state.triage_pending {
+            self.renew_plan_run(request, owner)?;
+            self.mark_plan(request, "triage_step", STEP_STARTED)?;
+            let (step, concluded) = self.conclude_automatic_triage(request)?;
+            self.mark_plan(request, "triage_step", step)?;
+            written.triage_concluded = concluded;
         }
-        self.plan_outcome(plan, &checked, false, &written, triage)
+        self.plan_outcome(plan, checked, false, &written, false)
     }
 
-    /// Concludes the triage task the record was born with: the open task of
-    /// the document with the action "triar" that has the lowest id and is not
-    /// one of the plan's own.
-    fn complete_automatic_triage(
-        &mut self,
-        document_id: i64,
-        checked: &Checked,
-    ) -> Result<&'static str> {
-        let own: BTreeSet<i64> = checked
-            .tasks
-            .iter()
-            .filter_map(|t| self.task_row(&t.uid).ok().flatten().map(|r| r.id))
-            .collect();
-        let Some(id) = Store::triage_task_in(&self.conn, document_id)? else {
-            return Ok("nao_encontrada");
+    /// Concludes the automatic triage of the record this plan created, and
+    /// only that task: the one whose uid was kept when the record was made.
+    /// If it is not found open, nothing is concluded.
+    fn conclude_automatic_triage(&mut self, request: &str) -> Result<(i64, bool)> {
+        let uid = self
+            .plan_run(request)?
+            .map(|r| r.triage_uid)
+            .unwrap_or_default();
+        if uid.is_empty() {
+            return Ok((STEP_NOT_FOUND, false));
+        }
+        let Some(row) = self.task_row(&uid)?.filter(|r| !r.trashed) else {
+            return Ok((STEP_NOT_FOUND, false));
         };
-        if own.contains(&id) {
-            return Ok("nao_encontrada");
+        let open = self
+            .list_tasks()?
+            .into_iter()
+            .any(|t| t.id == row.id && !t.is_done());
+        if !open {
+            return Ok((STEP_NOT_FOUND, false));
         }
-        let Some(task) = self.list_tasks()?.into_iter().find(|t| t.id == id) else {
-            return Ok("nao_encontrada");
-        };
-        if task.is_done() {
-            return Ok("ja_concluida_antes");
-        }
-        self.complete_task(id)?;
-        Ok("concluida_agora")
-    }
-}
-
-const CHANGED_PLAN: &str = "request_id: este identificador já foi usado por um plano diferente (o conteúdo do arquivo mudou desde a primeira execução). Para repetir o plano use o arquivo original; para um plano novo use um request_id novo.";
-
-#[derive(Default)]
-struct Written {
-    document: bool,
-    document_content: bool,
-    tasks: Vec<usize>,
-}
-impl Written {
-    fn any(&self) -> bool {
-        self.document || self.document_content || !self.tasks.is_empty()
-    }
-}
-fn triage_label(plan: &Plan, new_document: bool, settled: bool) -> &'static str {
-    if !new_document || !plan.complete_triage {
-        "nao_solicitada"
-    } else if settled {
-        "ja_concluida_antes"
-    } else {
-        "sera_concluida"
+        self.complete_task(row.id)?;
+        Ok((STEP_DONE, true))
     }
 }
 
@@ -1541,16 +1870,35 @@ fn read_limited(file: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// `--saida` only names a file that does not exist yet (so it can never be
-/// the library or anything else of the person), in a folder that does.
-fn check_output(path: &str) -> Result<()> {
-    let path = Path::new(path);
-    ensure!(
-        !path.exists(),
-        "O arquivo de saída {} já existe; informe um arquivo novo (ele nunca é sobrescrito).",
-        path.display()
-    );
-    let folder = path
+/// Exit code of a plan that WAS applied but whose result could not be
+/// written to the `--saida` file (the JSON is on the standard output).
+pub const EXIT_APPLIED_UNREPORTED: i32 = 3;
+
+/// The import was applied, but the result could not be written where
+/// `--saida` said. It must never be reported as a plain failure.
+#[derive(Debug)]
+pub struct AppliedButUnreported {
+    pub path: String,
+    pub reason: String,
+}
+impl std::fmt::Display for AppliedButUnreported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "A importação FOI aplicada, mas o resultado não pôde ser gravado em {}: {}. O resultado completo está na saída padrão. Não a repita por engano: repetir o mesmo comando só informa o estado atual.",
+            self.path, self.reason
+        )
+    }
+}
+impl std::error::Error for AppliedButUnreported {}
+
+/// `--saida` names a file that must not exist yet (so it can never be the
+/// library or anything else of the person). It is created exclusively
+/// BEFORE the library is touched: a plan that cannot report its result is not
+/// applied.
+fn create_output(path: &str) -> Result<std::fs::File> {
+    let target = Path::new(path);
+    let folder = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
@@ -1559,7 +1907,23 @@ fn check_output(path: &str) -> Result<()> {
         "A pasta do arquivo de saída ({}) não existe.",
         folder.display()
     );
-    Ok(())
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                anyhow!(
+                    "O arquivo de saída {} já existe; informe um arquivo novo (ele nunca é sobrescrito). Nada foi importado.",
+                    target.display()
+                )
+            } else {
+                anyhow!(
+                    "Não foi possível criar o arquivo de saída {}: {error}. Nada foi importado.",
+                    target.display()
+                )
+            }
+        })
 }
 
 /// A dry run must not change the library: it refuses a library that the
@@ -1584,15 +1948,33 @@ fn check_readable_as_is(db: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The command: reads the file, validates it, runs the plan on the library
-/// at `db` and writes the result as JSON to `stdout` (and to `--saida`). On
-/// failure the error is returned (the caller prints it to the error output
-/// and exits 1) and, when `--saida` was given, written there too as
-/// `{"ok":false,"erro":"..."}`.
+/// The command: creates the `--saida` file, reads the file, validates it,
+/// runs the plan on the library at `db` and prints the result as JSON to
+/// `stdout` (and writes it to `--saida`). On failure the error is returned
+/// (the caller prints it to the error output and exits 1) and, when `--saida`
+/// was given, written there too as `{"ok":false,"erro":"..."}`. A plan that
+/// was applied but whose result could not be written to `--saida` returns
+/// [`AppliedButUnreported`] (exit code [`EXIT_APPLIED_UNREPORTED`]), after the
+/// JSON went to `stdout`.
 pub fn execute(options: &CliOptions, db: &Path, stdout: &mut dyn Write) -> Result<()> {
-    if let Some(output) = &options.output {
-        check_output(output)?;
-    }
+    execute_with(options, db, stdout, &|file, bytes| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    })
+}
+
+/// [`execute`] with the way the result reaches the `--saida` file as a
+/// parameter (the tests make it fail).
+fn execute_with(
+    options: &CliOptions,
+    db: &Path,
+    stdout: &mut dyn Write,
+    write_result: &dyn Fn(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> Result<()> {
+    let mut output = match &options.output {
+        Some(path) => Some((path, create_output(path)?)),
+        None => None,
+    };
     let outcome = (|| -> Result<PlanResult> {
         let plan = parse_plan(&read_limited(&options.file)?)?;
         // Everything that needs no library is settled before it is opened.
@@ -1603,23 +1985,32 @@ pub fn execute(options: &CliOptions, db: &Path, stdout: &mut dyn Write) -> Resul
         let mut store = Store::open(db).map_err(friendly)?;
         store.import_plan(&plan, options.dry_run).map_err(friendly)
     })();
-    let json = match &outcome {
-        Ok(result) => serde_json::to_string(result)?,
-        Err(error) => serde_json::to_string(&serde_json::json!({
-            "ok": false,
-            "erro": format!("{error:#}"),
-        }))?,
-    };
-    if let Some(output) = &options.output {
-        crate::atomic_file::write_atomic(Path::new(output), json.as_bytes())
-            .with_context(|| format!("Não foi possível gravar o resultado em {output}"))?;
+    match outcome {
+        Ok(result) => {
+            let json = serde_json::to_string(&result)?;
+            // A console that is not there (the release build) is not a
+            // failure of a plan that was already written.
+            let _ = writeln!(stdout, "{json}");
+            if let Some((path, file)) = &mut output {
+                if let Err(error) = write_result(file, json.as_bytes()) {
+                    return Err(AppliedButUnreported {
+                        path: (*path).clone(),
+                        reason: error.to_string(),
+                    }
+                    .into());
+                }
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if let Some((_, file)) = &mut output {
+                let report = serde_json::json!({"ok": false, "erro": format!("{error:#}")});
+                // Best effort: the error itself is what the caller gets.
+                let _ = write_result(file, report.to_string().as_bytes());
+            }
+            Err(error)
+        }
     }
-    if outcome.is_ok() {
-        // A console that is not there (the release build) is not a failure of
-        // a plan that was already written.
-        let _ = writeln!(stdout, "{json}");
-    }
-    outcome.map(|_| ())
 }
 
 /// `ponteproj.exe --import-plan ...` (the arguments after the command).
@@ -1634,6 +2025,7 @@ mod tests {
     use super::*;
     use crate::intranet::{HostServer, IntranetConfig, IntranetMode};
     use crate::trash::Target;
+    use std::collections::BTreeSet;
 
     const FIXTURE: &str = include_str!("../tests/fixtures/import-plan-exemplo.json");
     const REQUEST: &str = "47f3f62f-404c-4931-ae04-bc7eb1108c07";
@@ -1688,22 +2080,33 @@ mod tests {
     fn run_error(store: &mut Store, plan: &Plan) -> String {
         store.import_plan(plan, false).unwrap_err().to_string()
     }
-    /// Everything an invalid plan or a dry run must not touch.
-    fn traces(store: &Store) -> (i64, usize, usize, usize, usize, bool) {
+    fn receipt_table(store: &Store) -> bool {
+        store
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='plan_import_log')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+    /// Everything an invalid plan or a dry run must not touch (the last
+    /// element is the number of rows of the receipt table).
+    fn traces(store: &Store) -> (i64, usize, usize, usize, usize, i64) {
         (
             store.cabinet_revision().unwrap(),
             store.list_team_events(500).unwrap().len(),
             store.list_offline_outbox().unwrap().len(),
             store.list_documents("").unwrap().len(),
             store.list_tasks().unwrap().len(),
-            store
-                .conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='plan_import_runs')",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap(),
+            if receipt_table(store) {
+                store
+                    .conn
+                    .query_row("SELECT count(*) FROM plan_import_log", [], |r| r.get(0))
+                    .unwrap()
+            } else {
+                0
+            },
         )
     }
     fn ids(result: &PlanResult) -> Vec<Option<i64>> {
@@ -1881,7 +2284,7 @@ mod tests {
     }
 
     #[test]
-    fn ids_and_the_number_are_read_again_when_the_local_ids_changed() {
+    fn ids_and_the_number_are_read_again_after_the_local_ids_are_rewritten_by_sql() {
         let (_dir, mut store) = library();
         let first = store.import_plan(&plan(), false).unwrap();
         // What a synchronisation does: the same items under other local ids.
@@ -1914,7 +2317,8 @@ mod tests {
     }
 
     #[test]
-    fn the_same_request_with_another_plan_is_refused_and_an_equal_file_is_the_same_plan() {
+    fn once_the_receipt_exists_another_plan_with_the_same_request_is_refused_and_an_equal_file_is_the_same_plan(
+    ) {
         let (_dir, mut store) = library();
         store.import_plan(&plan(), false).unwrap();
         let mut other = plan();
@@ -1956,6 +2360,10 @@ mod tests {
             bad.tasks[0].due_date = "22/11/2026".into();
             assert!(run_error(&mut store, &bad).contains("tasks[1].due_date"));
             assert_eq!(traces(&store), before, "queued: {queued}");
+            assert!(
+                !receipt_table(&store),
+                "not even the table, queued: {queued}"
+            );
 
             // A failure of the very first write leaves nothing either.
             fail_on(&store, "documents", "1");
@@ -1991,6 +2399,10 @@ mod tests {
                 .all(|t| t.state == ItemState::ToCreate && t.id.is_none()));
             assert_eq!(dry.triage, "sera_concluida");
             assert_eq!(traces(&store), before, "queued: {queued}");
+            assert!(
+                !receipt_table(&store),
+                "not even the table, queued: {queued}"
+            );
 
             // After the real run, a dry run only reports.
             let real = store.import_plan(&plan(), false).unwrap();
@@ -2004,8 +2416,138 @@ mod tests {
 
     // ---- interruptions --------------------------------------------------------
 
+    /// Makes a write of the receipt fail (a process that died right there).
+    fn fail_receipt_update(store: &Store, when: &str) {
+        store.conn.execute_batch(PLAN_TABLE).unwrap();
+        store
+            .conn
+            .execute_batch(&format!(
+                "CREATE TRIGGER falha_simulada BEFORE UPDATE ON plan_import_log WHEN {when} BEGIN SELECT RAISE(ABORT,'falha simulada'); END;"
+            ))
+            .unwrap();
+    }
+
     #[test]
-    fn a_run_interrupted_after_the_record_is_finished_by_the_same_command() {
+    fn a_failure_exactly_between_the_record_and_the_next_receipt_update_cannot_mix_two_plans() {
+        for queued in [false, true] {
+            let (_dir, mut store) = library();
+            if queued {
+                shared_folder(&mut store);
+            }
+            // The record is created, then the receipt update that follows it dies.
+            fail_receipt_update(&store, "NEW.doc_created=1");
+            assert!(store.import_plan(&plan(), false).is_err());
+            stop_failing(&store);
+            assert_eq!(store.list_documents("").unwrap().len(), 1);
+            assert_eq!(store.list_tasks().unwrap().len(), 1, "only the triage");
+
+            // Another plan with the same request id (same title, text and
+            // type, other tasks) is refused: the reservation holds the digest.
+            let mut other = plan();
+            other.tasks[0].title = "Outra tarefa".into();
+            other.document.as_mut().unwrap().origin = "Outra origem".into();
+            let said = run_error(&mut store, &other);
+            assert!(said.contains("plano diferente"), "{said}");
+            assert_eq!(store.list_tasks().unwrap().len(), 1);
+
+            // The same plan finds its record by the request and finishes.
+            let done = store.import_plan(&plan(), false).unwrap();
+            assert!(
+                done.created && !done.document.created_now,
+                "queued: {queued}"
+            );
+            assert_eq!(store.list_documents("").unwrap().len(), 1);
+            assert_eq!(store.list_tasks().unwrap().len(), 3);
+            assert_eq!(done.triage, "concluida_agora");
+        }
+    }
+
+    #[test]
+    fn a_request_reserved_by_a_run_that_died_right_after_the_reservation_refuses_another_plan() {
+        let (_dir, mut store) = library();
+        // The record cannot be created, and the run dies before it can give
+        // the reservation back (the delete fails too).
+        fail_on(&store, "documents", "1");
+        store.conn.execute_batch(PLAN_TABLE).unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER sem_apagar BEFORE DELETE ON plan_import_log BEGIN SELECT RAISE(ABORT,'morreu'); END;",
+            )
+            .unwrap();
+        assert!(store.import_plan(&plan(), false).is_err());
+        store.conn.execute_batch("DROP TRIGGER sem_apagar").unwrap();
+        stop_failing(&store);
+        assert_eq!(traces(&store).5, 1, "the reservation is there");
+        assert!(store.list_documents("").unwrap().is_empty());
+
+        let mut other = plan();
+        other.tasks[1].title = "Outro plano, mesmo request_id".into();
+        let said = run_error(&mut store, &other);
+        assert!(said.contains("plano diferente"), "{said}");
+        assert!(store.list_documents("").unwrap().is_empty());
+
+        // The original plan goes on from the reservation.
+        let done = store.import_plan(&plan(), false).unwrap();
+        assert!(done.created && done.document.created_now);
+        assert_eq!(store.list_tasks().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_run_that_fails_before_any_effect_gives_the_request_back() {
+        for queued in [false, true] {
+            let (_dir, mut store) = library();
+            if queued {
+                shared_folder(&mut store);
+            }
+            fail_on(&store, "documents", "1");
+            assert!(store.import_plan(&plan(), false).is_err());
+            assert_eq!(traces(&store).5, 0, "the reservation was deleted");
+            stop_failing(&store);
+            // The id can be used for another (corrected) plan.
+            let mut corrected = plan();
+            corrected.tasks[1].title = "Resposta corrigida".into();
+            assert!(store.import_plan(&corrected, false).unwrap().created);
+        }
+    }
+
+    #[test]
+    fn a_second_run_of_the_same_plan_does_not_interleave_with_a_running_one() {
+        let (_dir, mut store) = library();
+        let checked = check_plan(&plan()).unwrap();
+        // Another run holds the reservation (a row "started" with a live lease).
+        assert!(store
+            .reserve_plan_run(&checked.request, &checked.digest, "", "outra-execucao")
+            .unwrap());
+        let before = traces(&store);
+        let said = run_error(&mut store, &plan());
+        assert!(
+            said.contains("já está sendo aplicado por outra execução"),
+            "{said}"
+        );
+        assert_eq!(traces(&store), before, "nothing was written");
+        // A dry run only reads, and reports what is left.
+        assert!(store.import_plan(&plan(), true).unwrap().dry_run);
+        // The reservation of a run that died expires, and the plan resumes.
+        store
+            .conn
+            .execute("UPDATE plan_import_log SET lease_until=0", [])
+            .unwrap();
+        let done = store.import_plan(&plan(), false).unwrap();
+        assert!(done.created);
+        assert_eq!(store.list_tasks().unwrap().len(), 3);
+        // The same run may take its own reservation again.
+        assert!(!store
+            .reserve_plan_run(&checked.request, &checked.digest, "", "outra-execucao")
+            .unwrap());
+        // A run with another digest never takes it.
+        assert!(store
+            .reserve_plan_run(&checked.request, "outro-resumo", "", "x")
+            .is_err());
+    }
+
+    #[test]
+    fn a_note_whose_step_was_started_is_never_written_again() {
         for queued in [false, true] {
             let (_dir, mut store) = library();
             if queued {
@@ -2016,7 +2558,6 @@ mod tests {
             fail_on(&store, "notes", "1");
             assert!(store.import_plan(&input, false).is_err());
             stop_failing(&store);
-            // The record exists, nothing else.
             assert_eq!(store.list_documents("").unwrap().len(), 1);
             assert_eq!(store.list_tasks().unwrap().len(), 1);
             let done = store.import_plan(&input, false).unwrap();
@@ -2024,18 +2565,159 @@ mod tests {
                 done.created && !done.document.created_now,
                 "queued: {queued}"
             );
-            assert_eq!(store.list_documents("").unwrap().len(), 1);
-            assert_eq!(store.list_tasks().unwrap().len(), 3);
+            assert_eq!(done.note, "interrompida_nao_repetida");
             assert_eq!(
                 store.load_document(done.document.id.unwrap()).unwrap().note,
-                "Nota do plano"
+                "",
+                "not written again"
             );
+            assert_eq!(store.list_tasks().unwrap().len(), 3);
             assert_eq!(done.triage, "concluida_agora");
+            // And a later run still says so.
+            let again = store.import_plan(&input, false).unwrap();
+            assert!(!again.created);
+            assert_eq!(again.note, "interrompida_nao_repetida");
         }
     }
 
     #[test]
-    fn a_run_interrupted_in_the_middle_of_the_tasks_finishes_without_duplicates() {
+    fn a_note_the_person_removed_between_an_interrupted_run_and_the_rerun_stays_removed() {
+        let (_dir, mut store) = library();
+        let mut input = plan();
+        input.document.as_mut().unwrap().note = "Nota do plano".into();
+        // The note is written and marked done; the run dies before the next step.
+        store
+            .save_category(&crate::categories::Category::new("Atenção", 1))
+            .unwrap();
+        input.document.as_mut().unwrap().categories = vec!["Atenção".into()];
+        fail_receipt_update(&store, "NEW.categories_step=1");
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        let id = store.list_documents("").unwrap()[0].id;
+        assert_eq!(store.load_document(id).unwrap().note, "Nota do plano");
+        // The person removes it on purpose.
+        store.save_note(id, "").unwrap();
+        let done = store.import_plan(&input, false).unwrap();
+        assert_eq!(done.note, "feita");
+        assert_eq!(
+            store.load_document(id).unwrap().note,
+            "",
+            "not written again"
+        );
+        assert_eq!(done.categories, "feita");
+        assert_eq!(store.document_categories(id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn categories_the_person_removed_after_a_started_step_are_not_applied_again() {
+        let (_dir, mut store) = library();
+        let mut input = plan();
+        store
+            .save_category(&crate::categories::Category::new("Atenção", 1))
+            .unwrap();
+        input.document.as_mut().unwrap().categories = vec!["Atenção".into()];
+        // The categories are written; marking the step done dies.
+        fail_receipt_update(&store, "NEW.categories_step=2");
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        let id = store.list_documents("").unwrap()[0].id;
+        assert_eq!(store.document_categories(id).unwrap().len(), 1);
+        store.set_document_categories(id, &[]).unwrap();
+        let done = store.import_plan(&input, false).unwrap();
+        assert_eq!(done.categories, "interrompida_nao_repetida");
+        assert!(store.document_categories(id).unwrap().is_empty());
+        assert_eq!(store.list_tasks().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn only_the_automatic_triage_of_the_record_is_concluded() {
+        let (_dir, mut store) = library();
+        // The run dies before the triage step.
+        fail_receipt_update(&store, "NEW.triage_step=1");
+        assert!(store.import_plan(&plan(), false).is_err());
+        stop_failing(&store);
+        let id = store.list_documents("").unwrap()[0].id;
+        // The automatic triage is purged, and the person adds another task
+        // "Triar documento" with the action "triar" (what the form proposes).
+        let checked = check_plan(&plan()).unwrap();
+        let uid = store
+            .plan_run(&checked.request)
+            .unwrap()
+            .unwrap()
+            .triage_uid;
+        assert!(!uid.is_empty());
+        let automatic = store.task_row(&uid).unwrap().unwrap().id;
+        purge(&mut store, Kind::Task, automatic);
+        let theirs = store.save_task(&Task::new(id)).unwrap();
+        let done = store.import_plan(&plan(), false).unwrap();
+        assert_eq!(done.triage, "nao_encontrada");
+        let open: Vec<_> = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| !t.is_done())
+            .map(|t| t.id)
+            .collect();
+        assert!(open.contains(&theirs), "the person's task is still open");
+        assert_eq!(open.len(), 3, "theirs and the two of the plan");
+        let again = store.import_plan(&plan(), false).unwrap();
+        assert_eq!(again.triage, "nao_encontrada");
+        assert!(!again.created);
+    }
+
+    #[test]
+    fn a_task_written_before_its_progress_mark_is_not_recreated_while_it_is_in_the_trash() {
+        let input = big_plan(4);
+        let (_dir, mut store) = library();
+        shared_folder(&mut store);
+        // Task 2 is written; the progress mark that follows it dies.
+        fail_receipt_update(&store, "NEW.tasks_created=2");
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        let second = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Tarefa 2")
+            .unwrap();
+        trash(&mut store, Kind::Task, second.id);
+        let done = store.import_plan(&input, false).unwrap();
+        assert_eq!(done.tasks[1].state, ItemState::Trashed);
+        let fresh: Vec<_> = done
+            .tasks
+            .iter()
+            .filter(|t| t.created_now)
+            .map(|t| t.index)
+            .collect();
+        assert_eq!(fresh, vec![3, 4]);
+        assert_eq!(store.trash_entries().unwrap().len(), 1);
+    }
+
+    /// The accepted limit: only the PERMANENT purge of a task that was written
+    /// before its progress mark is forgotten, and then the rerun creates it again.
+    #[test]
+    fn known_limit_a_task_purged_for_good_before_its_progress_mark_is_created_again() {
+        let input = big_plan(4);
+        let (_dir, mut store) = library();
+        shared_folder(&mut store);
+        fail_receipt_update(&store, "NEW.tasks_created=2");
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        let second = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Tarefa 2")
+            .unwrap();
+        purge(&mut store, Kind::Task, second.id);
+        let done = store.import_plan(&input, false).unwrap();
+        assert_eq!(done.tasks[1].state, ItemState::Present);
+        assert!(done.tasks[1].created_now, "created again: the known limit");
+    }
+
+    #[test]
+    fn a_task_write_that_fails_before_the_next_task_is_finished_by_the_same_command_without_duplicates(
+    ) {
         let input = big_plan(5);
         // One transaction: none of the tasks is there after a failure.
         let (_dir, mut store) = library();
@@ -2078,7 +2760,7 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_run_does_not_recreate_a_task_the_person_deleted_after_the_interruption() {
+    fn a_task_purged_after_its_progress_was_marked_is_not_recreated_by_the_rerun() {
         let input = big_plan(5);
         let (_dir, mut store) = library();
         shared_folder(&mut store);
@@ -2235,7 +2917,8 @@ mod tests {
     }
 
     #[test]
-    fn a_connected_computer_sends_the_record_and_each_task_to_the_main_one() {
+    fn a_connected_computer_sends_the_record_and_each_task_to_the_main_one_and_a_rerun_only_reports(
+    ) {
         let (_dir, host, _server, mut client) = team();
         let first = client.import_plan(&plan(), false).unwrap();
         assert!(first.created && first.ids_provisional);
@@ -2253,7 +2936,8 @@ mod tests {
     }
 
     #[test]
-    fn a_computer_that_cannot_reach_the_main_one_queues_like_the_screens_do() {
+    fn a_computer_that_cannot_reach_the_main_one_queues_the_changes_locally_without_replaying_them()
+    {
         let (_dir, mut client) = library();
         client
             .save_intranet_config(&IntranetConfig {
@@ -2343,7 +3027,7 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_plan_finds_its_record_by_its_tasks_after_the_number_changed() {
+    fn an_existing_plan_finds_its_record_by_its_stable_identity_after_the_number_changed() {
         let (_dir, mut store) = library();
         let first = store.import_plan(&plan(), false).unwrap();
         let number = first.document.number.clone().unwrap();
@@ -2901,5 +3585,334 @@ mod tests {
         let checked = check_plan(&plan).unwrap();
         assert_eq!(checked.tasks.len(), 2);
         assert_eq!(checked.request, REQUEST);
+    }
+
+    // ---- another computer, a renumbered target, the output file ---------------
+
+    #[test]
+    fn a_plan_applied_on_another_computer_is_reported_and_nothing_is_written() {
+        // This library holds the effects of the plan but no receipt: what a
+        // second computer of the same shared library sees after a sync.
+        let (_dir, mut store) = library();
+        let first = store.import_plan(&plan(), false).unwrap();
+        store
+            .conn
+            .execute_batch("DROP TABLE plan_import_log")
+            .unwrap();
+        // One task is in the Lixeira, another was deleted for good there.
+        trash(&mut store, Kind::Task, first.tasks[0].id.unwrap());
+        let before = traces(&store);
+        for dry in [false, true] {
+            let answer = store.import_plan(&plan(), dry).unwrap();
+            assert!(answer.applied_elsewhere && !answer.created);
+            assert_eq!(answer.dry_run, dry);
+            assert_eq!(answer.document.state, ItemState::Present);
+            assert_eq!(answer.document.id, first.document.id);
+            assert_eq!(answer.tasks[0].state, ItemState::Trashed);
+            assert_eq!(answer.tasks[1].state, ItemState::Present);
+            assert_eq!(answer.note, "nao_verificavel");
+            assert_eq!(answer.triage, "nao_verificavel");
+            assert_eq!(traces(&store), before);
+            assert!(!receipt_table(&store), "no receipt is written for it");
+        }
+        purge(&mut store, Kind::Task, first.tasks[1].id.unwrap());
+        let answer = store.import_plan(&plan(), false).unwrap();
+        assert!(answer.applied_elsewhere);
+        assert_eq!(answer.tasks[1].state, ItemState::Missing, "not recreated");
+        assert_eq!(store.list_tasks().unwrap().len(), 1, "only the triage");
+    }
+
+    #[test]
+    fn a_plan_on_an_existing_document_is_recognised_as_applied_elsewhere_by_its_task_uids() {
+        let (_dir, mut store) = library();
+        let first = store.import_plan(&plan(), false).unwrap();
+        let input = existing_plan(&first.document.number.clone().unwrap());
+        let done = store.import_plan(&input, false).unwrap();
+        assert!(done.created);
+        store
+            .conn
+            .execute_batch("DROP TABLE plan_import_log")
+            .unwrap();
+        let before = traces(&store);
+        let answer = store.import_plan(&input, false).unwrap();
+        assert!(answer.applied_elsewhere && !answer.created);
+        assert!(answer.tasks.iter().all(|t| t.state == ItemState::Present));
+        assert_eq!(ids(&answer), ids(&done));
+        assert_eq!(traces(&store), before);
+    }
+
+    #[test]
+    fn a_request_id_that_the_library_knows_for_another_record_is_refused_not_adopted() {
+        let (_dir, mut store) = library();
+        let mut foreign = check_plan(&plan()).unwrap().record.unwrap();
+        foreign.fields.title = "Outro registro qualquer".into();
+        store.create_record_with_attachments(&foreign, &[]).unwrap();
+        let said = run_error(&mut store, &plan());
+        assert!(said.contains("outro registro"), "{said}");
+        assert_eq!(store.list_tasks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_renumbered_target_whose_old_number_belongs_to_another_document_is_refused_before_writing()
+    {
+        let (_dir, mut store) = library();
+        let a = store.import_plan(&plan(), false).unwrap();
+        let mut other = plan();
+        other.request_id = uuid::Uuid::new_v4().to_string();
+        other.document.as_mut().unwrap().title = "Outro documento do acervo".into();
+        let b = store.import_plan(&other, false).unwrap();
+        let number = a.document.number.clone().unwrap();
+        // A plan on document A, interrupted after its first task.
+        shared_folder(&mut store);
+        let input = existing_plan(&number);
+        fail_on(&store, "tasks", "(SELECT count(*) FROM tasks)>=7");
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        let before = store.list_tasks().unwrap().len();
+        // A synchronisation renumbers A, and the old number is now B's.
+        let old_hash: Vec<u8> = store
+            .conn
+            .query_row(
+                "SELECT identity_hash FROM documents WHERE id=?1",
+                [a.document.id.unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE documents SET identity_hash=randomblob(32) WHERE id=?1",
+                [a.document.id.unwrap()],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE documents SET identity_hash=?2 WHERE id=?1",
+                rusqlite::params![b.document.id.unwrap(), old_hash],
+            )
+            .unwrap();
+        let said = run_error(&mut store, &input);
+        assert!(
+            said.contains("document_number")
+                && said.contains("outro documento")
+                && said.contains("Nada foi gravado"),
+            "{said}"
+        );
+        assert_eq!(store.list_tasks().unwrap().len(), before);
+        assert!(store
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .filter(|t| t.document_id == b.document.id)
+            .all(|t| !t.title.starts_with("Tarefa ")));
+    }
+
+    #[test]
+    fn a_target_that_is_gone_while_its_number_belongs_to_another_document_is_refused() {
+        let (_dir, mut store) = library();
+        let a = store.import_plan(&plan(), false).unwrap();
+        let mut other = plan();
+        other.request_id = uuid::Uuid::new_v4().to_string();
+        other.document.as_mut().unwrap().title = "Outro documento do acervo".into();
+        let b = store.import_plan(&other, false).unwrap();
+        let input = existing_plan(&a.document.number.clone().unwrap());
+        shared_folder(&mut store);
+        fail_on(&store, "tasks", "(SELECT count(*) FROM tasks)>=7");
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        let old_hash: Vec<u8> = store
+            .conn
+            .query_row(
+                "SELECT identity_hash FROM documents WHERE id=?1",
+                [a.document.id.unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        purge(&mut store, Kind::Document, a.document.id.unwrap());
+        store
+            .conn
+            .execute(
+                "UPDATE documents SET identity_hash=?2 WHERE id=?1",
+                rusqlite::params![b.document.id.unwrap(), old_hash],
+            )
+            .unwrap();
+        let before = store.list_tasks().unwrap().len();
+        let said = run_error(&mut store, &input);
+        assert!(
+            said.contains("original deste plano não existe mais")
+                && said.contains("outro documento"),
+            "{said}"
+        );
+        assert_eq!(store.list_tasks().unwrap().len(), before);
+    }
+
+    #[test]
+    fn a_target_without_a_creation_request_is_identified_by_its_identity_hash() {
+        let (_dir, mut store) = library();
+        let a = store.import_plan(&plan(), false).unwrap();
+        let id = a.document.id.unwrap();
+        // A document with no request row (an older import).
+        store
+            .conn
+            .execute("DELETE FROM requests WHERE document_id=?1", [id])
+            .unwrap();
+        let identity = store.identity_of_document(id).unwrap();
+        assert!(identity.starts_with("identity:"), "{identity}");
+        assert_eq!(store.resolve_target(&identity).unwrap(), Some(id));
+        let by_request = {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO requests(request_id,document_id,capture_id) SELECT '11111111-1111-4111-8111-111111111111',?1,latest_capture_id FROM documents WHERE id=?1",
+                    [id],
+                )
+                .unwrap();
+            store.identity_of_document(id).unwrap()
+        };
+        assert_eq!(by_request, "request:11111111-1111-4111-8111-111111111111");
+        assert_eq!(store.resolve_target(&by_request).unwrap(), Some(id));
+    }
+
+    #[test]
+    fn the_output_file_is_created_before_the_import_and_an_unwritable_one_does_not_hide_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        let file = dir.path().join("plano.json");
+        std::fs::write(&file, FIXTURE).unwrap();
+        let out = dir.path().join("resultado.json");
+        let options = CliOptions {
+            file: file.to_str().unwrap().to_owned(),
+            dry_run: false,
+            output: Some(out.to_str().unwrap().to_owned()),
+        };
+        // The result cannot be written once the import is done.
+        let mut stdout = Vec::new();
+        let error = execute_with(&options, &db, &mut stdout, &|_, _| {
+            Err(std::io::Error::other("disco cheio"))
+        })
+        .unwrap_err();
+        let said = error.to_string();
+        assert!(
+            error.downcast_ref::<AppliedButUnreported>().is_some()
+                && said.contains("FOI aplicada")
+                && said.contains("disco cheio")
+                && said.contains("resultado.json"),
+            "{said}"
+        );
+        assert_ne!(EXIT_APPLIED_UNREPORTED, 1);
+        assert_ne!(EXIT_APPLIED_UNREPORTED, 0);
+        // The JSON went to the standard output, and the import is in the library.
+        let printed: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(printed["created"], true);
+        let store = Store::open(&db).unwrap();
+        assert_eq!(store.list_documents("").unwrap().len(), 1);
+        // The file had been created exclusively before the import.
+        assert!(out.exists());
+
+        // A file that already exists stops everything before the library is touched.
+        let db2 = dir.path().join("outro.sqlite3");
+        let again = CliOptions {
+            output: options.output.clone(),
+            ..CliOptions {
+                file: options.file.clone(),
+                dry_run: false,
+                output: None,
+            }
+        };
+        let said = execute(&again, &db2, &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("já existe") && said.contains("Nada foi importado"),
+            "{said}"
+        );
+        assert!(!db2.exists(), "the library was not even opened");
+
+        // A path that cannot be created fails early too.
+        let blocked = CliOptions {
+            output: Some(
+                dir.path()
+                    .join("pasta-que-nao-existe/r.json")
+                    .to_str()
+                    .unwrap()
+                    .to_owned(),
+            ),
+            ..CliOptions {
+                file: options.file.clone(),
+                dry_run: false,
+                output: None,
+            }
+        };
+        assert!(execute(&blocked, &db2, &mut Vec::new()).is_err());
+        assert!(!db2.exists());
+    }
+
+    // ---- what a replayed SaveTask does (it bounds the two-computers case) -------
+
+    /// The replay of a queued `SaveTask` whose uid already exists (what the
+    /// main computer or a shared folder does when two computers ran the same
+    /// plan) does not duplicate the task: equal content answers the existing
+    /// id; different content goes through `build_merged_mutation` with no
+    /// common ancestor, and the replayed values win the scalar fields where
+    /// they differ.
+    #[test]
+    fn a_replayed_save_task_with_an_existing_uid_merges_into_it_and_the_plan_values_win() {
+        let (_dir, mut store) = library();
+        let first = store.import_plan(&plan(), false).unwrap();
+        let id = first.tasks[0].id.unwrap();
+        let checked = check_plan(&plan()).unwrap();
+        let mut replayed = checked.tasks[0].clone();
+        replayed.document_id = first.document.id;
+        let replay = |store: &mut Store, task: &Task| {
+            store
+                .execute_mutation(
+                    "OUTRO",
+                    crate::intranet::IntranetMutation::SaveTask {
+                        task: task.clone(),
+                        expected_version: None,
+                        no_project: false,
+                    },
+                )
+                .unwrap()
+        };
+        // Same content: nothing changes, the existing id comes back.
+        let before = store.list_tasks().unwrap();
+        match replay(&mut store, &replayed) {
+            crate::intranet::MutationReply::Id(found) => assert_eq!(found, id),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(store.list_tasks().unwrap(), before);
+
+        // Someone edited the task meanwhile.
+        let mut edited = before.iter().find(|t| t.id == id).unwrap().clone();
+        edited.title = "Título editado pela pessoa".into();
+        edited.priority = "baixa".into();
+        edited.notes = "Observação da pessoa".into();
+        edited.status = "concluida".into();
+        edited.checklist.push((false, "Item da pessoa".into()));
+        store.save_task(&edited).unwrap();
+        replay(&mut store, &replayed);
+        let merged = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        assert_eq!(store.list_tasks().unwrap().len(), 3, "no duplicate");
+        // The plan's value wins where both differ: title, priority and status.
+        assert_eq!(merged.title, "Examinar a solicitação");
+        assert_eq!(merged.priority, "alta");
+        assert_eq!(merged.status, "pendente");
+        // Text and lists are merged, so the person's additions stay.
+        assert!(
+            merged.notes.contains("Observação da pessoa"),
+            "{}",
+            merged.notes
+        );
+        assert!(merged
+            .checklist
+            .iter()
+            .any(|(_, text)| text == "Item da pessoa"));
     }
 }
