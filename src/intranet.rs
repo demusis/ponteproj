@@ -1277,6 +1277,7 @@ static HOST_REQUESTS_IN_FLIGHT: std::sync::atomic::AtomicUsize =
 pub(crate) struct InFlight(&'static std::sync::atomic::AtomicUsize);
 
 impl InFlight {
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub(crate) fn sync() -> Self {
         SYNCS_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Self(&SYNCS_IN_FLIGHT)
@@ -2445,6 +2446,7 @@ impl Store {
 
     /// The setting of a substituted library's safety copy that is not a good
     /// copy, for the person (drained by the synchronization's report).
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub(crate) fn take_replacement_notes(&self) -> Vec<String> {
         std::mem::take(&mut *self.replacement_notes.borrow_mut())
     }

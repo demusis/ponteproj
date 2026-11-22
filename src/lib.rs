@@ -36,6 +36,8 @@ pub mod native;
 /// How the program reaches the internet: certificates, proxy, failures, the connection test.
 pub mod netdiag;
 pub mod paths;
+/// `--import-plan`: a record and its tasks from one JSON file (the desktop command line).
+#[cfg(feature = "desktop")]
 pub mod plan_import;
 /// "Cópia portátil (com senha)": the library in one `.pontecopia` file.
 pub mod portable_copy;

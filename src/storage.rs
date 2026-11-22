@@ -1449,6 +1449,7 @@ impl Store {
     /// spaces, upper case), with whether it is in the Lixeira. One indexed
     /// read on the unique identity; nothing is decoded. `None`: no such
     /// document, not even in the Lixeira.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub(crate) fn document_by_number_any(&self, number: &str) -> Result<Option<(i64, bool)>> {
         let hash = identity_hash_for_number(number);
         let id: Option<i64> = self
