@@ -1217,6 +1217,18 @@ pub enum RpcRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         refs: Option<crate::idrefs::Refs>,
     },
+    /// Whether the change sent under this identity was applied (level 2,
+    /// adendo §6): asked before a change that may already be there is
+    /// checked or resolved again. Answered `Mutated` (its receipt),
+    /// `AlreadyApplied` or `NotApplied`.
+    ReceiptOf {
+        mutation_uid: String,
+        /// The identities of the rows the change inserted on the sender:
+        /// sent before its rows existed there (its answer lost), the rows it
+        /// inserted here take them now.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        idents: Vec<crate::idents::SlotIdent>,
+    },
     /// The team protocol V2 (F2b): every request of a Ponte that carries
     /// identities. A main computer of this build answers the five requests
     /// above, sent bare by an older Ponte, with 503 before opening its
@@ -1274,7 +1286,12 @@ pub enum RpcResponse {
         /// The identities of the rows the change inserted there (V2).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         idents: Vec<crate::idents::SlotIdent>,
+        /// The proof of each item the change created there (level 2).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        proof: Vec<crate::idrefs::Ref>,
     },
+    /// The change asked about (`ReceiptOf`) was never applied here.
+    NotApplied,
     Error {
         message: String,
     },
@@ -1615,6 +1632,9 @@ struct StoredReceipt {
     /// The identities the change's rows were given (V2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     idents: Vec<crate::idents::SlotIdent>,
+    /// The proof of each item it created (level 2; none in older receipts).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    proof: Vec<crate::idrefs::Ref>,
 }
 
 /// How long, and how many, answers to applied changes the main computer keeps.
@@ -2648,6 +2668,7 @@ impl Store {
                         reply: serde_json::from_slice(&plain)?,
                         created: None,
                         idents: Vec::new(),
+                        proof: Vec::new(),
                     })),
                 }
             }
@@ -4343,26 +4364,29 @@ impl Store {
         let mut replacing = false;
         let mut replaced_queue: Vec<OutboxEntry> = Vec::new();
         if !outbox.is_empty() {
-            let host_snapshot = match send_rpc_classified(
-                &cfg,
-                &RpcRequest::Sync {
-                    since_revision: None,
-                    known_epoch: String::new(),
-                },
-            ) {
-                Ok(RpcResponse::Snapshot(snap)) => {
-                    // Checked before anything is translated against it.
-                    crate::idents::check(&snap, None)?;
-                    Some(snap)
+            let host_frame_now = |store: &mut Store| -> Result<Option<Box<CabinetSnapshot>>> {
+                match send_rpc_classified(
+                    &cfg,
+                    &RpcRequest::Sync {
+                        since_revision: None,
+                        known_epoch: String::new(),
+                    },
+                ) {
+                    Ok(RpcResponse::Snapshot(snap)) => {
+                        // Checked before anything is translated against it.
+                        crate::idents::check(&snap, None)?;
+                        Ok(Some(snap))
+                    }
+                    Ok(RpcResponse::Error { message }) => bail!("{message}"),
+                    Ok(_) => Ok(None),
+                    Err(RpcError::Unreachable(msg)) => {
+                        store.note_host_reachability(false);
+                        bail!("{msg}");
+                    }
+                    Err(RpcError::Rejected(msg)) => bail!("{msg}"),
                 }
-                Ok(RpcResponse::Error { message }) => bail!("{message}"),
-                Ok(_) => None,
-                Err(RpcError::Unreachable(msg)) => {
-                    self.note_host_reachability(false);
-                    bail!("{msg}");
-                }
-                Err(RpcError::Rejected(msg)) => bail!("{msg}"),
             };
+            let host_snapshot = host_frame_now(self)?;
             self.note_host_reachability(true);
 
             // Before anything is sent: is this still the history the queue
@@ -4398,6 +4422,45 @@ impl Store {
             let mut creation_results: BTreeMap<i64, crate::renumber::CreationOutcome> =
                 BTreeMap::new();
             for entry in outbox {
+                // A change that may already be there is asked about first,
+                // before anything of it is checked or resolved (adendo §6):
+                // only one never applied goes on.
+                if entry.attempted {
+                    let mut reached = false;
+                    let asked = RpcRequest::ReceiptOf {
+                        mutation_uid: entry.uid.clone(),
+                        idents: entry.idents.clone(),
+                    };
+                    match send_rpc_tracked(&cfg, &asked, &mut reached) {
+                        Ok(RpcResponse::Mutated {
+                            snapshot, created, ..
+                        }) => {
+                            crate::idents::check(&snapshot, None)?;
+                            let learned = ids.learn(&entry.created, created.as_deref());
+                            self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
+                            host_frame = Some(snapshot);
+                            pushed_offline = true;
+                            continue;
+                        }
+                        Ok(RpcResponse::AlreadyApplied { .. }) => {
+                            let learned = ids.learn(&entry.created, None);
+                            self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
+                            // What its completion gave (identities) is in
+                            // the main computer's copy from now on.
+                            host_frame = host_frame_now(self)?;
+                            pushed_offline = true;
+                            continue;
+                        }
+                        Ok(RpcResponse::NotApplied) => {}
+                        Ok(RpcResponse::Error { message })
+                        | Err(RpcError::Rejected(message) | RpcError::Unreachable(message)) => {
+                            bail!("{message}")
+                        }
+                        Ok(_) => bail!(
+                            "Resposta inesperada do computador principal ao enviar as alterações."
+                        ),
+                    }
+                }
                 let edit_source = crate::renumber::EditSource {
                     records: &*self,
                     written: crate::renumber::Written::Here,
@@ -4405,37 +4468,53 @@ impl Store {
                     receipt_doc: crate::renumber::receipt_document(&entry.created),
                 };
                 let identity = crate::renumber::edit_identity(&entry.mutation, &edit_source);
-                let remapped = ids
-                    .remap(
-                        &entry.mutation,
-                        &*self,
-                        host_frame.as_deref().map(|s| s as &dyn crate::idmap::Frame),
+                // Level 2: each site by its proof, in the main computer's
+                // frame, base included; an older Ponte's entry through the
+                // translation of numbers, as before.
+                let host = host_frame.as_deref();
+                let tag = host.map(|s| crate::idrefs::FrameTag {
+                    epoch: s.ident_epoch.clone(),
+                    revision: s.revision,
+                });
+                let holds = entry
+                    .refs
+                    .as_ref()
+                    .is_some_and(|r| Some(&r.frame) == tag.as_ref());
+                let routed = route_change(
+                    (&entry.mutation, entry.base.as_ref()),
+                    entry.refs.as_ref(),
+                    true,
+                    host.map(|s| (s as &dyn crate::idrefs::IdentFrame, holds)),
+                    (&ids, &*self, host.map(|s| s as &dyn crate::idmap::Frame)),
+                )
+                .and_then(|(mutation, base, refs)| {
+                    // An edit of a manual record is addressed by number: it
+                    // follows the number the main computer gave the record,
+                    // before anything is sent.
+                    crate::renumber::retarget_manual_edit(
+                        mutation,
+                        &edit_source,
+                        &ids,
+                        host_frame
+                            .as_deref()
+                            .map(|s| s as &dyn crate::renumber::Records),
                     )
-                    .and_then(|mutation| {
-                        // An edit of a manual record is addressed by number:
-                        // it follows the number the main computer gave the
-                        // record, before anything is sent.
-                        crate::renumber::retarget_manual_edit(
-                            mutation,
-                            &edit_source,
-                            &ids,
-                            host_frame
-                                .as_deref()
-                                .map(|s| s as &dyn crate::renumber::Records),
-                        )
-                    });
+                    .map(|mutation| (mutation, base, refs))
+                });
                 // An edit without a version of its own is not sent over a
                 // newer value the main computer already holds.
-                let stale = match (&remapped, host_frame.as_deref()) {
-                    (Ok(mutation), Some(frame)) => {
-                        plain_edit_conflict(mutation, entry.base.as_ref(), frame).err()
+                let stale = match (&routed, host_frame.as_deref()) {
+                    (Ok((mutation, base, _)), Some(frame)) => {
+                        plain_edit_conflict(mutation, base.as_ref(), frame).err()
                     }
                     _ => None,
                 };
                 if let Some(reason) = stale {
                     let learned = ids.learn(&entry.created, None);
                     let sent = OutboxEntry {
-                        mutation: remapped.clone().unwrap_or_else(|_| entry.mutation.clone()),
+                        mutation: routed
+                            .map(|(mutation, ..)| mutation)
+                            .unwrap_or_else(|_| entry.mutation.clone()),
                         ..entry.clone()
                     };
                     let mut conflict = build_sync_conflict(&sent, &reason, host_frame.as_deref());
@@ -4445,13 +4524,11 @@ impl Store {
                     continue;
                 }
                 let creation = crate::renumber::creation_document(&entry.mutation, &entry.created);
-                let sent = match remapped {
-                    Ok(mutation) => OutboxEntry {
+                let sent = match routed {
+                    Ok((mutation, base, refs)) => OutboxEntry {
                         mutation,
-                        base: entry.base.as_ref().map(|base| {
-                            ids.remap(base, &*self, None)
-                                .unwrap_or_else(|_| base.clone())
-                        }),
+                        base,
+                        refs,
                         ..entry.clone()
                     },
                     Err(reason) => {
@@ -4477,8 +4554,10 @@ impl Store {
                         client_schema: crate::storage::SCHEMA_VERSION,
                         expected_generation: cfg.host_generation.clone(),
                         mutation_uid: sent.uid.clone(),
-                        idents: Vec::new(),
-                        refs: sent.refs.clone(),
+                        // The rows it inserts there take the identities they
+                        // have here: the proof of what depends on them.
+                        idents: sent.idents.clone(),
+                        refs: sent.refs.clone().map(crate::idrefs::Refs::without_base),
                     },
                     &mut reached,
                 ) {
@@ -11245,6 +11324,44 @@ impl PlainEditFrame for CabinetSnapshot {
     }
 }
 
+/// A change and its base in the numbers of a receiving frame, with its
+/// proofs rewritten to them (`None`: taken by the legacy route).
+type Routed = (
+    IntranetMutation,
+    Option<IntranetMutation>,
+    Option<crate::idrefs::Refs>,
+);
+
+/// Where a queued or journaled change goes in a receiving frame (adendo
+/// §3): by its proofs in `to` (the frame, and whether a `Frame` number
+/// holds there; none known: a card); without proofs, only when `legacy`,
+/// through the translation of numbers `ids` from `from` into `target`, as
+/// before F3. `Err`: the reason of its card, never a number to guess.
+fn route_change(
+    (mutation, base): (&IntranetMutation, Option<&IntranetMutation>),
+    refs: Option<&crate::idrefs::Refs>,
+    legacy: bool,
+    to: Option<(&dyn crate::idrefs::IdentFrame, bool)>,
+    (ids, from, target): (
+        &crate::idmap::IdMap,
+        &dyn crate::idmap::Frame,
+        Option<&dyn crate::idmap::Frame>,
+    ),
+) -> std::result::Result<Routed, String> {
+    match (refs, to) {
+        (Some(refs), Some((frame, holds))) => refs
+            .resolve(mutation, base, frame, holds)
+            .map(|(mutation, base, refs)| (mutation, base, Some(refs))),
+        (Some(_), None) => Err(crate::idrefs::UNPROVEN.to_owned()),
+        (None, _) if !legacy => Err(crate::idrefs::DAMAGED.to_owned()),
+        (None, _) => Ok((
+            ids.remap(mutation, from, target)?,
+            base.map(|base| ids.remap(base, from, None).unwrap_or_else(|_| base.clone())),
+            None,
+        )),
+    }
+}
+
 /// `Err` (the reason, for the conflict card) when a plain edit (see
 /// [`plain_edit`]) would overwrite a change made elsewhere since the edit
 /// was written: its item no longer holds the value the edit was based on
@@ -12129,7 +12246,7 @@ fn process_rpc_at(
             // synchronized or changed through it (see `HOST_NOT_UPDATED`).
             if matches!(
                 *request,
-                RpcRequest::Sync { .. } | RpcRequest::Mutate { .. }
+                RpcRequest::Sync { .. } | RpcRequest::Mutate { .. } | RpcRequest::ReceiptOf { .. }
             ) {
                 ensure!(
                     crate::idents::has_idents(&store.conn)?,
@@ -12194,9 +12311,7 @@ fn process_rpc_at(
             expected_generation,
             mutation_uid,
             idents,
-            // Checked and resolved from F3.0a2 on; a change of this level
-            // carries them (the barrier refuses a lower one).
-            refs: _,
+            refs,
         } => {
             ensure!(
                 !actor.trim().is_empty()
@@ -12210,63 +12325,99 @@ fn process_rpc_at(
                 "{HISTORY_CHANGED}"
             );
             let receipted = valid_mutation_uid(&mutation_uid);
+            // Already applied (its answer was lost on the way back): the same
+            // answer, and nothing is applied again, whatever happened to the
+            // item since.
             if receipted {
-                // Already applied (its answer was lost on the way back): the
-                // same answer, and nothing is applied again, whatever
-                // happened to the item since.
-                if let Some(receipt) = store.mutation_receipt(&mutation_uid)? {
-                    let mut snapshot = served_snapshot(store, v2, &epoch)?;
-                    snapshot.generation = generation;
-                    corrupt_for_test(store, &mut snapshot);
-                    return Ok(RpcResponse::Mutated {
-                        revision: snapshot.revision,
-                        reply: receipt.reply,
-                        snapshot: Box::new(snapshot),
-                        created: receipt.created,
-                        idents: receipt.idents,
-                    });
+                if let Some(known) = known_mutation(store, &mutation_uid, &idents, v2, &epoch)? {
+                    return Ok(known);
                 }
             }
-            // Applied once, and the full answer is gone: it must not be applied
-            // again, and the sender can only be told so.
-            if receipted && store.mutation_was_applied(&mutation_uid)? {
-                return Ok(RpcResponse::AlreadyApplied {
-                    revision: store.cabinet_revision()?,
-                });
-            }
+            // The proofs of a change of level 2 are checked, and each site
+            // resolved here, before anything runs (frozen rules 5–7): a
+            // number without identity holds only in the very frame it was
+            // captured in. `None` is a change an older Ponte queued.
+            let mutation = match &refs {
+                Some(refs) => {
+                    let here = crate::idrefs::FrameTag {
+                        epoch: epoch.clone(),
+                        revision: store.cabinet_revision()?,
+                    };
+                    let holds = refs.frame == here;
+                    refs.resolve(&mutation, None, &store.conn, holds)
+                        .map_err(anyhow::Error::msg)?
+                        .0
+                }
+                None => mutation,
+            };
             let mutation = store.keep_unseen_fields(mutation, client_schema)?;
             let applied = mutation.clone();
             // The rows it inserts here take the identities they have on the
-            // client (V2).
-            let (reply, given) = match store.execute_carrying(&actor, mutation, &idents)? {
-                crate::idents::Carried::Applied(reply, rekeyed) => (
-                    reply,
-                    rekeyed
+            // client (V2), through a log that survives a crash after the
+            // change's own effect (adendo §5).
+            let durable = receipted && !idents.is_empty();
+            if durable {
+                crate::idents::open_carry(&store.conn, &mutation_uid, &idents)?;
+            }
+            let logged = store.run_logged(|store| store.execute_mutation(&actor, mutation));
+            crate::idents::close_carry(&store.conn)?;
+            let logged = logged?;
+            let reply = match logged.result {
+                Ok(reply) => reply,
+                Err(error) => {
+                    logged.closed?;
+                    crate::idents::end_carry(&store.conn, &mutation_uid)?;
+                    return Err(error);
+                }
+            };
+            logged.closed?;
+            let inserted = logged.inserted?;
+            // What it created is read now, in the library where it was just
+            // applied, and kept with the answer: a repeat must give back
+            // these numbers, not what a later state would suggest.
+            let created = receipted
+                .then(|| crate::idmap::created_ids(&*store, &applied, &reply).ok())
+                .flatten();
+            // The proof names the rows it inserted, by their final identity.
+            let sites: Vec<_> = created
+                .iter()
+                .flatten()
+                .filter(|c| inserted.contains_key(&(crate::idents::kind_of(c.kind).into(), c.id)))
+                .map(|c| (c.kind, c.id))
+                .collect();
+            // The rekey, the receipt and the end of the log commit together.
+            type Settled = (Vec<crate::idents::SlotIdent>, Vec<crate::idrefs::Ref>);
+            let settle = || -> Result<Settled> {
+                let tx = store.conn.unchecked_transaction()?;
+                let given: Vec<_> =
+                    crate::idents::rekey(&tx, &idents, &applied, &reply, &inserted)?
                         .applied
                         .into_iter()
                         .map(|(slot, _)| slot)
-                        .collect::<Vec<_>>(),
-                ),
-                crate::idents::Carried::Refused(error) => return Err(error),
+                        .collect();
+                let proof = crate::idrefs::prove(&tx, sites.clone(), true)?;
+                if receipted {
+                    store.record_mutation_receipt(
+                        &mutation_uid,
+                        &StoredReceipt {
+                            reply: reply.clone(),
+                            created: created.clone(),
+                            idents: given.clone(),
+                            proof: proof.clone(),
+                        },
+                    )?;
+                    crate::idents::end_carry(&tx, &mutation_uid)?;
+                }
+                tx.commit()?;
+                Ok((given, proof))
             };
-            let created = if receipted {
-                // What it created is read now, in the library where it was
-                // just applied, and kept with the answer: a repeat must give
-                // back these numbers, not what a later state would suggest.
-                let created = crate::idmap::created_ids(&*store, &applied, &reply).ok();
+            let (given, proof) = match settle() {
+                Ok(settled) => settled,
+                // The log keeps it: the next arrival of the uid completes it.
+                Err(error) if durable => return Err(error),
                 // Without the receipt a repeated send would only be applied
                 // again, as before: the change itself is already done.
-                let _ = store.record_mutation_receipt(
-                    &mutation_uid,
-                    &StoredReceipt {
-                        reply: reply.clone(),
-                        created: created.clone(),
-                        idents: given.clone(),
-                    },
-                );
-                created
-            } else {
-                None
+                Err(_) => (Vec::new(), Vec::new()),
             };
             let mut snapshot = served_snapshot(store, v2, &epoch)?;
             snapshot.generation = generation;
@@ -12281,9 +12432,71 @@ fn process_rpc_at(
                 snapshot: Box::new(snapshot),
                 created,
                 idents: given,
+                proof,
             })
         }
+        RpcRequest::ReceiptOf {
+            mutation_uid,
+            idents,
+        } => {
+            ensure!(
+                valid_mutation_uid(&mutation_uid),
+                "Identificação da alteração inválida."
+            );
+            Ok(known_mutation(store, &mutation_uid, &idents, v2, &epoch)?
+                .unwrap_or(RpcResponse::NotApplied))
+        }
     }
+}
+
+/// What the main computer answers for a change it may have applied under
+/// `uid` (adendo §5 rule 3), whether it came as `Mutate` or `ReceiptOf`:
+/// its receipt; else a carry whose effect committed without its rekey,
+/// completed now with the compact record and answered `AlreadyApplied`;
+/// else the compact record alone; `None`: never applied here. A change
+/// sent before its rows existed on the sender (its answer lost) brings
+/// their identities `carried` later: the rows it inserted here take them.
+fn known_mutation(
+    store: &mut Store,
+    uid: &str,
+    carried: &[crate::idents::SlotIdent],
+    v2: bool,
+    epoch: &str,
+) -> Result<Option<RpcResponse>> {
+    if let Some(receipt) = store.mutation_receipt(uid)? {
+        if receipt.idents.is_empty() {
+            let created = receipt.created.as_deref().unwrap_or_default();
+            crate::idents::rekey_inserted(&store.conn, carried, created, &receipt.proof)?;
+        }
+        let mut snapshot = served_snapshot(store, v2, epoch)?;
+        snapshot.generation = store.host_generation()?;
+        corrupt_for_test(store, &mut snapshot);
+        return Ok(Some(RpcResponse::Mutated {
+            revision: snapshot.revision,
+            reply: receipt.reply,
+            snapshot: Box::new(snapshot),
+            created: receipt.created,
+            idents: receipt.idents,
+            proof: receipt.proof,
+        }));
+    }
+    if crate::idents::carry_pending(&store.conn, uid)? {
+        let tx = store.conn.unchecked_transaction()?;
+        crate::idents::complete_carry(&tx, uid)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO applied_mutations(uid,created_at) VALUES(?1,?2)",
+            params![uid, now_iso()],
+        )?;
+        tx.commit()?;
+    }
+    // Applied once, and the full answer is gone: it must not be applied
+    // again, and the sender can only be told so.
+    if store.mutation_was_applied(uid)? {
+        return Ok(Some(RpcResponse::AlreadyApplied {
+            revision: store.cabinet_revision()?,
+        }));
+    }
+    Ok(None)
 }
 
 /// Tests: the main computer named by `idents::hooks::CORRUPT_MUTATED`
@@ -19783,7 +19996,12 @@ mod host_history_tests {
         assert_eq!(edited.id, reused);
         edited.notes = "Edição ao vivo".into();
         let error = rig.client.save_task(&edited).unwrap_err().to_string();
-        assert!(error.contains("mais antiga"), "{error}");
+        // F3.0a2: the task's identity is not on the restored main computer,
+        // so the change is refused there before anything is written.
+        assert!(
+            error.contains("mais antiga") || error == crate::idrefs::UNPROVEN,
+            "{error}"
+        );
         // Nothing of the main computer's answer was taken in.
         assert_eq!(
             titles(&rig.client),
@@ -20217,12 +20435,15 @@ Connection: close
         pair.client.save_task(&again).unwrap();
         let queue = pair.client.list_offline_outbox().unwrap();
         assert_eq!(queue.len(), 2, "{queue:?}");
-        let first_uid = queue[0].uid.clone();
+        let second_uid = queue[1].uid.clone();
         // The replay is cut as well: still the same identity afterwards.
+        // Since F3.0a2 the creation, maybe applied, is asked about first
+        // (`ReceiptOf`) and settled by its receipt: the cut send is the edit.
         pair.line.lose_next_replies(1);
         assert!(pair.client.sync_from_host(false).is_err());
         let queue = pair.client.list_offline_outbox().unwrap();
-        assert_eq!(queue[0].uid, first_uid);
+        assert_eq!(queue.len(), 1, "{queue:?}");
+        assert_eq!(queue[0].uid, second_uid);
         assert!(queue[0].attempted);
         pair.client.sync_from_host(false).unwrap();
         assert!(pair.client.list_offline_outbox().unwrap().is_empty());

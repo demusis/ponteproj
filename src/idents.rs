@@ -674,6 +674,143 @@ pub(crate) fn stop_log(conn: &Connection) -> Result<()> {
     })
 }
 
+/// The TEMP trigger that writes, inside the very transaction of a change
+/// the main computer carries, every row it inserts into the durable log
+/// `carry_log` (adendo §5), under the change's uid.
+const CARRY_TRIGGER: &str = "ponte_carry_item_ident";
+
+/// Opens the durable log of the change `uid` that carries `carried`: the
+/// identities it carries are written first (row 0), then every row its
+/// effect inserts is written by the effect's own transaction. A crash
+/// after the effect and before the rekey leaves both, and the next arrival
+/// of the uid completes the rekey from them ([`complete_carry`]).
+pub(crate) fn open_carry(conn: &Connection, uid: &str, carried: &[SlotIdent]) -> Result<()> {
+    // A validated uuid (hex digits and dashes): safe as a literal.
+    anyhow::ensure!(
+        !uid.is_empty() && uid.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+        "Identificação da alteração inválida."
+    );
+    ensure_carry_log(conn)?;
+    for slot in carried {
+        conn.execute(
+            "INSERT OR IGNORE INTO carry_log(uid,kind,row_id,ident) VALUES(?1,?2,0,?3)",
+            params![uid, slot.kind, slot.ident],
+        )?;
+    }
+    conn.execute_batch(&format!(
+        "CREATE TEMP TRIGGER IF NOT EXISTS {CARRY_TRIGGER} AFTER INSERT ON main.item_ident          BEGIN INSERT OR IGNORE INTO main.carry_log(uid,kind,row_id,ident) VALUES('{uid}',NEW.kind,NEW.row_id,NEW.ident); END;"
+    ))?;
+    Ok(())
+}
+
+/// The durable log lives on the main computer only: made there when a
+/// change first needs it.
+fn ensure_carry_log(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS carry_log(uid TEXT NOT NULL, kind TEXT NOT NULL, row_id INTEGER NOT NULL, ident TEXT NOT NULL, PRIMARY KEY(uid,kind,row_id,ident));",
+    )?;
+    Ok(())
+}
+
+/// Closes the durable log of this connection (the rows stay).
+pub(crate) fn close_carry(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&format!("DROP TRIGGER IF EXISTS temp.{CARRY_TRIGGER};"))?;
+    Ok(())
+}
+
+/// Forgets the durable log of `uid` (its rekey is done, or it was refused).
+pub(crate) fn end_carry(conn: &Connection, uid: &str) -> Result<()> {
+    ensure_carry_log(conn)?;
+    conn.execute("DELETE FROM carry_log WHERE uid=?1", [uid])?;
+    Ok(())
+}
+
+/// Whether the effect of the carried change `uid` committed and its rekey
+/// did not (a row it inserted is still in the log).
+pub(crate) fn carry_pending(conn: &Connection, uid: &str) -> Result<bool> {
+    ensure_carry_log(conn)?;
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM carry_log WHERE uid=?1 AND row_id>0)",
+        [uid],
+        |r| r.get(0),
+    )?)
+}
+
+/// Completes, from the durable log alone (the change and its answer are
+/// gone with the crash), the rekey of `uid`, then forgets its log: a
+/// carried identity goes to the one row of its kind the change inserted,
+/// when that row still holds the identity it got then and no row holds the
+/// carried one. A kind with more rows, or more carried identities, is left
+/// as it is: what depends on it there becomes a card, never another row.
+pub(crate) fn complete_carry(conn: &Connection, uid: &str) -> Result<()> {
+    let rows: Vec<(String, i64, String)> = conn
+        .prepare("SELECT kind,row_id,ident FROM carry_log WHERE uid=?1")?
+        .query_map([uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let of = |kind: &str, carried: bool| {
+        rows.iter()
+            .filter(|(k, row, _)| k == kind && (*row == 0) == carried)
+            .collect::<Vec<_>>()
+    };
+    for (kind, _, ident) in rows.iter().filter(|(_, row, _)| *row == 0) {
+        let (wanted, made) = (of(kind, true), of(kind, false));
+        if wanted.len() != 1 || made.len() != 1 {
+            continue;
+        }
+        let held: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM item_ident WHERE ident=?1)",
+            [ident],
+            |r| r.get(0),
+        )?;
+        if !held {
+            conn.execute(
+                "UPDATE item_ident SET ident=?1 WHERE kind=?2 AND row_id=?3 AND ident=?4",
+                params![ident, kind, made[0].1, made[0].2],
+            )?;
+        }
+    }
+    end_carry(conn, uid)
+}
+
+/// Gives the rows a receipted change inserted here (its `proof`: their
+/// identities, by row; `created`: their slots) the identities `carried`
+/// for those slots, when a row still holds its own and no row holds the
+/// carried one: the change was sent before its rows existed on the sender
+/// (its answer was lost there), so it carried none then.
+pub(crate) fn rekey_inserted(
+    conn: &Connection,
+    carried: &[SlotIdent],
+    created: &[crate::idmap::CreatedId],
+    proof: &[crate::idrefs::Ref],
+) -> Result<()> {
+    for slot in carried {
+        let row = created
+            .iter()
+            .find(|c| kind_of(c.kind) == slot.kind && c.slot == slot.slot)
+            .and_then(|c| proof.iter().find(|r| r.kind == c.kind && r.row == c.id));
+        let Some(crate::idrefs::Ref {
+            row,
+            proof: crate::idrefs::Proof::Ident(own),
+            ..
+        }) = row
+        else {
+            continue;
+        };
+        let held: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM item_ident WHERE ident=?1)",
+            [&slot.ident],
+            |r| r.get(0),
+        )?;
+        if !held {
+            conn.execute(
+                "UPDATE item_ident SET ident=?1 WHERE kind=?2 AND row_id=?3 AND ident=?4",
+                params![slot.ident, slot.kind, row, own],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// The ident kind of an id-map kind.
 pub(crate) fn kind_of(kind: IdKind) -> &'static str {
     match kind {
@@ -1001,9 +1138,7 @@ pub mod hooks {
         std::sync::Mutex::new(None);
 
     pub(crate) fn crash_before_rekey(conn: &rusqlite::Connection) {
-        let mut target = CRASH_BEFORE_REKEY
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut target = CRASH_BEFORE_REKEY.lock().unwrap_or_else(|e| e.into_inner());
         let ours = conn
             .path()
             .is_some_and(|p| target.as_deref() == Some(std::path::Path::new(p)));

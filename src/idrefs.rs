@@ -70,6 +70,77 @@ pub struct Refs {
 /// What a receiver says of a change whose proofs do not match it.
 pub const DAMAGED: &str = "A alteração chegou danificada (as provas dos itens que ela cita não conferem com ela). Ela não foi aplicada; refaça-a se ainda for preciso.";
 
+/// What a receiver says of a change one of whose items it cannot prove
+/// there (frozen rules 6 and 7): a card, never the number.
+pub const UNPROVEN: &str = "A alteração se refere a um item que não pôde ser reconhecido aqui com certeza (ele foi apagado, ou a alteração foi feita sobre um estado que mudou depois). Ela não foi aplicada; confira o item e refaça a alteração, se ainda for o caso.";
+
+/// Where the proofs of a change are resolved: a library, or a copy.
+pub(crate) trait IdentFrame {
+    /// The row of `kind` that holds `ident` there.
+    fn row_of(&self, kind: IdKind, ident: &str) -> Result<Option<i64>>;
+}
+
+impl IdentFrame for Connection {
+    fn row_of(&self, kind: IdKind, ident: &str) -> Result<Option<i64>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .query_row(
+                "SELECT row_id FROM item_ident WHERE kind=?1 AND ident=?2",
+                [crate::idents::kind_of(kind), ident],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+}
+
+impl IdentFrame for crate::intranet::CabinetSnapshot {
+    fn row_of(&self, kind: IdKind, ident: &str) -> Result<Option<i64>> {
+        let kind = crate::idents::kind_of(kind);
+        Ok(self
+            .idents
+            .iter()
+            .find(|crate::idents::IdentRow(k, _, i)| k == kind && i == ident)
+            .map(|row| row.1))
+    }
+}
+
+/// `mutation` in the numbers of `frame`, each site by its proof (frozen
+/// rule 6): an identity to the row holding it there, a `Frame` number kept
+/// only when `frame_holds` (the very frame it was captured in, or this
+/// library's own queue replayed in it), anything else [`UNPROVEN`]. The
+/// proofs come back with their rows rewritten to those numbers.
+fn resolve_sites(
+    mutation: &IntranetMutation,
+    refs: &[Ref],
+    frame: &dyn IdentFrame,
+    frame_holds: bool,
+) -> Result<(IntranetMutation, Vec<Ref>), String> {
+    let mut out = mutation.clone();
+    let mut proofs = refs.iter();
+    let mut proved = Vec::with_capacity(refs.len());
+    visit_mutation(&mut out, &mut |kind, id| {
+        if *id <= 0 {
+            return Ok(());
+        }
+        let site = proofs.next().ok_or_else(|| DAMAGED.to_owned())?;
+        let row = match &site.proof {
+            Proof::Ident(ident) => frame
+                .row_of(kind, ident)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| UNPROVEN.to_owned())?,
+            Proof::Frame if frame_holds => *id,
+            _ => return Err(UNPROVEN.into()),
+        };
+        *id = row;
+        proved.push(Ref {
+            row,
+            ..site.clone()
+        });
+        Ok(())
+    })?;
+    Ok((out, proved))
+}
+
 /// What a walk does with one site: its kind and its number, which it may
 /// change (a translation) or only read.
 pub type Visit<'a> = dyn FnMut(IdKind, &mut i64) -> Result<(), String> + 'a;
@@ -346,7 +417,7 @@ pub(crate) fn frame_tag(conn: &Connection) -> Result<FrameTag> {
 }
 
 /// The proofs of `sites` in the library on `conn` (identities read there).
-fn prove(
+pub(crate) fn prove(
     conn: &Connection,
     sites: Vec<(IdKind, i64)>,
     idents: bool,
@@ -401,6 +472,43 @@ impl Refs {
             manual_target: None,
             frame: frame_tag(conn)?,
         }))
+    }
+
+    /// `mutation` and its `base` in the numbers of `frame`, after
+    /// [`Refs::check`]: every site by its proof ([`resolve_sites`]), the
+    /// base in the same frame and about the same item (frozen rule 7), and
+    /// these proofs with their rows rewritten to those numbers (rule 8).
+    /// Any failure is a card, never a number.
+    pub(crate) fn resolve(
+        &self,
+        mutation: &IntranetMutation,
+        base: Option<&IntranetMutation>,
+        frame: &dyn IdentFrame,
+        frame_holds: bool,
+    ) -> Result<(IntranetMutation, Option<IntranetMutation>, Refs), String> {
+        Refs::check(mutation, base, self)?;
+        let (mutation, proved) = resolve_sites(mutation, &self.mutation, frame, frame_holds)?;
+        let (base, base_proved) = match base {
+            Some(base) => {
+                let (base, proved) = resolve_sites(base, &self.base, frame, frame_holds)?;
+                (Some(base), proved)
+            }
+            None => (None, Vec::new()),
+        };
+        // The item a change and its base are about is their first site.
+        let item = |refs: &[Ref]| refs.first().map(|r| (r.kind, r.row));
+        if !base_proved.is_empty() && item(&base_proved) != item(&proved) {
+            return Err(UNPROVEN.into());
+        }
+        Ok((
+            mutation,
+            base,
+            Refs {
+                mutation: proved,
+                base: base_proved,
+                ..self.clone()
+            },
+        ))
     }
 
     /// Whether these proofs are the proofs of `mutation` and `base`: one per
