@@ -1698,6 +1698,7 @@ pub fn conflicts_scenario(store: &mut Store) -> Result<()> {
                 unresolved: false,
                 identity: Vec::new(),
                 mutation_uid: String::new(),
+                resolved_at: String::new(),
             }
         };
     let folder = r"[da pasta C:\Exemplo\Pasta\ponte-sync.ponte] ";

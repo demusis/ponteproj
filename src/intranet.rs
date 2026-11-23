@@ -966,6 +966,115 @@ pub struct SyncConflict {
     /// (the same older copy merged twice, or seen again from a cloud cache).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub mutation_uid: String,
+    /// When the person resolved it (empty: still waiting). A resolved card
+    /// is kept, hidden, for a while ([`RESOLVED_KEPT`], [`RESOLVED_DAYS`])
+    /// only so that the same refused change, met again in an old copy, does
+    /// not come back as a new card.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resolved_at: String,
+}
+
+/// How many resolved cards are remembered, and for how long.
+const RESOLVED_KEPT: usize = 1_000;
+const RESOLVED_DAYS: i64 = 180;
+
+/// The `uid`s of the changes this library already holds a card for,
+/// waiting or resolved.
+fn carded_uids(conn: &Connection) -> Result<std::collections::BTreeSet<String>> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut statement = conn.prepare("SELECT payload FROM offline_conflicts")?;
+    let rows = statement.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+    for row in rows {
+        if let Some(held) = unseal(&row?)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<SyncConflict>(&b).ok())
+        {
+            if !held.mutation_uid.is_empty() {
+                out.insert(held.mutation_uid);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Marks a card resolved (kept hidden, see [`SyncConflict::resolved_at`])
+/// and forgets the resolved cards beyond the limits; a card of an older
+/// version, without the change's `uid`, has nothing to remember and goes.
+fn retire_conflict(conn: &Connection, id: i64) -> Result<()> {
+    let blob: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT payload FROM offline_conflicts WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let card = blob
+        .and_then(|b| unseal(&b).ok())
+        .and_then(|b| serde_json::from_slice::<SyncConflict>(&b).ok());
+    match card {
+        Some(mut card) if !card.mutation_uid.is_empty() => {
+            card.resolved_at = now_iso();
+            conn.execute(
+                "UPDATE offline_conflicts SET payload=?1 WHERE id=?2",
+                params![seal(&serde_json::to_vec(&card)?)?, id],
+            )?;
+        }
+        _ => {
+            conn.execute("DELETE FROM offline_conflicts WHERE id=?1", [id])?;
+        }
+    }
+    let cutoff = (Utc::now() - chrono::Duration::days(RESOLVED_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mut resolved: Vec<(i64, String)> = Vec::new();
+    let mut statement = conn.prepare("SELECT id,payload FROM offline_conflicts")?;
+    let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+    for row in rows {
+        let (id, blob) = row?;
+        if let Some(held) = unseal(&blob)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<SyncConflict>(&b).ok())
+        {
+            if !held.resolved_at.is_empty() {
+                resolved.push((id, held.resolved_at));
+            }
+        }
+    }
+    resolved.sort_by(|a, b| b.1.cmp(&a.1));
+    for (index, (id, at)) in resolved.iter().enumerate() {
+        if index >= RESOLVED_KEPT || *at < cutoff {
+            conn.execute("DELETE FROM offline_conflicts WHERE id=?1", [id])?;
+        }
+    }
+    Ok(())
+}
+
+/// What the person can do when a copy could not be kept aside, from the
+/// cause the system gave.
+fn archive_advice(error: &anyhow::Error, path: &std::path::Path) -> String {
+    let folder = path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let io = error
+        .chain()
+        .find_map(|e| e.downcast_ref::<std::io::Error>());
+    match io {
+        Some(e)
+            if e.kind() == std::io::ErrorKind::StorageFull
+                || matches!(e.raw_os_error(), Some(28 | 39 | 112)) =>
+        {
+            "Falta espaço no disco: libere espaço e sincronize de novo.".to_owned()
+        }
+        Some(e) if e.kind() == std::io::ErrorKind::PermissionDenied => format!(
+            "A pasta {folder} não permite gravar: confira as permissões dela (ou se outro programa está com o arquivo aberto) e sincronize de novo."
+        ),
+        _ if error.to_string().contains("Já existe um arquivo em") => format!(
+            "Outro arquivo ocupa o nome da cópia em {folder}: mova-o para outro lugar (sem apagá-lo antes de conferir o que ele tem) e sincronize de novo."
+        ),
+        _ => format!(
+            "Confira o espaço livre e as permissões da pasta {folder} e sincronize de novo."
+        ),
+    }
 }
 
 /// Stores a conflict card, unless one for the same change (`mutation_uid`)
@@ -5545,10 +5654,11 @@ impl Store {
                     aside.display()
                 )),
                 Err(error) => bail!(
-                    "A cópia de segurança deste computador tem {} que não {} no resultado desta sincronização ({}), e não foi possível guardá-la à parte: {error} Nada foi gravado nem substituído. Libere espaço ou remova o arquivo que ocupa esse nome e sincronize de novo.",
+                    "A cópia de segurança deste computador tem {} que não {} no resultado desta sincronização ({}), e não foi possível guardá-la à parte ({error:#}). {} Nada foi gravado nem substituído; a próxima sincronização tenta de novo.",
                     plural(lost.len(), "item", "itens"),
                     if lost.len() == 1 { "está" } else { "estão" },
-                    crate::coverage::describe(lost)
+                    crate::coverage::describe(lost),
+                    archive_advice(&error, path)
                 ),
             }
         }
@@ -5677,6 +5787,12 @@ impl Store {
         updated.folder_lineage = lineage.to_owned();
         updated.folder_identity = sharedfolder::snapshot_identity(&final_snapshot);
         let replaced = temp.is_some();
+        // A change already carded here (waiting or resolved) is not carded
+        // or counted again.
+        let carded = carded_uids(&self.conn)?;
+        let before = conflicts.len();
+        conflicts.retain(|c| c.mutation_uid.is_empty() || !carded.contains(&c.mutation_uid));
+        report.conflicts -= before - conflicts.len();
         let finish = |tx: &rusqlite::Transaction| -> Result<()> {
             for conflict in &conflicts {
                 insert_conflict(tx, conflict)?;
@@ -6627,6 +6743,10 @@ impl Store {
         for row in rows {
             let (id, created_at, blob) = row?;
             let mut item: SyncConflict = serde_json::from_slice(&unseal(&blob)?)?;
+            // Resolved: remembered only to not card the same change again.
+            if !item.resolved_at.is_empty() {
+                continue;
+            }
             item.id = id;
             item.created_at = created_at;
             out.push(item);
@@ -6687,10 +6807,7 @@ impl Store {
                 }
             }
         }
-        self.conn.execute(
-            "DELETE FROM offline_conflicts WHERE id=?1",
-            params![conflict_id],
-        )?;
+        retire_conflict(&self.conn, conflict_id)?;
         Ok(())
     }
 
@@ -8778,7 +8895,7 @@ impl Store {
         }
         let tx = self.conn.transaction()?;
         for id in older {
-            tx.execute("DELETE FROM offline_conflicts WHERE id=?1", params![id])?;
+            retire_conflict(&tx, *id)?;
         }
         tx.commit()?;
         Ok(older.len())
@@ -9806,6 +9923,7 @@ fn build_sync_conflict(
         unresolved: false,
         identity: Vec::new(),
         mutation_uid: entry.uid.clone(),
+        resolved_at: String::new(),
     }
 }
 
@@ -14479,6 +14597,7 @@ mod tests {
             unresolved: false,
             identity: Vec::new(),
             mutation_uid: String::new(),
+            resolved_at: String::new(),
         };
         let diffs = store.conflict_differences(&conflict);
         let by_label = |label: &str| {
@@ -15308,6 +15427,7 @@ mod conflict_card_tests {
             unresolved: false,
             identity: Vec::new(),
             mutation_uid: String::new(),
+            resolved_at: String::new(),
         }
     }
 
@@ -16310,6 +16430,7 @@ mod resources_sync_tests {
             unresolved: false,
             identity: Vec::new(),
             mutation_uid: String::new(),
+            resolved_at: String::new(),
         };
         let save_use = |item: &ResourceUse| {
             conflict(IntranetMutation::SaveResourceUse {
@@ -17438,6 +17559,7 @@ mod resources_sync_tests {
             unresolved: false,
             identity: Vec::new(),
             mutation_uid: String::new(),
+            resolved_at: String::new(),
         };
         // Same thing but for the kind: equal, with nothing to compare.
         let mut other_kind = held.clone();

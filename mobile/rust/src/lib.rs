@@ -214,6 +214,10 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
         // What the person must know about what was kept aside (the items
         // and where the copy is), in the computer's words.
         "notes": report.notes.clone(),
+        // Each copy read whose content is not proved to be in the result:
+        // the app keeps exactly these and may let the others go (every
+        // other pending copy is settled on its own).
+        "unsettled": report.unsettled.clone(),
         // How many copies could not be rewritten (also in the summary).
         "unwritten": report.unwritten.len(),
         // Records of this phone that the copy numbered differently (also in

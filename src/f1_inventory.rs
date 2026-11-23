@@ -3181,3 +3181,98 @@ fn f0r2_a_second_triage_task_is_not_taken_for_the_automatic_one() {
     );
     crate::sharedfolder::set_journal_cap_for_test(crate::sharedfolder::MAX_JOURNAL_ENTRIES);
 }
+
+/// The forked-library fixture of the guard tests: the forked library's
+/// guard copy holds Y, which the next result lacks. Returns the folders,
+/// the forked library and its folder.
+fn forked_with_y_in_its_guard() -> (Folders, Store, std::path::PathBuf) {
+    let mut f = Folders::new();
+    let lineage = crate::sharedfolder::read_header(&f.drive)
+        .unwrap()
+        .unwrap()
+        .lineage;
+    let dir = f.dir.path().join("forked");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut forked = Store::open(&dir.join("c.sqlite3")).unwrap();
+    forked
+        .import_capture(&capture(
+            &number("c", 1),
+            "Documento Y só do acervo bifurcado",
+        ))
+        .unwrap();
+    std::fs::remove_file(&f.pen).unwrap();
+    let mut cfg = folder_config("Bifurcado", f.files(Where::Pen));
+    cfg.folder_lineage = lineage;
+    forked.save_intranet_config(&cfg).unwrap();
+    sync(&mut forked);
+    let doc = f.a.list_documents("").unwrap()[0].id;
+    for n in 0..8 {
+        let mut task = crate::tasks::Task::new(doc);
+        task.title = format!("enchimento {n}");
+        f.a.save_task(&task).unwrap();
+    }
+    f.sync_a(Where::Drive);
+    let files = f.files(Where::Both);
+    sync_in_raw(&mut f.a, files);
+    (f, forked, dir)
+}
+
+/// Review 2.2: the guard copy cannot be kept aside because the system
+/// refuses the write (here, the archive's temporary name is taken by a
+/// folder). The exchange stops, and the message carries the system's cause
+/// and what to do; the next exchange, with the cause gone, goes on.
+#[test]
+fn f0r2_a_guard_archive_failure_says_the_system_cause_and_what_to_do() {
+    let (_f, mut forked, dir) = forked_with_y_in_its_guard();
+    let guard = dir.join("c.sqlite3-guarda.ponte");
+    let aside = crate::sharedfolder::aside_path(&guard).unwrap();
+    let part = std::path::PathBuf::from(format!("{}.parte", aside.display()));
+    std::fs::create_dir(&part).unwrap();
+    let cfg = forked.load_intranet_config().unwrap();
+    let error = forked
+        .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(error.contains("Nada foi gravado"), "{error}");
+    assert!(
+        error.contains("os error"),
+        "the system's cause is missing: {error}"
+    );
+    assert!(error.contains("sincronize de novo"), "{error}");
+    std::fs::remove_dir(&part).unwrap();
+    sync_raw(&mut forked);
+    assert!(aside.is_file());
+}
+
+/// Review 2.4: the merging computer resolves the card of the refused change
+/// ("manter a versão do computador"); the same old copy then comes back
+/// (a cloud cache). The resolved change is not carded nor counted again.
+#[test]
+fn f0r2_a_resolved_card_does_not_come_back_from_the_same_old_copy() {
+    let mut f = Folders::new();
+    let doc = f.a.list_documents("").unwrap()[0].id;
+    f.b.save_note(doc, "Nota de B, só no pendrive").unwrap();
+    f.sync_b(Where::Pen);
+    let stale = std::fs::read(&f.pen).unwrap();
+    f.a.save_note(doc, "Nota de A, no Drive").unwrap();
+    for n in 0..5 {
+        let mut task = crate::tasks::Task::new(doc);
+        task.title = format!("enchimento {n}");
+        f.a.save_task(&task).unwrap();
+    }
+    f.sync_a(Where::Drive);
+    f.sync_a(Where::Both);
+    let cards = f.a.list_sync_conflicts().unwrap();
+    assert_eq!(cards.len(), 1);
+    f.a.resolve_sync_conflict(cards[0].id, crate::intranet::ConflictResolution::KeepHost)
+        .unwrap();
+    assert!(f.a.list_sync_conflicts().unwrap().is_empty());
+    std::fs::write(&f.pen, &stale).unwrap();
+    let report = f.sync_a(Where::Both);
+    assert!(
+        f.a.list_sync_conflicts().unwrap().is_empty(),
+        "the resolved card came back"
+    );
+    assert_eq!(report.conflicts, 0, "counted again");
+}
