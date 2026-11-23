@@ -55,8 +55,8 @@ internal object FolderRoom {
     fun warning(n: Long): String? {
         if (n < 0 || n * 100 < LIMIT * WARN_PERCENT) return null
         val state =
-            if (n >= LIMIT) "A sincronização não consegue mais gravar nele."
-            else "Perto do limite, a sincronização deixa de conseguir gravar."
+            if (n >= LIMIT) "Ele chegou ao limite: o que for acrescentado talvez não caiba."
+            else "Perto do limite, o que for acrescentado pode não caber."
         return "O arquivo do Drive está com ${size(n)} de ${size(LIMIT)} (${percent(n)}%). $state $ADVICE"
     }
 }

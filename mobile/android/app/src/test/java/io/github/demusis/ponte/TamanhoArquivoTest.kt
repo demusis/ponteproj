@@ -1,6 +1,7 @@
 package io.github.demusis.ponte
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -35,7 +36,9 @@ class TamanhoArquivoTest {
         val w = FolderRoom.warning(359 * mb)!!
         assertTrue(w, w.startsWith("O arquivo do Drive está com 359 MB de 512 MB (70%)."))
         assertTrue(w.contains("esvazie a Lixeira") && w.contains("anexos grandes") && w.contains("Ponte do computador"))
-        assertTrue(FolderRoom.warning(FolderRoom.LIMIT)!!.contains("não consegue mais gravar"))
+        val full = FolderRoom.warning(FolderRoom.LIMIT)!!
+        assertTrue(full.contains("chegou ao limite") && full.contains("talvez não caiba"))
+        assertFalse(full.contains("não consegue"))
     }
 
     @Test fun oLimiteEoDoNucleo() = assertEquals(512L * 1024 * 1024, FolderRoom.LIMIT)

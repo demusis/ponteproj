@@ -404,11 +404,7 @@ pub(crate) fn write_stamped(
     ensure!(!header_bytes.contains(&b'\n'), "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.");
     // The size is known before anything is built or encrypted: a library that
     // cannot fit is refused here, with nothing held in memory twice.
-    let expected = MAGIC.len() as u64
-        + header_bytes.len() as u64
-        + 1
-        + packed_len(payload, blobs)?
-        + ring::aead::AES_256_GCM.tag_len() as u64;
+    let expected = total_len(header_bytes.len(), payload, blobs)?;
     ensure!(
         expected <= write_limit(),
         crate::folder_health::too_big_message(Some(expected))
@@ -480,6 +476,35 @@ pub(crate) fn pack(payload: &Payload, blobs: &Blobs) -> Result<Vec<u8>> {
         }
     }
     Ok(out)
+}
+
+/// The size of the whole file for a header of `header_len` bytes.
+fn total_len(header_len: usize, payload: &Payload, blobs: &Blobs) -> Result<u64> {
+    Ok(MAGIC.len() as u64
+        + header_len as u64
+        + 1
+        + packed_len(payload, blobs)?
+        + ring::aead::AES_256_GCM.tag_len() as u64)
+}
+
+/// The exact size of the file [`write`] would produce for these arguments,
+/// known before anything is built or encrypted: the header of every write has
+/// the same shape (the salt and the nonce have fixed lengths, the moment is
+/// written to the second), so a header with zeros in their place measures
+/// the same.
+pub fn exact_len(request: &WriteRequest<'_>, payload: &Payload, blobs: &Blobs) -> Result<u64> {
+    let header = Header {
+        format: FORMAT,
+        schema_version: request.schema_version,
+        lineage: request.lineage.to_owned(),
+        revision: request.revision,
+        writer: request.writer.to_owned(),
+        writer_name: request.writer_name.to_owned(),
+        written_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        salt: STANDARD.encode([0_u8; SALT_BYTES]),
+        nonce: STANDARD.encode([0_u8; NONCE_BYTES]),
+    };
+    total_len(serde_json::to_vec(&header)?.len(), payload, blobs)
 }
 
 /// Counts what is written to it and keeps nothing.
@@ -687,6 +712,7 @@ mod tests {
             + packed_len(&payload, &blobs).unwrap()
             + 16;
         assert_eq!(size, expected);
+        assert_eq!(exact_len(&request, &payload, &blobs).unwrap(), size);
         std::fs::remove_file(&path).unwrap();
         // One byte under the size: refused with the advice, nothing written.
         set_write_limit_for_test(size - 1);
