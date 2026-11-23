@@ -105,6 +105,8 @@ mod f3_tests;
 pub mod formatfloor;
 /// Identities of the items (library schema 22).
 pub mod idents;
+/// The id sites of a change and the proof of each (F3).
+pub mod idrefs;
 
 pub mod dossier;
 

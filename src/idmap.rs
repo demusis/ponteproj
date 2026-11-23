@@ -89,7 +89,7 @@ impl IdKind {
     }
 
     /// Kind of a trash entry (`TrashItem`, `RestoreItem`, `PurgeTrash`).
-    fn from_trash(kind: &str) -> Option<Self> {
+    pub(crate) fn from_trash(kind: &str) -> Option<Self> {
         match kind {
             "document" => Some(IdKind::Document),
             "capture" => Some(IdKind::Capture),
@@ -100,7 +100,7 @@ impl IdKind {
     }
 
     /// Kind of the owner of an attachment.
-    fn from_owner(kind: &str) -> Option<Self> {
+    pub(crate) fn from_owner(kind: &str) -> Option<Self> {
         match kind {
             "document" => Some(IdKind::Document),
             "task" => Some(IdKind::Task),
@@ -399,7 +399,7 @@ pub fn created_ids(
 /// The name of a source after its capture (and file) got new numbers, when
 /// it follows the pattern built in `evidence`: `C{capture}` and
 /// `C{capture}F{file}P{page}` (optionally followed by `OCR`).
-fn rename_source(
+pub(crate) fn rename_source(
     name: &str,
     capture: i64,
     file: Option<i64>,
@@ -425,9 +425,9 @@ fn rename_source(
 /// The name of a source made of an attachment (`A{attachment}H{hex}`, built
 /// by `evidence::attachment_source_id`) after the attachment got a new
 /// number: `Ok(None)` when it is not such a name or the number stays.
-fn rename_attachment_source(
+pub(crate) fn rename_attachment_source(
     name: &str,
-    translate: impl Fn(i64) -> Result<i64, String>,
+    mut translate: impl FnMut(i64) -> Result<i64, String>,
 ) -> Result<Option<String>, String> {
     let Some((digits, hash)) = name.strip_prefix('A').and_then(|r| r.split_once('H')) else {
         return Ok(None);
@@ -626,228 +626,22 @@ impl IdMap {
     /// `mutation` with every number translated. `source` is the library the
     /// change was made in and `target` the one it goes to (only links need
     /// them). Fails with [`UNRESOLVED`] when a number cannot be translated.
+    /// The sites are the ones [`crate::idrefs::visit_mutation`] walks, in
+    /// its order.
     pub fn remap(
         &self,
         mutation: &IntranetMutation,
         source: &dyn Frame,
         target: Option<&dyn Frame>,
     ) -> Result<IntranetMutation, String> {
-        use IdKind as K;
-        use IntranetMutation as M;
-        let t = |kind: IdKind, id: i64| self.translate(kind, id);
-        // Sources are named after their numbers ("C12", "C12F3P1",
-        // "C12F3P1OCR"): the name follows, and the citations with it.
-        let remap_sources = |sources: &mut Vec<crate::evidence::Source>| -> Result<BTreeMap<String, String>, String> {
-            let mut renamed = BTreeMap::new();
-            for source in sources {
-                let (capture, file) = (source.capture_id, source.file_id);
-                source.document_id = t(K::Document, source.document_id)?;
-                source.capture_id = t(K::Capture, source.capture_id)?;
-                if let Some(file) = source.file_id {
-                    source.file_id = Some(t(K::File, file)?);
-                }
-                let name = match rename_source(
-                    &source.id,
-                    capture,
-                    file,
-                    source.capture_id,
-                    source.file_id,
-                ) {
-                    Some(name) => Some(name),
-                    None => rename_attachment_source(&source.id, |id| t(K::Attachment, id))?,
-                };
-                if let Some(name) = name {
-                    renamed.insert(std::mem::replace(&mut source.id, name.clone()), name);
-                }
-            }
-            Ok(renamed)
-        };
         let mut out = mutation.clone();
-        match &mut out {
-            M::ImportCapture { .. } | M::ImportBundle { .. } => {}
-            M::SaveNote { document_id, .. } | M::SaveWorkContext { document_id, .. } => {
-                *document_id = t(K::Document, *document_id)?;
-            }
-            M::SaveDraft {
-                document_id,
-                capture_id,
-                materials,
-                ..
-            } => {
-                *document_id = t(K::Document, *document_id)?;
-                *capture_id = t(K::Capture, *capture_id)?;
-                remap_sources(materials)?;
-            }
-            M::SaveAnalysis {
-                document_id,
-                analysis,
-            } => {
-                *document_id = t(K::Document, *document_id)?;
-                analysis.capture_id = t(K::Capture, analysis.capture_id)?;
-                let renamed = remap_sources(&mut analysis.materials)?;
-                for citation in &mut analysis.citations {
-                    if let Some(name) = renamed.get(&citation.source_id) {
-                        citation.source_id = name.clone();
-                    }
-                }
-                for fact in &mut analysis.facts {
-                    if let Some(name) = renamed.get(&fact.source_id) {
-                        fact.source_id = name.clone();
-                    }
-                }
-            }
-            M::SaveTask { task, .. } => {
-                task.id = t(K::Task, task.id)?;
-                if let Some(document) = task.document_id {
-                    task.document_id = Some(t(K::Document, document)?);
-                }
-                if let Some(parent) = &mut task.parent_task_id {
-                    *parent = t(K::Task, *parent)?;
-                }
-                for dependency in &mut task.dependencies {
-                    *dependency = t(K::Task, *dependency)?;
-                }
-            }
-            M::RelinkTask {
-                task_id,
-                document_id,
-                ..
-            } => {
-                *task_id = t(K::Task, *task_id)?;
-                if let Some(document) = document_id {
-                    *document_id = Some(t(K::Document, *document)?);
-                }
-            }
-            M::SavePageText { file_id, .. } => *file_id = t(K::File, *file_id)?,
-            M::AddDocumentLink { source, target, .. } => {
-                *source = t(K::Document, *source)?;
-                *target = t(K::Document, *target)?;
-            }
-            M::SetLinkActive { id, .. } => *id = self.translate_link(*id, source, target)?,
-            M::TrashItem { kind, id }
-            | M::RestoreItem { kind, id }
-            | M::PurgeTrash { kind, id } => {
-                if let Some(kind) = IdKind::from_trash(kind) {
-                    *id = t(kind, *id)?;
-                }
-            }
-            M::DeleteDocument { id } => *id = t(K::Document, *id)?,
-            M::SaveSaiopAttendance { attendance, .. } => {
-                attendance.id = t(K::Saiop, attendance.id)?;
-                if let Some(batch) = attendance.batch_id {
-                    attendance.batch_id = Some(t(K::SaiopBatch, batch)?);
-                }
-                if let Some(document) = attendance.document_id {
-                    attendance.document_id = Some(t(K::Document, document)?);
-                }
-                for task in &mut attendance.task_ids {
-                    *task = t(K::Task, *task)?;
-                }
-            }
-            M::ImportSaiopBatch { items, .. } => {
-                for (attendance, _) in items {
-                    if let Some(document) = attendance.document_id {
-                        attendance.document_id = Some(t(K::Document, document)?);
-                    }
-                    for task in &mut attendance.task_ids {
-                        *task = t(K::Task, *task)?;
-                    }
-                }
-            }
-            M::UndoSaiopBatch { batch_id } => *batch_id = t(K::SaiopBatch, *batch_id)?,
-            M::DeleteSaiopAttendance { id } => *id = t(K::Saiop, *id)?,
-            M::CreateTaskForSaiop {
-                attendance_id,
-                task,
-                ..
-            } => {
-                *attendance_id = t(K::Saiop, *attendance_id)?;
-                if let Some(task) = task {
-                    if let Some(document) = task.document_id {
-                        task.document_id = Some(t(K::Document, document)?);
-                    }
-                    if let Some(parent) = &mut task.parent_task_id {
-                        *parent = t(K::Task, *parent)?;
-                    }
-                    for dependency in &mut task.dependencies {
-                        *dependency = t(K::Task, *dependency)?;
-                    }
-                }
-            }
-            M::AddAttachment {
-                owner_kind,
-                owner_id,
-                ..
-            } => {
-                if let Some(kind) = IdKind::from_owner(owner_kind) {
-                    *owner_id = t(kind, *owner_id)?;
-                }
-            }
-            M::UpdateAttachment { id, .. } | M::DeleteAttachment { id } => {
-                *id = t(K::Attachment, *id)?;
-            }
-            M::ExtractAttachmentText { attachment_id }
-            | M::ReviewAttachmentText { attachment_id, .. } => {
-                *attachment_id = t(K::Attachment, *attachment_id)?;
-            }
-            // Addressed by uid: nothing to translate.
-            M::SaveTemplate { .. }
-            | M::SetTemplateStatus { .. }
-            | M::DeleteTemplate { .. }
-            | M::SaveInstructionBlock { .. }
-            | M::SetBlockStatus { .. }
-            | M::DeleteBlock { .. }
-            | M::SaveExample { .. }
-            | M::DeleteExample { .. }
-            | M::DeleteResource { .. }
-            | M::SaveResource { .. }
-            | M::SaveCategory { .. }
-            | M::DeleteCategory { .. }
-            | M::SaveProject { .. }
-            | M::DeleteProject { .. }
-            | M::SaveSetting { .. }
-            | M::DeleteResourceUse { .. } => {}
-            // Addressed by uid; only the links to numbered items change.
-            M::SaveResourceUse { item, .. } => {
-                if let Some(document) = item.document_id {
-                    item.document_id = Some(t(K::Document, document)?);
-                }
-                if let Some(attendance) = item.saiop_id {
-                    item.saiop_id = Some(t(K::Saiop, attendance)?);
-                }
-                if let Some(task) = item.task_id {
-                    item.task_id = Some(t(K::Task, task)?);
-                }
-            }
-            M::RecordGeneration { record } => {
-                record.document_id = t(K::Document, record.document_id)?;
-                record.capture_id = t(K::Capture, record.capture_id)?;
-                if let Some(draft) = record.draft_id {
-                    record.draft_id = Some(t(K::Draft, draft)?);
-                }
-                for source in &mut record.sources {
-                    let (capture, file) = (source.capture_id, source.file_id);
-                    source.document_id = t(K::Document, source.document_id)?;
-                    source.capture_id = t(K::Capture, source.capture_id)?;
-                    if let Some(file) = source.file_id {
-                        source.file_id = Some(t(K::File, file)?);
-                    }
-                    let name = match rename_source(
-                        &source.id,
-                        capture,
-                        file,
-                        source.capture_id,
-                        source.file_id,
-                    ) {
-                        Some(name) => Some(name),
-                        None => rename_attachment_source(&source.id, |id| t(K::Attachment, id))?,
-                    };
-                    if let Some(name) = name {
-                        source.id = name;
-                    }
-                }
-            }
-        }
+        crate::idrefs::visit_mutation(&mut out, &mut |kind, id| {
+            *id = match kind {
+                IdKind::Link => self.translate_link(*id, source, target)?,
+                kind => self.translate(kind, *id)?,
+            };
+            Ok(())
+        })?;
         Ok(out)
     }
 
