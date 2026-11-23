@@ -243,10 +243,9 @@ fn f2b_r01_an_old_copy_never_acts_on_an_item_it_did_not_create() {
 
 // ---------------------------------------------------------------- F2B-02 --
 
-/// F2B-02. While the stub is being put in place of the old file, another
-/// device writes a new 8 there. Its file is never replaced by the stub
-/// without being kept: it stays at its name (or aside) and its change is
-/// taken in by the next exchange.
+/// F2B-02. Right before the stub takes the old name, another device writes
+/// a new 8 there. Its file is never replaced unseen: it stays at its name,
+/// and the next exchange takes its change in and puts the stub back.
 #[test]
 fn f2b_r02_a_file_written_while_the_stub_goes_in_is_never_lost() {
     let mut t = two();
@@ -254,28 +253,26 @@ fn f2b_r02_a_file_written_while_the_stub_goes_in_is_never_lost() {
     let nine_file = nine(&t);
     let mut task = crate::tasks::Task::standalone();
     task.title = "Tarefa de B gravada no último instante".into();
-    hooks::AT_STUB_RACE.with(|h| {
-        let drive = drive.clone();
-        *h.borrow_mut() = Some(Box::new(move |_path: &Path| {
-            // B (an older writer) publishes its 8 right then.
-            old_writer_over(
-                &drive,
-                &nine_file,
-                vec![entry(
-                    "b-ultimo-instante",
-                    IntranetMutation::SaveTask {
-                        task: task.clone(),
-                        expected_version: None,
-                        no_project: false,
-                    },
-                    vec![crate::idmap::CreatedId::new(
-                        crate::idmap::IdKind::Task,
-                        "",
-                        91,
-                    )],
+    // B (an older writer) publishes its 8 right before the stub takes the
+    // old name.
+    at_rename_of(drive.clone(), move || {
+        old_writer_over(
+            &drive,
+            &nine_file,
+            vec![entry(
+                "b-ultimo-instante",
+                IntranetMutation::SaveTask {
+                    task: task.clone(),
+                    expected_version: None,
+                    no_project: false,
+                },
+                vec![crate::idmap::CreatedId::new(
+                    crate::idmap::IdKind::Task,
+                    "",
+                    91,
                 )],
-            );
-        }))
+            )],
+        );
     });
     let _ = try_sync(&mut t.a);
     let _ = try_sync(&mut t.a);
@@ -287,6 +284,26 @@ fn f2b_r02_a_file_written_while_the_stub_goes_in_is_never_lost() {
         "B's change reached the result"
     );
     assert!(is_stub(&t.drive), "and the stub is in place at last");
+}
+
+/// Runs `action` right before the next rename onto `target` (the other
+/// renames go on as usual).
+fn at_rename_of(target: PathBuf, action: impl FnOnce() + 'static) {
+    let action = std::cell::RefCell::new(Some(Box::new(action) as Box<dyn FnOnce()>));
+    fn arm(target: PathBuf, action: std::rc::Rc<std::cell::RefCell<Option<Box<dyn FnOnce()>>>>) {
+        hooks::BEFORE_RENAME.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |path: &Path| {
+                if path == target {
+                    if let Some(run) = action.borrow_mut().take() {
+                        run();
+                    }
+                } else {
+                    arm(target.clone(), action.clone());
+                }
+            }))
+        });
+    }
+    arm(target, std::rc::Rc::new(action));
 }
 
 /// The next publication of `target` fails as a full disk or a refused

@@ -4855,7 +4855,22 @@ impl Store {
             }
             expected.insert(path.clone(), sharedfolder::header_line(path)?);
             let mut is_nine = false;
-            match sharedfolder::read_any(path, key) {
+            let read = sharedfolder::read_any(path, key);
+            // Recorded as soon as it is read (a later path that cannot be
+            // read must not make this device forget a 9 it saw).
+            let observed = match &read {
+                Ok(Some(Found::Copy(c))) if c.header.format >= sharedfolder::FORMAT_9 => {
+                    Some(c.header.lineage.clone())
+                }
+                Ok(Some(Found::Moved { header, .. })) => Some(header.lineage.clone()),
+                _ => None,
+            };
+            if let Some(seen) = observed {
+                if seen == cfg.folder_lineage {
+                    self.raise_floor_to_nine(&seen)?;
+                }
+            }
+            match read {
                 Ok(Some(Found::Copy(copy))) => {
                     seen_lineages.push(copy.header.lineage.clone());
                     if copy.header.format >= sharedfolder::FORMAT_9 {
@@ -4952,6 +4967,20 @@ impl Store {
         {
             self.raise_floor_to_nine(&lineage)?;
         }
+        // Once this device has seen a 9 of this folder, a file of format 8
+        // of ANOTHER lineage at a configured path is what an older Ponte
+        // wrote there (an empty name looks like a new folder to it): it is
+        // kept aside and named, and the stub goes back (never an error).
+        let mut strangers: Vec<PathBuf> = Vec::new();
+        if self.format_floor(&lineage)? >= sharedfolder::FORMAT_9 {
+            copies.retain(|c| {
+                let stranger = c.header.lineage != lineage;
+                if stranger {
+                    strangers.push(c.path.clone());
+                }
+                !stranger
+            });
+        }
         for (path, header) in nines
             .iter()
             .chain(copies.iter())
@@ -4975,6 +5004,21 @@ impl Store {
                 .with_context(|| copy.path.display().to_string())?;
         }
         let nine_mode = self.format_floor(&lineage)? >= sharedfolder::FORMAT_9;
+        // Whether this library already cut or took a 9 of this folder.
+        let (origin, origin_lineage, _) = crate::idents::origin(&self.conn)?;
+        let cut_here = matches!(origin.as_str(), "stamped" | "adopted")
+            && origin_lineage.as_deref() == Some(lineage.as_str());
+        // Taking the first 9 of this folder: until every configured mirror
+        // holds it (a promotion stopped half-way), nothing is adopted and no
+        // old name gets its stub.
+        let completing = nine_mode && !cut_here;
+        if completing && !phone && !report.unreachable.is_empty() {
+            bail!(
+                "A atualização do arquivo da pasta ainda não terminou: {} não {} acessível agora. Conecte ou retire da lista e sincronize de novo; até lá nada é substituído.",
+                report.unreachable.join(", "),
+                if report.unreachable.len() == 1 { "está" } else { "estão" }
+            );
+        }
         if phone && (!stubs.is_empty() || (nine_mode && nines.is_empty())) {
             // The phone never follows a stub by itself: the person picks
             // the new file once (its Drive permission is per file).
@@ -5094,9 +5138,9 @@ impl Store {
             // lower revision than the last 8 it exchanged (another device
             // went on in 8 for a while): the format decides then, not the
             // revision (design F2b §3.5).
-            let first_nine = nine_mode
-                && crate::idents::origin(&self.conn)?.2.as_deref()
-                    != Some(best.payload.snapshot.ident_epoch.as_str());
+            // Only before this library took any 9 of this folder: after that,
+            // an older 9 (of another epoch too) is refused like any older copy.
+            let first_nine = completing;
             ensure!(
                 best.header.revision >= cfg.synced_revision || overwritten || first_nine,
                 "A pasta ainda não recebeu a versão mais recente (revisão {} na pasta, {} neste computador). Espere a nuvem terminar de sincronizar e tente de novo.",
@@ -5149,9 +5193,6 @@ impl Store {
         // another folder or served a team (origin `host`) never stop it; only
         // a library that already took or cut a 9 of this very lineage does
         // (its 9 is out there: never cut again).
-        let (origin, origin_lineage, _) = crate::idents::origin(&self.conn)?;
-        let cut_here = matches!(origin.as_str(), "stamped" | "adopted")
-            && origin_lineage.as_deref() == Some(lineage.as_str());
         let p1 = !phone
             && !nine_mode
             && promotion_on()
@@ -5297,6 +5338,8 @@ impl Store {
         std::fs::create_dir_all(&temp_dir)?;
         let temp_path = temp_dir.join(format!("sync-{}.sqlite3", uuid::Uuid::new_v4().simple()));
         let plan = FolderPlan {
+            completing,
+            strangers,
             nine: nine_mode,
             donors,
             stub_targets,
@@ -5428,6 +5471,8 @@ impl Store {
     ) -> Result<FolderSyncReport> {
         use crate::sharedfolder::{self, JournalEntry, Payload, WriteRequest};
         let FolderPlan {
+            completing,
+            strangers,
             nine: nine_mode,
             donors,
             stub_targets,
@@ -6441,7 +6486,7 @@ impl Store {
                 }
             }
         }
-        if promote.is_some() && !report.unwritten.is_empty() {
+        if (promote.is_some() || completing) && !report.unwritten.is_empty() {
             // A promotion is all its files of format 9 or nothing more: it
             // stops here (the old names stay as they are, nothing is
             // adopted) and the next exchange goes on from what is there.
@@ -6540,26 +6585,27 @@ impl Store {
                         report.written_to.push(path.display().to_string());
                     }
                     if let Some(aside) = aside {
-                        report.notes.push(format!(
-                            "{} agora só avisa as versões anteriores de que é preciso atualizar o Ponte (o arquivo da pasta passou para {name}). O que havia nele foi guardado em {}.",
-                            path.display(),
-                            aside.display()
-                        ));
+                        report.notes.push(if strangers.contains(path) {
+                            format!(
+                                "{} tinha um arquivo de OUTRO acervo, gravado por uma versão anterior do Ponte (ela começa um acervo novo quando não encontra o arquivo). Ele foi guardado em {} e o aviso do formato novo voltou ao lugar; atualize o Ponte nesse aparelho.",
+                                path.display(),
+                                aside.display()
+                            )
+                        } else {
+                            format!(
+                                "{} agora só avisa as versões anteriores de que é preciso atualizar o Ponte (o arquivo da pasta passou para {name}). O que havia nele foi guardado em {}.",
+                                path.display(),
+                                aside.display()
+                            )
+                        });
                     }
                 }
-                Ok(sharedfolder::Stubbed::Changed(aside)) => {
+                Ok(sharedfolder::Stubbed::Changed) => {
                     stubbed_all = false;
-                    report.notes.push(match aside {
-                        Some(aside) => format!(
-                            "{} mudou durante a sincronização; o que outro aparelho gravou nele foi guardado em {} e entra na próxima sincronização.",
-                            path.display(),
-                            aside.display()
-                        ),
-                        None => format!(
-                            "{} mudou durante a sincronização e ficou como está; ele entra na próxima sincronização.",
-                            path.display()
-                        ),
-                    });
+                    report.notes.push(format!(
+                        "{} mudou durante a sincronização e ficou como está; a próxima sincronização o recebe e põe de volta o aviso do formato novo.",
+                        path.display()
+                    ));
                 }
                 Err(error) => {
                     stubbed_all = false;
@@ -6833,20 +6879,42 @@ impl Store {
                 });
             // Applied with the insert log open: what it inserted is the only
             // proof of what it created.
+            // A failure of the log itself, once the change may be applied,
+            // is not a refusal: the whole exchange stops before anything is
+            // published (as for the identities of a replay, F2a).
             let mut inserted = crate::idents::Inserted::new();
+            let mut broken: Option<anyhow::Error> = None;
             let outcome = match &remapped {
                 Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &*store)
                     .and_then(|_| {
-                        let logged = store
+                        let logged = match store
                             .run_logged(|s| s.execute_mutation(&entry.actor, mutation.clone()))
-                            .map_err(|e| e.to_string())?;
-                        logged.closed.map_err(|e| e.to_string())?;
+                        {
+                            Ok(logged) => logged,
+                            Err(error) => {
+                                // The log did not open: nothing was applied.
+                                broken = Some(error);
+                                return Err(String::new());
+                            }
+                        };
                         let reply = logged.result.map_err(|e| e.to_string())?;
-                        inserted = logged.inserted.map_err(|e| e.to_string())?;
+                        match logged.closed.and(logged.inserted) {
+                            Ok(found) => inserted = found,
+                            Err(error) => {
+                                broken = Some(error);
+                                return Err(String::new());
+                            }
+                        }
                         Ok(reply)
                     }),
                 Err(reason) => Err(reason.clone()),
             };
+            if let Some(error) = broken {
+                return Err(error.context(format!(
+                    "A sincronização parou antes de gravar qualquer coisa: uma alteração antiga («{}») foi reaplicada, mas o registro das linhas que ela inseriu falhou. Nada foi enviado nem adotado; tente de novo.",
+                    entry.label
+                )));
+            }
             match (remapped, outcome) {
                 (Ok(mutation), Ok(reply)) => {
                     let created: Vec<crate::idmap::CreatedId> =
@@ -6898,11 +6966,21 @@ impl Store {
                         attempted: false,
                         idents: Vec::new(),
                     };
+                    let content = old_change_content(&entry.mutation);
                     let mut reason = format!(
-                        "Alteração de {device} feita numa versão anterior do Ponte depois que a pasta foi atualizada; o texto está guardado neste aviso."
+                        "Alteração de {device} feita numa versão anterior do Ponte depois que a pasta foi atualizada; ela não foi aplicada."
                     );
                     if !detail.is_empty() {
                         reason.push_str(&format!(" ({detail})"));
+                    }
+                    reason.push_str(&format!("{OLD_COPY_MARK}{content}"));
+                    if self.folder_role == crate::formatfloor::FolderRole::Phone {
+                        // The phone shows no cards: its words carry it.
+                        report.notes.push(format!(
+                            "Uma alteração de uma cópia antiga deste aparelho não foi aplicada ({}). Para refazê-la, se ainda for preciso:
+{content}",
+                            entry.label
+                        ));
                     }
                     conflicts.push(conflict_for(&as_entry, &reason, None, true));
                     report.conflicts += 1;
@@ -7070,12 +7148,33 @@ impl Store {
             Ok(RpcResponse::Mutated {
                 reply, snapshot, ..
             }) if crate::idents::check(&snapshot, None).is_err() => {
-                // Applied there, but the answer cannot be used: the change
-                // waits here under the same identity, and the next send gets
-                // the main computer's receipt (never applied twice, never
-                // lost).
+                // Applied there, but the answer cannot be used. The request
+                // is kept as it was sent, under its identity, WITHOUT being
+                // applied here first (that could fail and lose it): the next
+                // synchronization sends it again, the main computer answers
+                // with its receipt (never applied twice), and the change
+                // arrives here with its copy.
                 let _ = reply;
-                self.queue_locally_as(&actor, mutation, Some((uid, true)))
+                let tx = self.conn.transaction()?;
+                insert_outbox_row(
+                    &tx,
+                    &OutboxEntry {
+                        id: 0,
+                        created_at: now_iso(),
+                        actor: actor.clone(),
+                        label: mutation_label(&mutation),
+                        mutation,
+                        base: None,
+                        uid,
+                        created: Vec::new(),
+                        attempted: true,
+                        idents: Vec::new(),
+                    },
+                )?;
+                tx.commit()?;
+                bail!(
+                    "A alteração foi gravada no computador principal, mas a resposta dele não pôde ser conferida. Ela ficou guardada aqui e aparece depois da próxima sincronização; não a repita."
+                )
             }
             Ok(RpcResponse::Mutated {
                 reply, snapshot, ..
@@ -10717,12 +10816,70 @@ pub struct FolderSyncReport {
     pub promoted: bool,
 }
 
+/// What separates the reason of a card of an old copy from what the change
+/// carried (see [`old_copy_change`]).
+const OLD_COPY_MARK: &str = " Para refazê-la, se ainda for preciso:
+";
+
+/// What the change of an old copy (format 8) held by a card carried, as it
+/// can be redone: `None` for any other card.
+pub fn old_copy_change(conflict: &SyncConflict) -> Option<&str> {
+    conflict
+        .reason
+        .split_once(OLD_COPY_MARK)
+        .map(|(_, content)| content)
+}
+
+/// What a change of an old copy carried, in words a person can redo it
+/// from (never a row number of that copy, which may be another item now).
+fn old_change_content(mutation: &IntranetMutation) -> String {
+    use IntranetMutation as M;
+    match mutation {
+        M::SaveSetting { key, value, .. } if key == "holidays" => {
+            format!("Feriados e dias sem expediente:
+{value}")
+        }
+        M::SaveSetting { key, value, .. } => format!("{key}:
+{value}"),
+        M::SaveNote { note, .. } => format!("Nota:
+{note}"),
+        M::ImportCapture { capture } | M::ImportBundle { capture, .. } => format!(
+            "Registro {} — {}:
+{}",
+            capture.document_number, capture.title, capture.text
+        ),
+        M::SaveTask { task, .. } if task.notes.trim().is_empty() => {
+            format!("Tarefa: {}", task.title)
+        }
+        M::SaveTask { task, .. } => format!("Tarefa: {}
+{}", task.title, task.notes),
+        M::SaveDraft { kind, body, .. } => format!("Minuta ({kind}):
+{body}"),
+        M::AddAttachment {
+            name, description, ..
+        } => format!(
+            "Anexo {name}: {description} (o arquivo está na cópia guardada à parte, citada no aviso da sincronização)"
+        ),
+        other => format!(
+            "{} (o conteúdo completo está na cópia guardada à parte, citada no aviso da sincronização)",
+            mutation_label(other)
+        ),
+    }
+}
+
 /// What `sync_with_folders` decided for an exchange, given to its second
 /// half (design F2b §3.2-3.5).
 struct FolderPlan {
     /// The folder is at format 9 for this device: its files of format 9 are
     /// the copies, and what is written is format 9.
     nine: bool,
+    /// This library takes its first 9 of the folder: every file of format 9
+    /// of every configured path must be there before anything is adopted or
+    /// an old name gets its stub.
+    completing: bool,
+    /// Files of format 8 of another lineage found at configured paths after
+    /// the floor became 9 (kept aside, named, and the stub put back).
+    strangers: Vec<PathBuf>,
     /// Copies of format 8 read after the floor became 9 (old writers, the
     /// guard, the phone's pending copies): changes are only taken from them.
     donors: Vec<crate::sharedfolder::Copy>,
@@ -14219,6 +14376,22 @@ impl IntranetPanel {
                             "Esta edição não será aplicada por número, para não cair em outro registro. Cole o texto no registro certo e, depois, dispense o aviso."
                         },
                     );
+                } else if let Some(text) = old_copy_change(conflict) {
+                    // A change of an old copy (format 8) that was not
+                    // replayed: what it carried, to be read and copied.
+                    widgets::small_muted(
+                        ui,
+                        "Esta alteração foi feita numa versão anterior do Ponte depois que a pasta foi atualizada e não foi aplicada. Refaça-a no lugar certo, se ainda for preciso, e dispense o aviso.",
+                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt(("old-copy-change", conflict.id))
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(text).wrap().selectable(true));
+                        });
+                    if ui.add(widgets::secondary("Copiar o texto")).clicked() {
+                        ui.ctx().copy_text(text.to_owned());
+                    }
                 } else {
                     widgets::small_muted(ui, "Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.");
                 }

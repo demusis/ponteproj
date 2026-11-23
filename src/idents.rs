@@ -642,6 +642,10 @@ pub(crate) fn start_log(conn: &Connection) -> Result<()> {
 
 /// The rows inserted since [`start_log`], with the identity each was given.
 pub(crate) fn logged(conn: &Connection) -> Result<Inserted> {
+    #[cfg(any(test, feature = "test-support"))]
+    if hooks::FAIL_LOG.with(|h| h.replace(false)) {
+        anyhow::bail!("falha injetada no registro das linhas inseridas (teste)");
+    }
     if !log_kept(conn)? {
         return Ok(Inserted::new());
     }
@@ -948,6 +952,8 @@ pub mod hooks {
         pub static AFTER_ANALYSIS_SELECT: RefCell<Option<Pause>> = RefCell::new(None);
         /// The next capture of identities fails once.
         pub static FAIL_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// The next read of the log of inserted rows fails once.
+        pub static FAIL_LOG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         /// The next rekey fails once.
         pub static FAIL_REKEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         /// The date in the name of the copy made before the 21→22 step.
@@ -971,10 +977,6 @@ pub mod hooks {
         /// Runs once right before a transport file is renamed into place,
         /// with its path.
         pub static BEFORE_RENAME: RefCell<Option<PathHook>> = RefCell::new(None);
-        /// Runs once while a stub takes the place of an old file, in the
-        /// window where another writer could put a file at that name (with
-        /// the name).
-        pub static AT_STUB_RACE: RefCell<Option<PathHook>> = RefCell::new(None);
         /// Runs once in a folder exchange, right before the folders are
         /// written.
         pub static BEFORE_FOLDER_WRITE: RefCell<Option<Pause>> = RefCell::new(None);

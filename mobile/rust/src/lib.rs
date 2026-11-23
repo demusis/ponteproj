@@ -175,10 +175,11 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
     // staged copy holds is merged (or kept aside) like the rest.
     //
     // Copies with the same content are read once (the later one follows the
-    // fate of the first), and at most MAX_PENDING are read: the oldest; the
-    // others are kept aside, verified, with a notice, and leave the list, so
-    // a run of failed uploads never stops the exchanges.
-    let (pendings, twins, set_aside) = active_pendings(path, pending)?;
+    // fate of the first), and at most MAX_PENDING are read: the oldest. The
+    // others stay exactly where they are, unsettled, for the next exchanges
+    // (never set aside: they may hold work not sent yet), with a notice; so a
+    // run of failed uploads never stops the exchanges.
+    let (pendings, twins, waiting) = active_pendings(path, pending)?;
     files.extend(pendings);
     // The paths are an input of this exchange, not something saved up front:
     // a file this build refuses (newer format or schema) must change nothing
@@ -200,8 +201,10 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
         }
         Err(error) => return Err(error),
     };
-    // A copy read once for its twin is settled with it.
+    // A copy read once for its twin is settled with it; one left for the
+    // next exchange is not settled.
     let mut unsettled = report.unsettled.clone();
+    unsettled.extend(waiting.iter().cloned());
     for (twin, first) in &twins {
         if unsettled.iter().any(|u| u == first) && !unsettled.contains(twin) {
             unsettled.push(twin.clone());
@@ -235,7 +238,7 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
                 .any(|w| std::path::Path::new(w) == std::path::Path::new(path)),
         // What the person must know about what was kept aside (the items
         // and where the copy is), in the computer's words.
-        "notes": set_aside.iter().cloned().chain(report.notes.iter().cloned()).collect::<Vec<_>>(),
+        "notes": waiting_notice(&waiting).into_iter().chain(report.notes.iter().cloned()).collect::<Vec<_>>(),
         // Each copy read whose content is not proved to be in the result:
         // the app keeps exactly these and may let the others go (every
         // other pending copy is settled on its own).
@@ -273,46 +276,47 @@ const MAX_PENDING: usize = 6;
 /// The pending copies listed by the app (one per line) that this exchange
 /// reads: distinct paths that exist, one per content (the twins of a copy, as
 /// (twin, first), follow its fate), at most [`MAX_PENDING`], the oldest
-/// first. The others are kept aside, verified, beside them and removed from
-/// the list, each with a notice (a copy that cannot be kept aside stops the
-/// exchange: nothing is lost).
+/// first; and the ones left for the next exchanges (untouched).
 fn active_pendings(
     work: &str,
     listed: &str,
 ) -> Result<(Vec<String>, Vec<(String, String)>, Vec<String>)> {
     let mut found: Vec<(std::time::SystemTime, String)> = Vec::new();
     for one in listed.lines().map(str::trim).filter(|p| !p.is_empty()) {
-        let path = std::path::Path::new(one);
         if one == work || found.iter().any(|(_, f)| f == one) {
             continue;
         }
-        if let Ok(meta) = std::fs::metadata(path) {
+        if let Ok(meta) = std::fs::metadata(one) {
             found.push((meta.modified().unwrap_or(std::time::UNIX_EPOCH), one.to_owned()));
         }
     }
     found.sort();
     let mut kept: Vec<(String, String)> = Vec::new();
     let mut twins = Vec::new();
-    let mut notes = Vec::new();
+    let mut waiting = Vec::new();
     for (_, one) in found {
+        if kept.len() == MAX_PENDING {
+            waiting.push(one);
+            continue;
+        }
         let digest = ponteproj::sharedfolder::file_digest(std::path::Path::new(&one))?;
         if let Some((first, _)) = kept.iter().find(|(_, d)| *d == digest) {
             twins.push((one, first.clone()));
             continue;
         }
-        if kept.len() < MAX_PENDING {
-            kept.push((one, digest));
-            continue;
-        }
-        let aside = ponteproj::sharedfolder::keep_aside(std::path::Path::new(&one))?;
-        std::fs::remove_file(&one)
-            .with_context(|| format!("Não foi possível tirar {one} da lista de pendentes."))?;
-        notes.push(format!(
-            "A cópia pendente {one} não entrou nesta sincronização (há cópias pendentes demais); ela foi guardada em {}. Sincronize pelo computador para conferir o que ela tinha.",
-            aside.display()
-        ));
+        kept.push((one, digest));
     }
-    Ok((kept.into_iter().map(|(p, _)| p).collect(), twins, notes))
+    Ok((kept.into_iter().map(|(p, _)| p).collect(), twins, waiting))
+}
+
+/// What the person is told about pending copies left for the next
+/// exchanges.
+fn waiting_notice(waiting: &[String]) -> Option<String> {
+    match waiting.len() {
+        0 => None,
+        1 => Some("1 cópia pendente deste aparelho espera a próxima sincronização (cada sincronização confere no máximo 6); nada dela foi perdido.".to_owned()),
+        n => Some(format!("{n} cópias pendentes deste aparelho esperam as próximas sincronizações (cada sincronização confere no máximo 6); nada delas foi perdido.")),
+    }
 }
 
 /// The documents of the library, newest first, with their notes and what the
@@ -6278,15 +6282,185 @@ mod tests {
 "), KEY)
             .expect("the exchange goes on");
         let notes = answer["notes"].as_array().unwrap();
-        let set_aside = notes
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.as_str().unwrap_or("").contains("esperam as próximas sincronizações")),
+            "{answer}"
+        );
+        // Nothing is set aside or removed: the copies not read wait,
+        // unsettled, for the next exchanges.
+        assert!(names.iter().all(|n| std::path::Path::new(n.as_str()).exists()));
+        let unsettled = answer["unsettled"].as_array().unwrap();
+        assert!(unsettled.len() >= 3, "{answer}");
+    }
+
+    /// Review R2-05: a pending copy past the cap may hold work sent nowhere
+    /// else: it is never set aside or removed; it waits, unsettled, and a
+    /// later exchange takes its change in.
+    #[test]
+    fn f2b_r2_05_pending_copies_beyond_the_cap_wait_for_the_next_exchange() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (_computer, drive, _) = first_transport(&dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work.display().to_string(), "", KEY).unwrap();
+        let copy = ponteproj::sharedfolder::read(&work, KEY).unwrap().unwrap();
+        let mut names = Vec::new();
+        for n in 0..7 {
+            let mut payload = ponteproj::sharedfolder::Payload {
+                snapshot: copy.payload.snapshot.clone(),
+                applied: copy.payload.applied.clone(),
+                journal: copy.payload.journal.clone(),
+            };
+            if n == 6 {
+                // Only the newest pending copy holds this task.
+                let mut task = ponteproj::tasks::Task::standalone();
+                task.title = "Tarefa só na sétima pendente".into();
+                payload.applied.push("setima-pendente".into());
+                payload.journal.push(ponteproj::sharedfolder::JournalEntry {
+                    uid: "setima-pendente".into(),
+                    created_at: "2026-11-20T12:00:00Z".into(),
+                    actor: "Celular de teste".into(),
+                    writer: copy.header.writer.clone(),
+                    label: "Criar tarefa".into(),
+                    mutation: ponteproj::intranet::IntranetMutation::SaveTask {
+                        task,
+                        expected_version: None,
+                        no_project: false,
+                    },
+                    base: None,
+                    revision: copy.header.revision,
+                    created: vec![ponteproj::idmap::CreatedId {
+                        kind: ponteproj::idmap::IdKind::Task,
+                        slot: String::new(),
+                        id: 777,
+                    }],
+                    idents: Vec::new(),
+                });
+            }
+            let path = dir.0.join(format!("pendente-novo-{n}.ponte"));
+            ponteproj::sharedfolder::write(
+                &path,
+                KEY,
+                &ponteproj::sharedfolder::WriteRequest {
+                    lineage: &copy.header.lineage,
+                    // Older than the Drive copy: the Drive stays the base and
+                    // the task comes from the pending copy's journal.
+                    revision: copy.header.revision - 1,
+                    writer: &copy.header.writer,
+                    writer_name: &copy.header.writer_name,
+                    schema_version: copy.header.schema_version,
+                },
+                &payload,
+                &copy.blobs,
+            )
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            names.push(path.display().to_string());
+        }
+        let newest = std::path::PathBuf::from(&names[6]);
+        let newest_bytes = std::fs::read(&newest).unwrap();
+        let answer = sync_paths(&mut phone, &work.display().to_string(), &names.join("
+"), KEY)
+            .unwrap();
+        assert_eq!(std::fs::read(&newest).unwrap(), newest_bytes, "left as it is");
+        let unsettled: Vec<String> = answer["unsettled"]
+            .as_array()
+            .unwrap()
             .iter()
-            .filter(|n| n.as_str().unwrap_or("").contains("não entrou nesta sincronização"))
-            .count();
-        assert_eq!(set_aside, 3, "{answer}");
-        let left: Vec<_> = names
-            .iter()
-            .filter(|n| std::path::Path::new(n.as_str()).exists())
+            .map(|v| v.as_str().unwrap().to_owned())
             .collect();
-        assert_eq!(left.len(), 7, "six read and the twin stay for the app");
+        assert!(unsettled.contains(&names[6]), "{answer}");
+        assert!(answer["notes"].to_string().contains("espera a próxima sincronização"), "{answer}");
+        // The app lets the settled ones go; the next exchange reads the rest.
+        for name in &names[..6] {
+            if !unsettled.contains(name) {
+                let _ = std::fs::remove_file(name);
+            }
+        }
+        let left: Vec<&String> = names.iter().filter(|n| std::path::Path::new(n.as_str()).exists()).collect();
+        let rest = left.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("
+");
+        sync_paths(&mut phone, &work.display().to_string(), &rest, KEY).unwrap();
+        assert!(phone
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .any(|t| t.title == "Tarefa só na sétima pendente"));
+    }
+
+    /// Review R2-06: the phone shows no cards; what an old pending copy held
+    /// that was not applied is told in its notes, to be redone.
+    #[test]
+    fn f2b_r2_06_the_phone_tells_what_an_old_copy_held() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (_computer, _drive, mut phone, nine) = promoted_with_phone(&dir.0);
+        let base = match ponteproj::sharedfolder::read_any(&nine, KEY).unwrap() {
+            Some(ponteproj::sharedfolder::Found::Copy(copy)) => copy,
+            _ => panic!(),
+        };
+        let mut payload = ponteproj::sharedfolder::Payload {
+            snapshot: base.payload.snapshot.clone(),
+            applied: base.payload.applied.clone(),
+            journal: base.payload.journal.clone(),
+        };
+        payload.snapshot.idents.clear();
+        payload.snapshot.ident_epoch.clear();
+        for e in payload.journal.iter_mut() {
+            e.idents.clear();
+        }
+        payload.applied.push("feriados-antigos".into());
+        payload.journal.push(ponteproj::sharedfolder::JournalEntry {
+            uid: "feriados-antigos".into(),
+            created_at: "2026-11-20T12:00:00Z".into(),
+            actor: "Celular de teste".into(),
+            writer: "celular".into(),
+            label: "Feriados".into(),
+            mutation: ponteproj::intranet::IntranetMutation::SaveSetting {
+                key: "holidays".into(),
+                value: "uf GO
+dia 2026-12-26 Recesso do celular
+".into(),
+                seed: false,
+            },
+            base: None,
+            revision: base.header.revision + 1,
+            created: Vec::new(),
+            idents: Vec::new(),
+        });
+        let pending = dir.0.join("pendente.ponte");
+        ponteproj::sharedfolder::write(
+            &pending,
+            KEY,
+            &ponteproj::sharedfolder::WriteRequest {
+                lineage: &base.header.lineage,
+                revision: base.header.revision + 1,
+                writer: "celular",
+                writer_name: "Celular",
+                schema_version: 21,
+            },
+            &payload,
+            &base.blobs,
+        )
+        .unwrap();
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&nine, &work).unwrap();
+        let answer = sync_paths(
+            &mut phone,
+            &work.display().to_string(),
+            &pending.display().to_string(),
+            KEY,
+        )
+        .unwrap();
+        assert!(
+            answer["notes"].to_string().contains("Recesso do celular"),
+            "{answer}"
+        );
     }
 }

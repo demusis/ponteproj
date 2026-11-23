@@ -65,42 +65,63 @@ pub fn with_lock<T>(path: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> 
         std::fs::create_dir_all(parent)?;
     }
     let started = std::time::Instant::now();
-    loop {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock)
-        {
-            Ok(_) => break,
-            // Taken, or (Windows) still being removed by its last holder.
-            Err(error)
-                if error.kind() == std::io::ErrorKind::AlreadyExists
-                    || error.kind() == std::io::ErrorKind::PermissionDenied =>
-            {
-                let stale = std::fs::metadata(&lock)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.elapsed().ok())
-                    .is_some_and(|age| age > std::time::Duration::from_secs(120));
-                if stale {
-                    let _ = std::fs::remove_file(&lock);
-                    continue;
-                }
+    let held = loop {
+        match try_lock(&lock)? {
+            Some(file) => break file,
+            None => {
                 anyhow::ensure!(
                     started.elapsed() < std::time::Duration::from_secs(60),
                     "Outra sincronização deste aparelho está em andamento; tente de novo em instantes."
                 );
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
+        }
+    };
+    let result = work();
+    // Closing the handle releases the lock (the file itself stays).
+    drop(held);
+    result
+}
+
+/// The lock of the operating system on `lock`, held while the returned file
+/// is open and released by the system when the process ends, however it
+/// ends: never taken over by age. `None` while another holder has it.
+fn try_lock(lock: &Path) -> Result<Option<std::fs::File>> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // No sharing: a second open fails while this one lives.
+        options.share_mode(0);
+        match options.open(lock) {
+            Ok(file) => Ok(Some(file)),
+            Err(error) if error.raw_os_error() == Some(32) || error.raw_os_error() == Some(5) => {
+                Ok(None)
+            }
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("Não foi possível usar {}.", lock.display()))
+                Err(error).with_context(|| format!("Não foi possível usar {}.", lock.display()))
             }
         }
     }
-    let result = work();
-    let _ = std::fs::remove_file(&lock);
-    result
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let file = options
+            .open(lock)
+            .with_context(|| format!("Não foi possível usar {}.", lock.display()))?;
+        // SAFETY: a valid descriptor of a file this function holds open.
+        let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        if taken {
+            return Ok(Some(file));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            Ok(None)
+        } else {
+            Err(error).with_context(|| format!("Não foi possível usar {}.", lock.display()))
+        }
+    }
 }
 
 /// Raises the floor of `lineage` to `floor` (never lowers it): read,

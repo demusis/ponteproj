@@ -458,6 +458,8 @@ pub struct IdMap {
     /// team's. Empty for changes from another computer (its numbers are
     /// translated only through `entries`).
     watermark: BTreeMap<IdKind, i64>,
+    /// See [`IdMap::strict`].
+    strict: bool,
 }
 
 impl IdMap {
@@ -542,6 +544,7 @@ impl IdMap {
         ] {
             map.watermark.insert(kind, 0);
         }
+        map.strict = true;
         map
     }
 
@@ -591,6 +594,11 @@ impl IdMap {
     ) -> Result<i64, String> {
         if let Some(found) = self.entries.get(&(IdKind::Link, id)) {
             return found.ok_or_else(|| UNRESOLVED.to_owned());
+        }
+        // A strict map (an old copy) proves a link only by its own insertion,
+        // never by finding one with the same ends.
+        if self.strict {
+            return Err(UNRESOLVED.into());
         }
         let new = self.is_new(IdKind::Link, id);
         if !new && !self.watermark.is_empty() {
@@ -1065,6 +1073,7 @@ mod tests {
         IdMap {
             entries: BTreeMap::new(),
             watermark: watermark.iter().copied().collect(),
+            strict: false,
         }
     }
 
