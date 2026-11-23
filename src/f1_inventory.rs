@@ -3128,3 +3128,56 @@ fn f0r_measure_the_cost_of_checking_the_library() {
     }
     eprintln!("F0 cost: the whole export of this library is {exported_bytes} bytes as JSON");
 }
+
+// ------------------------------------- F0, review round 2 (rodada-2) --
+
+/// Review 2.1: a document has its automatic triage task and B adds a second
+/// task with action "triar" (another uid) and publishes it to the pen drive
+/// only; B keeps working there until that creation leaves the journal. A
+/// moves the Drive on without it. When B comes back to both, nothing replays
+/// the second task and the result lacks it: B keeps a copy aside and names
+/// it, instead of taking it for the automatic triage task.
+#[test]
+fn f0r2_a_second_triage_task_is_not_taken_for_the_automatic_one() {
+    crate::sharedfolder::set_journal_cap_for_test(3);
+    let mut f = Folders::new();
+    let doc = f.b.list_documents("").unwrap()[0].id;
+    let mut extra = crate::tasks::Task::new(doc);
+    extra.title = "Segunda triagem de B".into();
+    extra.action = "triar".into();
+    f.b.save_task(&extra).unwrap();
+    assert_eq!(
+        f.b.list_tasks()
+            .unwrap()
+            .iter()
+            .filter(|t| t.document_id == Some(doc) && t.action == "triar")
+            .count(),
+        2
+    );
+    f.sync_b(Where::Pen);
+    for n in 0..5 {
+        let mut task = crate::tasks::Task::standalone();
+        task.title = format!("trabalho de B {n}");
+        f.b.save_task(&task).unwrap();
+        f.sync_b(Where::Pen);
+    }
+    for n in 0..8 {
+        let mut task = crate::tasks::Task::new(doc);
+        task.title = format!("enchimento {n}");
+        f.a.save_task(&task).unwrap();
+    }
+    f.sync_a(Where::Drive);
+    let files = f.files(Where::Both);
+    let report = sync_in_raw(&mut f.b, files);
+    let named = report
+        .notes
+        .iter()
+        .any(|n| n.contains("Segunda triagem de B"));
+    let still_here = task_by_title(&f.b, "Segunda triagem de B").is_some();
+    assert!(
+        named || still_here,
+        "the second triage task vanished unnamed: {:?}",
+        report.notes
+    );
+    crate::sharedfolder::set_journal_cap_for_test(crate::sharedfolder::MAX_JOURNAL_ENTRIES);
+}

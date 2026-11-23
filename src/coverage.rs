@@ -23,9 +23,9 @@
 //! - in the same numbering only (a copy whose changes the result all has,
 //!   or this library): an atendimento by number and creation time, a task
 //!   without uid (from a copy written before task uids) by number and title;
-//! - the automatic triage task of a document, by that document's request id
-//!   and its action (it is made again when the document's import is
-//!   replayed).
+//! - a triage task without uid, by its document's request id and its action
+//!   (a task with a uid is found by its uid or by the replay's `triage`
+//!   slot, never by this key: one document may have two triage tasks).
 //!
 //! A false alarm only keeps one more copy aside; a false match would lose an
 //! item, so a match needs one of the proofs above.
@@ -99,7 +99,11 @@ fn task_keys(item: &mut Item, title: &str, action: &str, requests: &[String]) {
         item.frame_keys
             .push(format!("tarefa#{}|{}", item.id, title.trim()));
     }
-    if action == "triar" {
+    // A task with a uid is found by its uid only (a replay that made it
+    // again is found through the replay's `triage` slot): two triage tasks
+    // of one document are two items. The document + action key is for a
+    // triage task without uid (a copy written before task uids).
+    if action == "triar" && item.uid.is_empty() {
         item.keys
             .extend(requests.iter().map(|r| format!("triagem:{r}")));
     }
