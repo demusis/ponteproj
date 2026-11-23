@@ -5967,8 +5967,12 @@ impl Store {
             journal = best.payload.journal.clone();
             // The proofs of a change are resolved in the copy being built
             // when it carries identities (a 9): its frame is the base's epoch
-            // and, for each change, the revision right before it.
-            let use_refs = !best.payload.snapshot.idents.is_empty();
+            // and, for each change, the revision right before it. A 9 is
+            // known by its header and its epoch, never by having triples: an
+            // empty one (everything deleted) still resolves every proof
+            // (review F3.0a2, finding 1).
+            let use_refs = best.header.format >= sharedfolder::FORMAT_9
+                && !best.payload.snapshot.ident_epoch.is_empty();
             let epoch = best.payload.snapshot.ident_epoch.clone();
             let framed = |refs: crate::idrefs::Refs, revision: i64| crate::idrefs::Refs {
                 frame: crate::idrefs::FrameTag {
