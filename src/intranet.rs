@@ -8065,12 +8065,14 @@ impl Store {
         } else {
             mutation_target_key(&mutation)
         };
+        let mut mutation = mutation;
         if let Some(key) = target_key {
-            if let Some(prev) = existing
+            let last = existing
                 .iter()
                 .rev()
                 .find(|e| mutation_target_key(&e.mutation).as_deref() == Some(key.as_str()))
-                .filter(|e| !matches!(e.mutation, IntranetMutation::RelinkTask { .. }))
+                .filter(|e| !matches!(e.mutation, IntranetMutation::RelinkTask { .. }));
+            if let Some(prev) = last
                 // A change that may already be on the main computer is not
                 // rewritten: its identity must stay what was sent.
                 .filter(|e| !e.attempted)
@@ -8189,6 +8191,21 @@ impl Store {
                     )?;
                 }
                 return Ok(());
+            }
+            // An earlier entry of the same item is kept as it is (sent
+            // already, or without proofs, or of another frame): the replay
+            // applies it once, whatever edits were merged into it here, so
+            // this one expects the version that entry leaves, never the
+            // local one (review F3.0a1, finding 4).
+            if let Some(after) = last
+                .and_then(|prev| expected_version_of(&prev.mutation))
+                .map(|v| v + 1)
+            {
+                if let Some(expected) = expected_version_mut(&mut mutation) {
+                    if expected.is_some() {
+                        *expected = Some(after);
+                    }
+                }
             }
         }
         self.insert_outbox_entry(actor, mutation, base, created, idents, refs, identity)
@@ -10794,6 +10811,58 @@ fn mutation_target_key(mutation: &IntranetMutation) -> Option<String> {
         // keeps the version the first of them saw.
         IntranetMutation::DeleteResource { uid, .. } => Some(format!("resource:{uid}")),
         IntranetMutation::DeleteResourceUse { uid, .. } => Some(format!("resource_use:{uid}")),
+        _ => None,
+    }
+}
+
+/// The version a queued change expects of its item (`None`: it checks
+/// none, or it has no version).
+fn expected_version_of(mutation: &IntranetMutation) -> Option<i64> {
+    let mut copy = mutation.clone();
+    expected_version_mut(&mut copy).and_then(|v| *v)
+}
+
+/// The expected version of the changes merged by item
+/// ([`mutation_target_key`]), to be set.
+fn expected_version_mut(mutation: &mut IntranetMutation) -> Option<&mut Option<i64>> {
+    use IntranetMutation as M;
+    match mutation {
+        M::SaveNote {
+            expected_version, ..
+        }
+        | M::SaveTask {
+            expected_version, ..
+        }
+        | M::SaveWorkContext {
+            expected_version, ..
+        }
+        | M::SaveSaiopAttendance {
+            expected_version, ..
+        }
+        | M::SaveResource {
+            expected_version, ..
+        }
+        | M::SaveResourceUse {
+            expected_version, ..
+        }
+        | M::SaveCategory {
+            expected_version, ..
+        }
+        | M::DeleteCategory {
+            expected_version, ..
+        }
+        | M::SaveProject {
+            expected_version, ..
+        }
+        | M::DeleteProject {
+            expected_version, ..
+        }
+        | M::DeleteResource {
+            expected_version, ..
+        }
+        | M::DeleteResourceUse {
+            expected_version, ..
+        } => Some(expected_version),
         _ => None,
     }
 }
