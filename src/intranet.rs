@@ -1935,6 +1935,30 @@ pub(crate) fn forget_orphan_versions(tx: &Connection) -> Result<usize> {
     )?)
 }
 
+/// The uid of a task that reaches this library without one (a copy written
+/// before task uids): derived only from what every device that adopts the
+/// same copy reads in it (the main computer's generation, empty in a shared
+/// folder, and the task's own number, document, title and action), so that
+/// all of them give it the same uid instead of a random one each.
+pub(crate) fn derived_task_uid(generation: &str, task: &crate::tasks::Task) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"ponte:tarefa-sem-uid:1");
+    hash.update([0u8]);
+    hash.update(generation.as_bytes());
+    hash.update([0u8]);
+    hash.update(task.id.to_be_bytes());
+    hash.update(task.document_id.unwrap_or(0).to_be_bytes());
+    hash.update(task.title.as_bytes());
+    hash.update([0u8]);
+    hash.update(task.action.as_bytes());
+    let digest = hash.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .to_string()
+}
+
 fn insert_outbox_row(conn: &Connection, entry: &OutboxEntry) -> Result<()> {
     conn.execute(
         "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
@@ -3258,7 +3282,7 @@ impl Store {
                 carry_old_task_fields(old, &mut value, snapshot.schema_version);
             }
             if value.uid.is_empty() {
-                value.uid = uuid::Uuid::new_v4().to_string();
+                value.uid = derived_task_uid(&snapshot.generation, &value);
             }
             tx.execute(
                 "INSERT INTO tasks(id,document_id,payload,uid) VALUES(?1,?2,?3,?4)",

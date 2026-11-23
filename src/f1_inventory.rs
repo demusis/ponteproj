@@ -1164,11 +1164,12 @@ fn c4_the_stable_identifiers_that_exist_travel_unchanged() {
     let _ = locate(&p.b, &made);
 }
 
-/// C4: a task that reaches a library without uid (a copy written before
-/// task uids) gets a RANDOM one at adoption: two devices adopting the same
-/// copy give it two different uids.
+/// C4 / F0: a task that reaches a library without uid (a copy written before
+/// task uids) got a RANDOM one at adoption in 0.50.0, so two devices adopting
+/// the same copy gave it two different uids. It now gets one derived from the
+/// copy: the same on both, and different for two tasks.
 #[test]
-fn c4_a_task_without_uid_gets_a_different_uid_on_each_device() {
+fn c4_a_task_without_uid_gets_the_same_uid_on_each_device() {
     let dir = tempfile::tempdir().unwrap();
     let mut source = Store::open(&dir.path().join("s.sqlite3")).unwrap();
     let doc = source
@@ -1178,6 +1179,9 @@ fn c4_a_task_without_uid_gets_a_different_uid_on_each_device() {
     let mut task = crate::tasks::Task::new(doc);
     task.title = "Tarefa antiga".into();
     source.save_task(&task).unwrap();
+    let mut other = crate::tasks::Task::new(doc);
+    other.title = "Outra tarefa antiga".into();
+    source.save_task(&other).unwrap();
     let mut snapshot = source.export_snapshot().unwrap();
     for task in &mut snapshot.tasks {
         task.uid.clear();
@@ -1191,11 +1195,18 @@ fn c4_a_task_without_uid_gets_a_different_uid_on_each_device() {
                 |_| anyhow::bail!("sem anexo"),
             )
             .unwrap();
-        task_by_title(&store, "Tarefa antiga").unwrap()
+        (
+            task_by_title(&store, "Tarefa antiga").unwrap(),
+            task_by_title(&store, "Outra tarefa antiga").unwrap(),
+        )
     };
-    let (one_, two) = (adopt("1.sqlite3"), adopt("2.sqlite3"));
+    let ((one_, other_one), (two, other_two)) = (adopt("1.sqlite3"), adopt("2.sqlite3"));
     assert_eq!(one_.id, two.id, "same row id");
-    assert_ne!(one_.uid, two.uid, "different uids for the same task");
+    assert!(!one_.uid.is_empty());
+    assert_eq!(one_.uid, two.uid, "the same uid for the same task");
+    assert_eq!(other_one.uid, other_two.uid);
+    assert_ne!(one_.uid, other_one.uid, "two tasks, two uids");
+    assert!(uuid::Uuid::parse_str(&one_.uid).is_ok(), "{}", one_.uid);
 }
 
 // ------------------------------------------------- IdMap coverage (unit) --
