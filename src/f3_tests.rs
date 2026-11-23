@@ -579,3 +579,195 @@ fn f3_0_refs_round_trip() {
     assert!(since.is_i64(), "refs_since: {since}");
     assert!(since.as_i64().unwrap() <= copy.header.revision);
 }
+
+// ------------------------------------- the walker and Refs::check (API) --
+//
+// These name the types of F3.0a1 and so cannot exist on `deb7fbb`: they are
+// guards of the new code, not red tests.
+
+/// v2 §6 parity: the walk of every variant of `IntranetMutation` (made
+/// through the product, `f2a_parity::every_variant`) is the walk
+/// `IdMap::remap` translates through, and each queued entry carries one
+/// ref per site of its change and of its base, of the site's kind and
+/// number. The uid-addressed variants have no site.
+#[test]
+fn f3_0_walker_is_exhaustive() {
+    use crate::idmap::{CreatedId, IdKind, IdMap};
+    let (_dir, mut a, _path) = alone();
+    crate::f2a_parity::every_variant(&mut a, "a");
+    let queued = a.list_offline_outbox().unwrap();
+    let names: std::collections::BTreeSet<&str> = queued
+        .iter()
+        .map(|e| crate::f2a_parity::variant_name(&e.mutation))
+        .collect();
+    assert!(
+        names.len() + 1 >= crate::f2a_parity::enum_variant_count(),
+        "{names:?}"
+    );
+    let head = |name: &str| -> Option<Vec<IdKind>> {
+        use IdKind as K;
+        Some(match name {
+            "SaveNote" | "SaveWorkContext" | "DeleteDocument" => vec![K::Document],
+            "SaveDraft" | "SaveAnalysis" | "RecordGeneration" => vec![K::Document, K::Capture],
+            "RelinkTask" => vec![K::Task],
+            "SavePageText" => vec![K::File],
+            "AddDocumentLink" => vec![K::Document, K::Document],
+            "SetLinkActive" => vec![K::Link],
+            "UndoSaiopBatch" => vec![K::SaiopBatch],
+            // (A new atendimento, number 0, has no site of its own.)
+            "DeleteSaiopAttendance" | "CreateTaskForSaiop" => vec![K::Saiop],
+            "UpdateAttachment"
+            | "DeleteAttachment"
+            | "ExtractAttachmentText"
+            | "ReviewAttachmentText" => vec![K::Attachment],
+            "SaveTemplate"
+            | "SetTemplateStatus"
+            | "DeleteTemplate"
+            | "SaveInstructionBlock"
+            | "SetBlockStatus"
+            | "DeleteBlock"
+            | "SaveExample"
+            | "DeleteExample"
+            | "DeleteResource"
+            | "SaveResource"
+            | "SaveCategory"
+            | "DeleteCategory"
+            | "SaveProject"
+            | "DeleteProject"
+            | "SaveSetting"
+            | "DeleteResourceUse"
+            | "ImportCapture"
+            | "ImportBundle" => vec![],
+            _ => return None,
+        })
+    };
+    for entry in &queued {
+        let name = crate::f2a_parity::variant_name(&entry.mutation);
+        let sites = crate::idrefs::sites(&entry.mutation);
+        if let Some(expected) = head(name) {
+            if expected.is_empty() {
+                assert!(sites.is_empty(), "{name}: {sites:?}");
+            } else {
+                let kinds: Vec<IdKind> = sites.iter().map(|s| s.0).collect();
+                assert!(kinds.starts_with(&expected), "{name}: {kinds:?}");
+            }
+        }
+        // The producer proved each site, of its kind and number.
+        let refs = entry
+            .refs
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name}: no refs"));
+        crate::idrefs::Refs::check(&entry.mutation, entry.base.as_ref(), refs)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        // `remap` walks the same sites: every number moved by 1000 moves
+        // every site (and only them).
+        let here: Vec<CreatedId> = sites
+            .iter()
+            .map(|(kind, id)| CreatedId::new(*kind, format!("{id}"), *id))
+            .collect();
+        let there: Vec<CreatedId> = sites
+            .iter()
+            .map(|(kind, id)| CreatedId::new(*kind, format!("{id}"), id + 1000))
+            .collect();
+        let mut map = IdMap::default();
+        map.learn(&here, Some(&there));
+        let moved = map.remap(&entry.mutation, &a, None).unwrap();
+        let shifted: Vec<(IdKind, i64)> = sites.iter().map(|(k, id)| (*k, id + 1000)).collect();
+        assert_eq!(crate::idrefs::sites(&moved), shifted, "{name}");
+    }
+}
+
+/// Adendo §3 rule 2 / frozen rule 5: `Refs::check` holds only for the
+/// proofs of this very change and base.
+#[test]
+fn f3_0a1_refs_check_per_site() {
+    use crate::idmap::IdKind;
+    use crate::idrefs::{Proof, Ref, Refs};
+    let r = |kind, row| Ref {
+        kind,
+        row,
+        proof: Proof::Frame,
+    };
+    let note = IntranetMutation::RelinkTask {
+        task_id: 42,
+        document_id: Some(7),
+        expected_version: None,
+    };
+    let good = Refs {
+        mutation: vec![r(IdKind::Task, 42), r(IdKind::Document, 7)],
+        ..Refs::default()
+    };
+    assert!(Refs::check(&note, None, &good).is_ok());
+    // One site too few, a wrong kind, a wrong number.
+    for bad in [
+        vec![r(IdKind::Task, 42)],
+        vec![r(IdKind::Document, 42), r(IdKind::Document, 7)],
+        vec![r(IdKind::Task, 42), r(IdKind::Document, 8)],
+    ] {
+        let refs = Refs {
+            mutation: bad,
+            ..Refs::default()
+        };
+        assert!(Refs::check(&note, None, &refs).is_err(), "{refs:?}");
+    }
+    // No base, but base proofs; a base, but none of its proofs.
+    let with_base = Refs {
+        base: vec![r(IdKind::Task, 42)],
+        ..good.clone()
+    };
+    assert!(Refs::check(&note, None, &with_base).is_err());
+    assert!(Refs::check(&note, Some(&note), &good).is_err());
+    let both = Refs {
+        base: good.mutation.clone(),
+        ..good.clone()
+    };
+    assert!(Refs::check(&note, Some(&note), &both).is_ok());
+    // Sentinels are no site: a task moved out of any record names only
+    // itself, and a number 0 is none.
+    let unlinked = IntranetMutation::RelinkTask {
+        task_id: 42,
+        document_id: None,
+        expected_version: None,
+    };
+    assert_eq!(crate::idrefs::sites(&unlinked), vec![(IdKind::Task, 42)]);
+    let zero = IntranetMutation::RelinkTask {
+        task_id: 0,
+        document_id: Some(0),
+        expected_version: None,
+    };
+    assert!(crate::idrefs::sites(&zero).is_empty());
+    // A numbered manual edit names its record, and only it does.
+    let mut manual = crate::model::sample_capture();
+    manual.source_url = format!("{}MANUAL-2026/0001", crate::model::MANUAL_ORIGIN);
+    manual.document_number = "MANUAL-2026/0001".into();
+    let edit = IntranetMutation::ImportCapture { capture: manual };
+    assert!(Refs::check(&edit, None, &Refs::default()).is_err());
+    let targeted = Refs {
+        manual_target: Some(r(IdKind::Document, 3)),
+        ..Refs::default()
+    };
+    assert!(Refs::check(&edit, None, &targeted).is_ok());
+    let plain = IntranetMutation::ImportCapture {
+        capture: crate::model::sample_capture(),
+    };
+    assert!(Refs::check(&plain, None, &targeted).is_err());
+    assert!(Refs::check(&plain, None, &Refs::default()).is_ok());
+    // The proofs travel as JSON unchanged.
+    let proofs = Refs {
+        mutation: vec![
+            Ref {
+                kind: IdKind::Task,
+                row: 42,
+                proof: Proof::Ident("ab".repeat(16)),
+            },
+            Ref {
+                kind: IdKind::Document,
+                row: 7,
+                proof: Proof::Unprovable,
+            },
+        ],
+        ..good
+    };
+    let back: Refs = serde_json::from_value(json(&proofs)).unwrap();
+    assert_eq!(back, proofs);
+}

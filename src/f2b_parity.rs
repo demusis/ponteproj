@@ -63,8 +63,11 @@ fn nine_content(path: &Path) -> (Value, usize, String) {
     let triples = copy.payload.snapshot.idents.len();
     let epoch = std::mem::take(&mut copy.payload.snapshot.ident_epoch);
     copy.payload.snapshot.idents.clear();
+    // The proofs of level 2 (F3) are no content of format 8 either.
+    copy.payload.refs_since = None;
     for e in copy.payload.journal.iter_mut() {
         e.idents.clear();
+        e.refs = None;
     }
     // Written again as an 8 of schema 21 (what 0.51 wrote) to compare.
     let dir = tempfile::tempdir().unwrap();

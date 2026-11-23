@@ -1137,6 +1137,7 @@ mod tests {
             expected_generation: String::new(),
             mutation_uid: String::new(),
             idents: Vec::new(),
+            refs: None,
         })
         .unwrap();
         json["Mutate"]
@@ -1224,6 +1225,7 @@ mod tests {
                 expected_generation: String::new(),
                 mutation_uid: String::new(),
                 idents: Vec::new(),
+                refs: None,
             },
         )
         .unwrap();

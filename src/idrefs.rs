@@ -16,6 +16,8 @@
 //! change, never a number to guess.
 use crate::idmap::IdKind;
 use crate::intranet::IntranetMutation;
+use anyhow::Result;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -320,4 +322,106 @@ pub fn sites(mutation: &IntranetMutation) -> Vec<(IdKind, i64)> {
         Ok(())
     });
     out
+}
+
+/// Whether `mutation` is the edit of a manual record that already has its
+/// number (its target is named by `Refs::manual_target`).
+fn numbered_manual(mutation: &IntranetMutation) -> bool {
+    matches!(
+        mutation,
+        IntranetMutation::ImportCapture { capture }
+            if capture.is_manual()
+                && capture.document_number.trim() != crate::model::MANUAL_PENDING
+    )
+}
+
+/// The frame of the library on `conn`: the epoch of its identities and the
+/// revision of the copy it last adopted or published.
+pub(crate) fn frame_tag(conn: &Connection) -> Result<FrameTag> {
+    let (_, _, epoch) = crate::idents::origin(conn)?;
+    Ok(FrameTag {
+        epoch: epoch.unwrap_or_default(),
+        revision: crate::intranet::synced_revision(conn)?,
+    })
+}
+
+/// The proofs of `sites` in the library on `conn` (identities read there).
+fn prove(conn: &Connection, sites: Vec<(IdKind, i64)>, idents: bool) -> Result<Vec<Ref>> {
+    sites
+        .into_iter()
+        .map(|(kind, row)| {
+            let ident = if idents {
+                crate::idents::ident_of(conn, crate::idents::kind_of(kind), row)?
+            } else {
+                None
+            };
+            // No kind is addressed by identity yet (the mapper, F3.0b):
+            // a row without identity is proved only in its own frame.
+            let proof = ident.map(Proof::Ident).unwrap_or(Proof::Frame);
+            Ok(Ref { kind, row, proof })
+        })
+        .collect()
+}
+
+impl Refs {
+    /// These proofs for the same change written without its base.
+    pub fn without_base(self) -> Refs {
+        Refs {
+            base: Vec::new(),
+            ..self
+        }
+    }
+
+    /// The proofs of `mutation` and of its `base`, read in the library on
+    /// `conn` BEFORE the change runs there (in the same transaction when
+    /// the caller has one), in its frame.
+    pub(crate) fn capture(
+        conn: &Connection,
+        mutation: &IntranetMutation,
+        base: Option<&IntranetMutation>,
+    ) -> Result<Refs> {
+        let idents = crate::idents::has_idents(conn)?;
+        Ok(Refs {
+            mutation: prove(conn, sites(mutation), idents)?,
+            base: match base {
+                Some(base) => prove(conn, sites(base), idents)?,
+                None => Vec::new(),
+            },
+            // Named by the edit of a manual record (F3.1b1).
+            manual_target: None,
+            frame: frame_tag(conn)?,
+        })
+    }
+
+    /// Whether these proofs are the proofs of `mutation` and `base`: one per
+    /// site, each of the site's kind and number, none for a missing base,
+    /// and a manual target (a document) exactly for a numbered manual edit.
+    /// Run by every receiver before any number is resolved; a failure is a
+    /// damaged change ([`DAMAGED`]), never a reason to use the numbers.
+    pub fn check(
+        mutation: &IntranetMutation,
+        base: Option<&IntranetMutation>,
+        refs: &Refs,
+    ) -> Result<(), String> {
+        let agree = |sites: Vec<(IdKind, i64)>, refs: &[Ref]| {
+            sites.len() == refs.len()
+                && sites
+                    .iter()
+                    .zip(refs)
+                    .all(|((kind, row), r)| r.kind == *kind && r.row == *row)
+        };
+        let base_ok = match base {
+            Some(base) => agree(sites(base), &refs.base),
+            None => refs.base.is_empty(),
+        };
+        let target_ok = match &refs.manual_target {
+            Some(target) => numbered_manual(mutation) && target.kind == IdKind::Document,
+            None => !numbered_manual(mutation),
+        };
+        if agree(sites(mutation), &refs.mutation) && base_ok && target_ok {
+            Ok(())
+        } else {
+            Err(DAMAGED.to_owned())
+        }
+    }
 }

@@ -1543,6 +1543,21 @@ mod tests {
                         slot["ident"] = serde_json::Value::from("…");
                     }
                 }
+                // So are the identities that prove the items a change names
+                // (F3): the same sites, kinds and numbers, not the values.
+                for list in ["mutation", "base"] {
+                    if let Some(refs) = value
+                        .get_mut("refs")
+                        .and_then(|r| r.get_mut(list))
+                        .and_then(|v| v.as_array_mut())
+                    {
+                        for r in refs {
+                            if r["proof"].get("Ident").is_some() {
+                                r["proof"]["Ident"] = serde_json::Value::from("…");
+                            }
+                        }
+                    }
+                }
                 value
             })
             .collect();

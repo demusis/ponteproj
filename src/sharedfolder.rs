@@ -162,6 +162,11 @@ pub struct JournalEntry {
     /// only), so that a replay gives them to the rows it inserts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub idents: Vec<crate::idents::SlotIdent>,
+    /// The proofs of the items the change and its base name (level 2);
+    /// `None`: written by an older Ponte, legacy up to
+    /// [`Payload::refs_since`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refs: Option<crate::idrefs::Refs>,
 }
 
 /// Encrypted part of the file.
@@ -171,6 +176,11 @@ pub struct Payload {
     /// `uid`s of every queued change incorporated in this lineage.
     pub applied: Vec<String>,
     pub journal: Vec<JournalEntry>,
+    /// The revision of the first write of level 2 of this lineage, carried
+    /// by every later write: a journal entry without proofs at or below it
+    /// is legacy; above it, a damaged change (F3, adendo §3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refs_since: Option<i64>,
 }
 
 /// PDF and attachment bytes by id, matching the snapshot's `files_meta`
@@ -1151,6 +1161,7 @@ mod tests {
             snapshot: empty_snapshot(),
             applied: vec!["a".into(), "b".into()],
             journal: vec![],
+            refs_since: None,
         };
         let request = WriteRequest {
             lineage: "lin-1",
@@ -1230,6 +1241,7 @@ mod tests {
             snapshot: empty_snapshot(),
             applied: vec![],
             journal: vec![],
+            refs_since: None,
         };
         let request = WriteRequest {
             lineage: "lin-1",

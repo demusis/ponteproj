@@ -966,6 +966,10 @@ pub struct OutboxEntry {
     /// inserts for that slot. Local only: never written to a shared file.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub idents: Vec<crate::idents::SlotIdent>,
+    /// The proofs of the items the change and its base name, captured here
+    /// before it ran (level 2). `None`: queued by an older Ponte (legacy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refs: Option<crate::idrefs::Refs>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1208,6 +1212,10 @@ pub enum RpcRequest {
         /// (V2): the main computer gives them to the rows it inserts.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         idents: Vec<crate::idents::SlotIdent>,
+        /// The proofs of the items the change names, in the sender's frame
+        /// (level 2); `None` from a change of an older Ponte.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refs: Option<crate::idrefs::Refs>,
     },
     /// The team protocol V2 (F2b): every request of a Ponte that carries
     /// identities. A main computer of this build answers the five requests
@@ -2185,6 +2193,20 @@ pub(crate) fn derived_task_uid(generation: &str, task: &crate::tasks::Task) -> S
         .to_string()
 }
 
+/// The revision of the copy the library on `conn` last adopted or
+/// published (0: none).
+pub(crate) fn synced_revision(conn: &Connection) -> Result<i64> {
+    let blob: Option<Vec<u8>> = conn
+        .query_row("SELECT payload FROM intranet_config WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(match blob {
+        Some(bytes) => serde_json::from_slice::<IntranetConfig>(&unseal(&bytes)?)?.synced_revision,
+        None => 0,
+    })
+}
+
 fn insert_outbox_row(conn: &Connection, entry: &OutboxEntry) -> Result<()> {
     conn.execute(
         "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
@@ -2216,7 +2238,8 @@ pub(crate) fn queue_import_locally(
     let reply = MutationReply::Receipt(receipt.clone());
     let created = crate::idmap::created_ids(&frame, &import, &reply)?;
     let idents = crate::idents::created_idents(tx, &import, &reply, &inserted)?;
-    entries.push((import, created, idents));
+    let refs = crate::idrefs::Refs::capture(tx, &import, None)?;
+    entries.push((import, created, idents, refs));
     for (index, id) in added {
         let file = &files[*index];
         let mutation = IntranetMutation::AddAttachment {
@@ -2231,9 +2254,12 @@ pub(crate) fn queue_import_locally(
         let created = crate::idmap::created_ids(&frame, &mutation, &MutationReply::Id(*id))?;
         let idents =
             crate::idents::created_idents(tx, &mutation, &MutationReply::Id(*id), &inserted)?;
-        entries.push((mutation, created, idents));
+        // Its record exists before the attachment row: proved from this
+        // same transaction.
+        let refs = crate::idrefs::Refs::capture(tx, &mutation, None)?;
+        entries.push((mutation, created, idents, refs));
     }
-    for (mutation, created, idents) in entries {
+    for (mutation, created, idents, refs) in entries {
         insert_outbox_row(
             tx,
             &OutboxEntry {
@@ -2247,6 +2273,7 @@ pub(crate) fn queue_import_locally(
                 created,
                 attempted: false,
                 idents,
+                refs: Some(refs),
             },
         )?;
     }
@@ -2280,6 +2307,7 @@ pub(crate) fn queue_attachment_locally(
     let inserted = crate::idents::logged(tx)?;
     let idents =
         crate::idents::created_idents(tx, &mutation, &MutationReply::Id(attachment_id), &inserted)?;
+    let refs = crate::idrefs::Refs::capture(tx, &mutation, None)?;
     insert_outbox_row(
         tx,
         &OutboxEntry {
@@ -2293,6 +2321,7 @@ pub(crate) fn queue_attachment_locally(
             created,
             attempted: false,
             idents,
+            refs: Some(refs),
         },
     )
 }
@@ -4449,6 +4478,7 @@ impl Store {
                         expected_generation: cfg.host_generation.clone(),
                         mutation_uid: sent.uid.clone(),
                         idents: Vec::new(),
+                        refs: sent.refs.clone(),
                     },
                     &mut reached,
                 ) {
@@ -5580,6 +5610,7 @@ impl Store {
                     revision: 0,
                     created: entry.created.clone(),
                     idents: entry.idents.clone(),
+                    refs: entry.refs.clone(),
                 });
                 processed_outbox.push((entry.id, entry.uid.clone()));
             }
@@ -5949,6 +5980,7 @@ impl Store {
                             created: Vec::new(),
                             attempted: false,
                             idents: Vec::new(),
+                            refs: entry.refs.clone(),
                         };
                         let mut conflict = conflict_for(
                             &as_entry,
@@ -6054,6 +6086,7 @@ impl Store {
                                 revision,
                                 created: Vec::new(),
                                 idents: Vec::new(),
+                                refs: entry.refs.clone().map(crate::idrefs::Refs::without_base),
                             });
                         }
                         applied.insert(entry.uid.clone());
@@ -6160,6 +6193,7 @@ impl Store {
                             revision,
                             created,
                             idents: entry.idents.clone(),
+                            refs: entry.refs.clone(),
                         });
                     }
                     (remapped, outcome) => {
@@ -6251,15 +6285,26 @@ impl Store {
             .collect();
         sharedfolder::trim_journal(&mut journal);
         if !nine_out {
-            // A file of format 8 carries no identity.
+            // A file of format 8 carries no identity, nor the proofs.
             for entry in journal.iter_mut() {
                 entry.idents.clear();
+                entry.refs = None;
             }
         }
+        // From which revision this lineage carries the proofs: kept from the
+        // copies read, else set by this first write of level 2 (adendo §3).
+        let refs_since = nine_out.then(|| {
+            copies
+                .iter()
+                .filter_map(|c| c.payload.refs_since)
+                .min()
+                .unwrap_or(revision)
+        });
         let payload = Payload {
             snapshot: final_snapshot.clone(),
             applied: applied.into_iter().collect(),
             journal,
+            refs_since,
         };
         // One moment for every file this exchange writes: copies written
         // together say so (the same revision, writer and moment).
@@ -7002,6 +7047,7 @@ impl Store {
                         base: None,
                         created,
                         idents: Vec::new(),
+                        refs: entry.refs.clone().map(crate::idrefs::Refs::without_base),
                         ..entry.clone()
                     });
                 }
@@ -7030,6 +7076,7 @@ impl Store {
                         created: Vec::new(),
                         attempted: false,
                         idents: Vec::new(),
+                        refs: entry.refs.clone(),
                     };
                     let content = old_change_content(&entry.mutation);
                     let mut reason = format!(
@@ -7188,8 +7235,10 @@ impl Store {
         }
         // The identity is made before the first attempt: if the answer is
         // lost, the queue sends the very same change under the same identity
-        // and the main computer recognizes it.
+        // and the main computer recognizes it. So are the proofs of the
+        // items it names, in this library's frame, before it is sent.
         let uid = uuid::Uuid::new_v4().simple().to_string();
+        let refs = crate::idrefs::Refs::capture(&self.conn, &mutation, None)?;
         let mut reached = false;
         let attempt = if self.host_known_unreachable() {
             Err(RpcError::Unreachable(
@@ -7205,6 +7254,7 @@ impl Store {
                     expected_generation: cfg.host_generation.clone(),
                     mutation_uid: uid.clone(),
                     idents: Vec::new(),
+                    refs: Some(refs.clone()),
                 },
                 &mut reached,
             )
@@ -7234,6 +7284,8 @@ impl Store {
                         created: Vec::new(),
                         attempted: true,
                         idents: Vec::new(),
+                        // The proofs captured before the send.
+                        refs: Some(refs),
                     },
                 )?;
                 tx.commit()?;
@@ -7398,6 +7450,8 @@ impl Store {
     ) -> Result<MutationReply> {
         let queued_mutation = self.prepare_mutation_for_outbox(mutation.clone());
         let base = self.snapshot_for_mutation(&queued_mutation);
+        // The proofs of what the change and its base name, before it runs.
+        let refs = crate::idrefs::Refs::capture(&self.conn, &queued_mutation, base.as_ref())?;
         let logged = self.run_logged(|store| store.execute_mutation(actor, mutation))?;
         let reply = match logged.result {
             Ok(reply) => reply,
@@ -7426,7 +7480,15 @@ impl Store {
                 crate::idents::created_idents(&self.conn, &queued_mutation, &reply, &inserted)
             })
             .unwrap_or_default();
-        self.enqueue_offline_mutation(actor, queued_mutation, base, created, idents, identity)?;
+        self.enqueue_offline_mutation(
+            actor,
+            queued_mutation,
+            base,
+            created,
+            idents,
+            refs,
+            identity,
+        )?;
         self.offline_queued += 1;
         // A log that did not close is said, after the change was queued.
         logged.closed?;
@@ -7798,6 +7860,7 @@ impl Store {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn enqueue_offline_mutation(
         &mut self,
         actor: &str,
@@ -7805,6 +7868,7 @@ impl Store {
         base: Option<IntranetMutation>,
         created: Vec<crate::idmap::CreatedId>,
         idents: Vec<crate::idents::SlotIdent>,
+        refs: crate::idrefs::Refs,
         identity: Option<(String, bool)>,
     ) -> Result<()> {
         let existing = self.list_offline_outbox()?;
@@ -7824,6 +7888,9 @@ impl Store {
                 // A change that may already be on the main computer is not
                 // rewritten: its identity must stay what was sent.
                 .filter(|e| !e.attempted)
+                // Nor one without proofs (an older Ponte's), nor one made in
+                // another frame: the new edit goes after it instead.
+                .filter(|e| e.refs.as_ref().is_some_and(|r| r.frame == refs.frame))
                 .cloned()
             {
                 // The merged edit keeps the place of the first one (later
@@ -7875,10 +7942,27 @@ impl Store {
                             _ => None,
                         };
                     }
-                    self.insert_outbox_entry(actor, mutation, base, Vec::new(), idents, None)?;
+                    self.insert_outbox_entry(
+                        actor,
+                        mutation,
+                        base,
+                        Vec::new(),
+                        idents,
+                        Some(refs),
+                        None,
+                    )?;
                     return Ok(());
                 }
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
+                // The proofs follow what is kept: the new mutation's, and the
+                // base's of the entry whose base is kept.
+                let merged_refs = crate::idrefs::Refs {
+                    base: match (&prev.base, &prev.refs) {
+                        (Some(_), Some(kept)) => kept.base.clone(),
+                        _ => refs.base,
+                    },
+                    ..refs
+                };
                 let updated = OutboxEntry {
                     id: prev.id,
                     created_at: now_iso(),
@@ -7901,6 +7985,7 @@ impl Store {
                     } else {
                         idents
                     },
+                    refs: Some(merged_refs),
                 };
                 let payload = seal(&serde_json::to_vec(&updated)?)?;
                 if must_move {
@@ -7920,9 +8005,10 @@ impl Store {
                 return Ok(());
             }
         }
-        self.insert_outbox_entry(actor, mutation, base, created, idents, identity)
+        self.insert_outbox_entry(actor, mutation, base, created, idents, Some(refs), identity)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_outbox_entry(
         &mut self,
         actor: &str,
@@ -7930,6 +8016,7 @@ impl Store {
         base: Option<IntranetMutation>,
         created: Vec<crate::idmap::CreatedId>,
         idents: Vec<crate::idents::SlotIdent>,
+        refs: Option<crate::idrefs::Refs>,
         identity: Option<(String, bool)>,
     ) -> Result<()> {
         let (uid, attempted) =
@@ -7945,6 +8032,7 @@ impl Store {
             created,
             attempted,
             idents,
+            refs,
         };
         insert_outbox_row(&self.conn, &entry)
     }
@@ -12106,6 +12194,9 @@ fn process_rpc_at(
             expected_generation,
             mutation_uid,
             idents,
+            // Checked and resolved from F3.0a2 on; a change of this level
+            // carries them (the barrier refuses a lower one).
+            refs: _,
         } => {
             ensure!(
                 !actor.trim().is_empty()
@@ -16793,6 +16884,7 @@ anual 05-02 Recesso
                 revision: copy.header.revision,
                 created: vec![],
                 idents: Vec::new(),
+                refs: None,
             });
         let h = &copy.header;
         let req = crate::sharedfolder::WriteRequest {
@@ -18483,6 +18575,7 @@ mod resources_sync_tests {
             mutation_uid: String::new(),
             mutation: before[0].mutation.clone(),
             idents: Vec::new(),
+            refs: None,
         };
         assert!(matches!(
             send_rpc_classified(&cfg, &request),
@@ -18588,6 +18681,7 @@ mod resources_sync_tests {
                 no_project: false,
             },
             idents: Vec::new(),
+            refs: None,
         };
         assert!(
             matches!(send_rpc_classified(&cfg, &request), Err(RpcError::Rejected(message)) if message.contains("Atualize o Ponte"))
@@ -18685,6 +18779,7 @@ mod resources_sync_tests {
                     mutation_uid: String::new(),
                     mutation,
                     idents: Vec::new(),
+                    refs: None,
                 },
             );
             assert!(
@@ -18707,6 +18802,7 @@ mod resources_sync_tests {
                     no_project: false,
                 },
                 idents: Vec::new(),
+                refs: None,
             },
         );
         assert!(matches!(in_project, Err(RpcError::Rejected(_))));
@@ -18723,6 +18819,7 @@ mod resources_sync_tests {
                     no_project: false,
                 },
                 idents: Vec::new(),
+                refs: None,
             },
         );
         assert!(matches!(ordinary, Err(RpcError::Rejected(_))));
@@ -18825,6 +18922,7 @@ mod resources_sync_tests {
                 mutation_uid: String::new(),
                 mutation,
                 idents: Vec::new(),
+                refs: None,
             },
         );
         assert!(
@@ -18845,6 +18943,7 @@ mod resources_sync_tests {
                     expected_version: None,
                 },
                 idents: Vec::new(),
+                refs: None,
             },
         );
         // Since F2b, what an older main computer cannot read waits too
@@ -18959,6 +19058,7 @@ mod resources_sync_tests {
                     mutation_uid: String::new(),
                     mutation,
                     idents: Vec::new(),
+                    refs: None,
                 },
             )
         };
@@ -19639,6 +19739,7 @@ mod host_history_tests {
                 expected_generation: String::new(),
                 mutation_uid: String::new(),
                 idents: Vec::new(),
+                refs: None,
             },
         )
         .unwrap();
@@ -20159,6 +20260,7 @@ Connection: close
             expected_generation: String::new(),
             mutation_uid: "cccccccc-1".into(),
             idents: Vec::new(),
+            refs: None,
         };
         let created_of = |response: RpcResponse| match response {
             RpcResponse::Mutated {
@@ -20341,6 +20443,7 @@ Connection: close
                 expected_generation: String::new(),
                 mutation_uid: uid.into(),
                 idents: Vec::new(),
+                refs: None,
             }
         };
         let id_of = |response: RpcResponse| match response {
@@ -20506,11 +20609,13 @@ mod tied_mirror_tests {
                 snapshot,
                 applied,
                 journal,
+                refs_since,
             } = copy.payload;
             let payload = Payload {
                 snapshot,
                 applied,
                 journal,
+                refs_since,
             };
             sharedfolder::write_stamped(
                 path,

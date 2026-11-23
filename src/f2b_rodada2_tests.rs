@@ -108,6 +108,7 @@ fn entry(
         revision: 1000,
         created,
         idents: Vec::new(),
+        refs: None,
     }
 }
 

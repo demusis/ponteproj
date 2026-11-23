@@ -372,6 +372,7 @@ fn export_limited(
         snapshot,
         applied: Vec::new(),
         journal: Vec::new(),
+        refs_since: None,
     };
     let written_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let (header, body) = seal_file(
