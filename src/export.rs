@@ -270,7 +270,7 @@ fn field(value: &str) -> String {
 
 /// `AAAA-MM-DD` from what the library stores (RFC 3339, ISO date or the
 /// `dd/mm/aaaa` typed by people); anything else goes out as it is.
-fn iso_date(value: &str) -> String {
+pub(crate) fn iso_date(value: &str) -> String {
     let value = value.trim();
     if value.is_empty() {
         return String::new();
