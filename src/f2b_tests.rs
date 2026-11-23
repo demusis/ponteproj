@@ -625,7 +625,7 @@ fn f2b_b7_crash_after_writing_9_resumes_by_adoption() {
     let lineage = t.lineage();
     drop(t.a);
     let mut a = Store::open(&t.dir.path().join("a.sqlite3")).unwrap();
-    assert_eq!(a.format_floor(&lineage).unwrap(), 9, "floor 9 survived");
+    assert_eq!(a.floor(&lineage).unwrap().format, 9, "floor 9 survived");
     sync(&mut a);
     let file = triples(&nine);
     assert_eq!(idents(&a), file, "adopted with the file's identities");
@@ -806,7 +806,7 @@ fn f2b_b13_floor_survives_library_replacement() {
     let hidden = t.dir.path().join("escondido.ponte");
     std::fs::rename(&nine, &hidden).unwrap();
     std::fs::write(&t.drive, &old8).unwrap();
-    assert_eq!(other.format_floor(&lineage).unwrap(), 9);
+    assert_eq!(other.floor(&lineage).unwrap().format, 9);
     let error = try_sync(&mut other).unwrap_err().to_string();
     assert!(error.contains("ainda não chegou"), "{error}");
     assert_eq!(std::fs::read(&t.drive).unwrap(), old8, "no 8 written");
@@ -1031,7 +1031,7 @@ fn f2b_b19_writer_validates_before_touching_any_destination() {
     assert!(error.contains("identidade"), "{error}");
     assert_eq!(files_in(&folder), names, "no file created");
     assert_eq!(std::fs::read(&t.drive).unwrap(), before, "byte-identical");
-    assert_eq!(t.a.format_floor(&t.lineage()).unwrap() < 9, true);
+    assert_eq!(t.a.floor(&t.lineage()).unwrap().format < 9, true);
 }
 
 // ------------------------------------------------------------- B20–B24 --

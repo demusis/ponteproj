@@ -1655,6 +1655,10 @@ pub(crate) const HOST_NOT_UPDATED: &str = "O computador principal ainda não ter
 /// library) to a request of an older Ponte, sent without the protocol V2.
 pub(crate) const LEGACY_REFUSED: &str = "O computador principal foi atualizado para uma versão nova do Ponte. Atualize o Ponte neste computador para voltar a sincronizar; as alterações continuam guardadas aqui.";
 
+/// What a main computer of this build answers (503, before opening its
+/// library) to a request of the protocol V2 below its level (F2b).
+pub(crate) const LEVEL_REFUSED: &str = "O computador principal foi atualizado para uma versão nova do Ponte, que exige a mesma versão nos outros computadores. Atualize o Ponte neste computador para voltar a sincronizar; as alterações continuam guardadas aqui.";
+
 const HOST_CANNOT_READ_START: &str = "O computador principal não entendeu esta mensagem";
 
 fn host_cannot_read() -> String {
@@ -4857,17 +4861,20 @@ impl Store {
             let mut is_nine = false;
             let read = sharedfolder::read_any(path, key);
             // Recorded as soon as it is read (a later path that cannot be
-            // read must not make this device forget a 9 it saw).
+            // read must not make this device forget a 9 it saw), with the
+            // level of the file read: never more than was seen.
             let observed = match &read {
                 Ok(Some(Found::Copy(c))) if c.header.format >= sharedfolder::FORMAT_9 => {
-                    Some(c.header.lineage.clone())
+                    Some((c.header.lineage.clone(), c.header.level))
                 }
-                Ok(Some(Found::Moved { header, .. })) => Some(header.lineage.clone()),
+                Ok(Some(Found::Moved { header, .. })) => {
+                    Some((header.lineage.clone(), header.level))
+                }
                 _ => None,
             };
-            if let Some(seen) = observed {
+            if let Some((seen, level)) = observed {
                 if seen == cfg.folder_lineage {
-                    self.raise_floor_to_nine(&seen)?;
+                    self.raise_floor(&seen, nine_floor(level))?;
                 }
             }
             match read {
@@ -4957,22 +4964,28 @@ impl Store {
             .and_then(|path| sharedfolder::read_header(path).ok().flatten());
         // The minimum format this device has seen of this folder: every 9
         // or stub of it read now raises it at once, before anything else can
-        // stop the exchange (it never goes down).
+        // stop the exchange (it never goes down). Its level is the highest
+        // of the authenticated files read (the guard's header alone is not
+        // authenticated: it says format 9, never a level).
         let guard_is_nine = guard_header
             .as_ref()
             .is_some_and(|h| h.lineage == lineage && h.format >= sharedfolder::FORMAT_9);
-        if nines.iter().any(|c| c.header.lineage == lineage)
-            || stubs.iter().any(|(_, h, _)| h.lineage == lineage)
-            || guard_is_nine
-        {
-            self.raise_floor_to_nine(&lineage)?;
+        let seen_level = nines
+            .iter()
+            .map(|c| &c.header)
+            .chain(stubs.iter().map(|(_, h, _)| h))
+            .filter(|h| h.lineage == lineage)
+            .map(|h| h.level)
+            .max();
+        if seen_level.is_some() || guard_is_nine {
+            self.raise_floor(&lineage, nine_floor(seen_level.unwrap_or(0)))?;
         }
         // Once this device has seen a 9 of this folder, a file of format 8
         // of ANOTHER lineage at a configured path is what an older Ponte
         // wrote there (an empty name looks like a new folder to it): it is
         // kept aside and named, and the stub goes back (never an error).
         let mut strangers: Vec<PathBuf> = Vec::new();
-        if self.format_floor(&lineage)? >= sharedfolder::FORMAT_9 {
+        if self.floor(&lineage)?.format >= sharedfolder::FORMAT_9 {
             copies.retain(|c| {
                 let stranger = c.header.lineage != lineage;
                 if stranger {
@@ -5003,7 +5016,8 @@ impl Store {
             crate::idents::check(&copy.payload.snapshot, Some(&copy.header))
                 .with_context(|| copy.path.display().to_string())?;
         }
-        let nine_mode = self.format_floor(&lineage)? >= sharedfolder::FORMAT_9;
+        let floor = self.floor(&lineage)?;
+        let nine_mode = floor.format >= sharedfolder::FORMAT_9;
         // Whether this library already cut or took a 9 of this folder.
         let (origin, origin_lineage, _) = crate::idents::origin(&self.conn)?;
         let cut_here = matches!(origin.as_str(), "stamped" | "adopted")
@@ -5033,12 +5047,27 @@ impl Store {
         let mut donors: Vec<sharedfolder::Copy> = Vec::new();
         // Paths that get the stub back, pointing to their file of format 9.
         let mut stub_targets: Vec<(PathBuf, String)> = Vec::new();
+        // Files of format 9 below the level of the floor (F3, adendo §1): an
+        // older Ponte of format 9 wrote them, or they were restored later.
+        // Never a base again: their changes are taken as an old copy's
+        // (Q6), and each path is written again, kept aside first.
+        let mut stale_nines: Vec<sharedfolder::Copy> = Vec::new();
         if nine_mode {
+            let (fresh, stale) = std::mem::take(&mut nines)
+                .into_iter()
+                .partition(|c| c.header.level >= floor.level);
+            nines = fresh;
+            stale_nines = stale;
             if nines.is_empty() {
-                let name = entries
-                    .iter()
-                    .find(|(_, _, good)| !good)
-                    .and_then(|(_, nine, _)| nine.file_name())
+                let name = stale_nines
+                    .first()
+                    .and_then(|c| c.path.file_name())
+                    .or_else(|| {
+                        entries
+                            .iter()
+                            .find(|(_, _, good)| !good)
+                            .and_then(|(_, nine, _)| nine.file_name())
+                    })
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "o arquivo do formato novo".to_owned());
                 bail!(
@@ -5069,11 +5098,16 @@ impl Store {
                     stub_targets.push((path.clone(), name));
                 }
             }
-            // The guard is this computer's last write; one of format 8 is
-            // an old copy now (kept aside before it is rewritten, readable
-            // or not).
+            for stale in &stale_nines {
+                absent.push(stale.path.clone());
+            }
+            // The guard is this computer's last write; one of format 8, or
+            // a 9 below the floor's level, is an old copy now (kept aside
+            // before it is rewritten, readable or not).
             if let (Some(path), Some(header)) = (&guard_path, &guard_header) {
-                if header.lineage == lineage && header.format < sharedfolder::FORMAT_9 {
+                if header.lineage == lineage
+                    && (header.format < sharedfolder::FORMAT_9 || header.level < floor.level)
+                {
                     if let Ok(Some(copy)) = sharedfolder::read(path, key) {
                         donors.push(copy);
                     }
@@ -5082,6 +5116,8 @@ impl Store {
             }
             copies = std::mem::take(&mut nines);
         }
+        let stale_paths: Vec<PathBuf> = stale_nines.iter().map(|c| c.path.clone()).collect();
+        donors.extend(stale_nines);
         // The guard copy counts only as this computer's last write: same
         // library, written by this computer, not older than the last
         // exchange (a guard whose write failed is stale and would roll
@@ -5234,8 +5270,9 @@ impl Store {
             .unwrap_or_default();
         let mut foreign: Vec<(JournalEntry, usize)> = Vec::new();
         // Copies that carry something the base cannot give back: they are
-        // kept aside before the folder is rewritten (see below).
-        let mut preserve: Vec<PathBuf> = Vec::new();
+        // kept aside before the folder is rewritten (see below). A 9 below
+        // the floor's level is always one of them.
+        let mut preserve: Vec<PathBuf> = stale_paths;
         for (index, copy) in copies.iter().enumerate().skip(1) {
             let missing_from_journal = copy
                 .payload
@@ -5310,6 +5347,13 @@ impl Store {
             && foreign.is_empty()
             && copies[0].header.revision == cfg.synced_revision
             && !lagging
+            // Every 9 below the level of this build is written again, even
+            // with the very same content (F3, adendo §1).
+            && (!nine_mode
+                || (copies.iter().all(|c| c.header.level >= sharedfolder::LEVEL)
+                    && guard_header
+                        .as_ref()
+                        .is_none_or(|h| h.level >= sharedfolder::LEVEL)))
             && preserve.is_empty()
             // The same revision is not the same content: two computers that
             // wrote different things at one revision must not both stay
@@ -6273,6 +6317,9 @@ impl Store {
                 || copy.header.revision < revision
                 || preserve.contains(&copy.path)
                 || identities.get(&copy.path) != Some(&final_identity)
+                // A 9 below the level of this build, even with the very
+                // same content: it counts as updated only once read back.
+                || (nine_out && copy.header.level < sharedfolder::LEVEL)
             {
                 targets.push(copy.path.clone());
             }
@@ -6448,28 +6495,32 @@ impl Store {
             };
             let written = if nine_out {
                 write().and_then(|_| {
-                    // Read back, authenticated: the very result is there.
+                    // Read back, authenticated: the very result is there,
+                    // at the level of this build.
                     match sharedfolder::read_any(path, key)? {
                         Some(sharedfolder::Found::Copy(copy))
                             if copy.header.revision == revision
-                                && copy.content_identity() == final_identity =>
+                                && copy.content_identity() == final_identity
+                                && copy.header.level == sharedfolder::LEVEL =>
                         {
-                            Ok(())
+                            Ok(Some(copy.header.level))
                         }
                         _ => bail!("{} não confere depois de gravado.", path.display()),
                     }
                 })
             } else {
-                self.under_floor_lock(lineage, write).map(|_| ())
+                self.under_floor_lock(lineage, write).map(|_| None)
             };
             match written {
-                Ok(()) => {
+                Ok(read_back) => {
                     report.written_to.push(path.display().to_string());
-                    if nine_out && !published_nine {
-                        // A 9 of this folder is out: this device never
-                        // writes an 8 of it again, whatever happens next.
+                    if let (Some(level), false) = (read_back, published_nine) {
+                        // A 9 of this folder is out, at the level read back:
+                        // this device never writes an 8 of it again, nor
+                        // takes a 9 below that level as a base, whatever
+                        // happens next.
                         published_nine = true;
-                        self.raise_floor_to_nine(lineage)?;
+                        self.raise_floor(lineage, nine_floor(level))?;
                     }
                 }
                 Err(error) if error.is::<sharedfolder::ChangedMeanwhile>() => {
@@ -6546,7 +6597,10 @@ impl Store {
         }
         for donor in &donors {
             let at_folder = stub_plan.iter().any(|(p, _)| *p == donor.path);
-            if at_folder || guard_path == Some(donor.path.as_path()) {
+            // A 9 below the floor's level was a target: kept aside (and
+            // rewritten) by the step above, before it was replaced.
+            let rewritten = targets.contains(&donor.path);
+            if at_folder || rewritten || guard_path == Some(donor.path.as_path()) {
                 continue;
             }
             let aside = sharedfolder::keep_aside(&donor.path).with_context(|| {
@@ -6693,6 +6747,17 @@ impl Store {
                 nine_out || !floor_is_nine()?,
                 "Esta pasta já foi atualizada para o formato novo do Ponte; o resultado no formato anterior não foi adotado. Sincronize de novo."
             );
+            // Nor a result written below the level of the floor, read again
+            // under its lock (a newer Ponte may have raised it meanwhile).
+            if let (true, Some(file)) = (nine_out, &floor_file) {
+                let floor = crate::formatfloor::with_lock(file, || {
+                    crate::formatfloor::read(file, lineage)
+                })?;
+                ensure!(
+                    sharedfolder::LEVEL >= floor.level,
+                    "Esta pasta já foi atualizada por uma versão mais nova do Ponte; o resultado desta sincronização não foi adotado. Atualize o Ponte."
+                );
+            }
             if nine_out {
                 crate::idents::set_origin(
                     tx,
@@ -11851,6 +11916,15 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
     write_http_json(&mut stream, status, &response)
 }
 
+/// The floor of a folder one of whose files of format 9 at `level` was read
+/// (or read back).
+fn nine_floor(level: u32) -> crate::formatfloor::Floor {
+    crate::formatfloor::Floor {
+        format: crate::sharedfolder::FORMAT_9,
+        level,
+    }
+}
+
 /// Opens the library, checks the token and processes one request.
 fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16, RpcResponse) {
     let error = |message: String| RpcResponse::Error { message };
@@ -11862,6 +11936,12 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
         Err(_) => return (400, error(host_cannot_read())),
     };
     let rpc_req = match rpc_req {
+        // A client of a lower level (F2b) would execute this computer's
+        // numbers without the proof of its items: it waits, its queue kept,
+        // until it is updated (503 is "out of reach" there too).
+        RpcRequest::V2 { level, .. } if level < crate::sharedfolder::LEVEL => {
+            return (503, error(LEVEL_REFUSED.into()))
+        }
         RpcRequest::V2 { level, request } if level <= crate::sharedfolder::LEVEL => {
             if matches!(*request, RpcRequest::V2 { .. }) {
                 return (400, error(host_cannot_read()));

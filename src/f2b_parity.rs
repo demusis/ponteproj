@@ -58,7 +58,7 @@ fn nine_content(path: &Path) -> (Value, usize, String) {
             copy.header.schema_version,
             copy.header.level
         ),
-        (9, 22, 1)
+        (9, 22, sharedfolder::LEVEL)
     );
     let triples = copy.payload.snapshot.idents.len();
     let epoch = std::mem::take(&mut copy.payload.snapshot.ident_epoch);

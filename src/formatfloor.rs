@@ -192,11 +192,13 @@ impl crate::storage::Store {
         }
     }
 
-    /// The minimum format of `lineage` this device has seen.
-    pub fn format_floor(&self, lineage: &str) -> Result<u32> {
+    /// The minimum (format, level) of `lineage` this device has seen, read
+    /// whole: format 9 means "nine mode", and a 9 below the level is never
+    /// a base again (F3, adendo §1).
+    pub fn floor(&self, lineage: &str) -> Result<Floor> {
         match self.floor_file() {
-            Some(path) => Ok(read(&path, lineage)?.format),
-            None => Ok(0),
+            Some(path) => read(&path, lineage),
+            None => Ok(Floor::default()),
         }
     }
 
@@ -219,17 +221,13 @@ impl crate::storage::Store {
         })
     }
 
-    /// Raises the floor of `lineage` to format 9.
-    pub(crate) fn raise_floor_to_nine(&self, lineage: &str) -> Result<()> {
+    /// Raises the floor of `lineage` to `floor` (never lowers it). The
+    /// level is always one OBSERVED: the highest of the authenticated files
+    /// read, or the one read back after a write; never the level of this
+    /// build unread (a 9/1 read must stay a valid base until a 9/2 is out).
+    pub(crate) fn raise_floor(&self, lineage: &str, floor: Floor) -> Result<()> {
         match self.floor_file() {
-            Some(path) => raise(
-                &path,
-                lineage,
-                Floor {
-                    format: crate::sharedfolder::FORMAT_9,
-                    level: crate::sharedfolder::LEVEL,
-                },
-            ),
+            Some(path) => raise(&path, lineage, floor),
             None => Ok(()),
         }
     }

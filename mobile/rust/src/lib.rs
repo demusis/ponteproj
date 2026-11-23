@@ -6071,7 +6071,7 @@ mod tests {
         );
         assert_eq!(phone_state(&phone), before, "nothing changed on the phone");
         assert_eq!(std::fs::read(&work).unwrap(), stub, "the stub is left alone");
-        assert_eq!(phone.format_floor(&lineage).unwrap(), 9, "floor 9");
+        assert_eq!(phone.floor(&lineage).unwrap().format, 9, "floor 9");
         assert!(leftovers(&dir.0).is_empty());
     }
 

@@ -125,11 +125,15 @@ impl Mirrors {
         (floor.format, floor.level)
     }
 
-    /// The state a folder of F2b leaves: both files of format 9 and both
-    /// guards at level 1, and the floor of each device at (9, 1).
+    /// The state a folder of F2b leaves: both files of format 9, both
+    /// stubs at the old names and both guards at level 1, and the floor of
+    /// each device at (9, 1).
     fn as_f2b(&self) {
         for path in self.nines() {
             sharedfolder::reseal_for_test(&path, KEY, 1, |_, _| {}).unwrap();
+        }
+        for path in &self.paths {
+            sharedfolder::reseal_stub_for_test(path, KEY, 1).unwrap();
         }
         for who in ["a", "b"] {
             let guard = PathBuf::from(format!(
@@ -216,7 +220,11 @@ fn f3_0a1_floor_follows_observed_level() {
     assert_eq!(t.a.list_documents("").unwrap()[0].title, title);
     // B, still at (9,1), reads both at level 2 and follows.
     sync(&mut t.b);
-    assert_eq!(t.floor("b"), (9, F3_LEVEL), "(c) B's floor follows the read");
+    assert_eq!(
+        t.floor("b"),
+        (9, F3_LEVEL),
+        "(c) B's floor follows the read"
+    );
 
     // (b) Fresh 9/1 mirrors; the write succeeds on one mirror and faults on
     // the other (changed meanwhile).
@@ -301,10 +309,16 @@ fn f3_0_old_reader_refuses_level_2() {
     let [n1, n2] = t.nines();
     sharedfolder::reseal_for_test(&n2, KEY, F3_LEVEL, |_, _| {}).unwrap();
     let refused = sharedfolder::read_header_as(&n2, sharedfolder::FORMAT_9, 1).unwrap_err();
-    assert!(refused.to_string().contains("Atualize o Ponte"), "{refused}");
+    assert!(
+        refused.to_string().contains("Atualize o Ponte"),
+        "{refused}"
+    );
     sharedfolder::reseal_for_test(&n1, KEY, sharedfolder::LEVEL + 1, |_, _| {}).unwrap();
     let refused = sharedfolder::read_header(&n1).unwrap_err();
-    assert!(refused.to_string().contains("Atualize o Ponte"), "{refused}");
+    assert!(
+        refused.to_string().contains("Atualize o Ponte"),
+        "{refused}"
+    );
 }
 
 // ------------------------------------------- v2 §1: the host's barrier --
@@ -525,9 +539,9 @@ fn f3_0_refs_round_trip() {
         "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00777"
             .into();
     let input = crate::attachments::AttachmentInput {
-        name: "foto.jpg",
+        name: "nota.txt",
         description: "",
-        data: b"bytes da foto",
+        data: "Texto simples do anexo.".as_bytes(),
     };
     let (receipt, _) = a
         .import_with_attachments_atomically(&capture, &[input], None)

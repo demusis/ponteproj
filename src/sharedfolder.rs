@@ -59,8 +59,11 @@ pub const FORMAT_9: u32 = 9;
 /// The newest format this build reads.
 pub const NEWEST_FORMAT: u32 = FORMAT_9;
 /// The level of the format 9 this build writes and reads (a reader refuses
-/// a higher one: "Atualize o Ponte").
-pub const LEVEL: u32 = 1;
+/// a higher one: "Atualize o Ponte"). Level 2 (F3 of Frente F): every change
+/// carries the proof of the items it names (`idrefs::Refs`); a Ponte of
+/// level 1 (F2b) refuses the file, and a main computer of this build refuses
+/// the requests of one.
+pub const LEVEL: u32 = 2;
 /// What the file of format 9 adds to the stem of the configured name.
 pub const NINE_SUFFIX: &str = "-formato9";
 /// How every transport file of a shared folder starts.
@@ -1010,6 +1013,44 @@ pub(crate) fn reseal_for_test(
             format: FORMAT_9,
             level,
             points_to: "",
+        },
+        &header.written_at,
+        None,
+    )?;
+    Ok(())
+}
+
+/// Writes the stub at `path` again at `level`, pointing where it points
+/// (tests of F3: the stub an F2b promotion left is at level 1).
+#[cfg(test)]
+pub(crate) fn reseal_stub_for_test(path: &Path, password: &str, level: u32) -> Result<()> {
+    let Some(Found::Moved { header, moved_to }) = read_any(path, password)? else {
+        anyhow::bail!("{} não é um aviso do formato novo.", path.display());
+    };
+    let json = serde_json::to_vec(&StubBody {
+        moved_to: moved_to.clone(),
+    })?;
+    let mut body = Vec::with_capacity(json.len() + 32);
+    body.push(CONTAINER_VERSION);
+    put_u64(&mut body, json.len() as u64);
+    body.extend_from_slice(&json);
+    put_u64(&mut body, 0);
+    put_u64(&mut body, 0);
+    write_shaped(
+        path,
+        password,
+        &WriteRequest {
+            lineage: &header.lineage,
+            revision: header.revision,
+            writer: &header.writer,
+            writer_name: &header.writer_name,
+            schema_version: header.schema_version,
+        },
+        body,
+        &Shape {
+            format: FORMAT_9,
+            level,
+            points_to: &moved_to,
         },
         &header.written_at,
         None,
