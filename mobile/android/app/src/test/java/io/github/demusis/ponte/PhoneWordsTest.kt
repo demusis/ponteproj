@@ -15,6 +15,50 @@ class PhoneWordsTest {
 
     private val work = "/data/user/0/io.github.demusis.ponte/no_backup/sync-work-1731200000000.ponte"
 
+    @Test fun aGuardThatCannotBeKeptAsideForLackOfSpaceAsksToFreeSpaceOnThePhone() {
+        val core = "A cópia de segurança deste computador tem 1 item que não está no resultado desta " +
+            "sincronização (tarefa “Pagar”), e não foi possível guardá-la à parte (Não foi possível guardar uma " +
+            "cópia de /data/user/0/io.github.demusis.ponte/files/acervo.sqlite3-guarda.ponte.: No space left on " +
+            "device (os error 28)). Falta espaço no disco: libere espaço e sincronize de novo. Nada foi gravado " +
+            "nem substituído; a próxima sincronização tenta de novo."
+        assertEquals(
+            "A cópia de segurança deste aparelho tem 1 item que não está no resultado desta sincronização " +
+                "(tarefa “Pagar”) e não pôde ser guardada à parte: falta espaço. Libere espaço no celular; a " +
+                "próxima sincronização tenta de novo. Nada foi gravado nem substituído.",
+            adapt(core),
+        )
+    }
+
+    @Test fun anUploadFailureAfterACopyWasKeptAsideTellsBoth() {
+        val notes = PhoneWords.syncNotes(listOf("A cópia de pendente.ponte tinha 1 item; guardada em x-divergente-1.ponte."))
+        val text = PhoneWords.failureWithNotes(IOException("Broken pipe"), "Falhou.", notes)
+        assertEquals(PhoneWords.explain(IOException("Broken pipe"), "Falhou.", driveFile = true) + "\n" + notes, text)
+        assertEquals(
+            PhoneWords.explain(IOException("x"), "Falhou.", driveFile = true),
+            PhoneWords.failureWithNotes(IOException("x"), "Falhou.", ""),
+        )
+    }
+
+    @Test fun notesOfCopiesKeptAsideAreToldWithTheFileNameOnly() {
+        val note = "A cópia de /data/user/0/io.github.demusis.ponte/files/pendente-novo.ponte tinha 1 item que não " +
+            "está no resultado desta sincronização: tarefa “Pagar”. Ela foi guardada em " +
+            "/data/user/0/io.github.demusis.ponte/files/pendente-novo-divergente-0a1b2c3d4e5f6071.ponte antes de ser " +
+            "regravada; nada foi reinserido no acervo."
+        val text = PhoneWords.syncNotes(listOf(note, " "))
+        assertEquals(
+            PhoneWords.SYNC_NOTES_HEADER + "\n" +
+                "A cópia de pendente-novo.ponte tinha 1 item que não está no resultado desta sincronização: " +
+                "tarefa “Pagar”. Ela foi guardada em pendente-novo-divergente-0a1b2c3d4e5f6071.ponte antes de ser " +
+                "regravada; nada foi reinserido no acervo.",
+            text,
+        )
+        assertEquals("", PhoneWords.syncNotes(emptyList()))
+        assertEquals(
+            PhoneWords.SYNC_NOTES_HEADER + "\nUma cópia do acervo deste aparelho foi guardada.",
+            PhoneWords.syncNotes(listOf("Uma cópia do acervo deste computador foi guardada.")),
+        )
+    }
+
     @Test fun senhaIncorreta() = assertEquals(
         "Senha de sincronização incorreta, ou o arquivo está danificado ou ainda sendo gravado pelo Drive. " +
             "Confira a senha e espere o Drive terminar de sincronizar.",

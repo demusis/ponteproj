@@ -1743,6 +1743,7 @@ impl Store {
             None,
             &format!("Excluiu o modelo \"{}\"", head.name),
         )?;
+        crate::intranet::forget_orphan_versions(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -2279,6 +2280,7 @@ impl Store {
             None,
             &format!("Excluiu o exemplo \"{}\"", example.title),
         )?;
+        crate::intranet::forget_orphan_versions(&tx)?;
         tx.commit()?;
         Ok(())
     }

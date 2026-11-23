@@ -631,6 +631,7 @@ impl Store {
                 labels::item_kind(&owner_kind)
             ),
         )?;
+        crate::intranet::forget_orphan_versions(&tx)?;
         tx.commit()?;
         Ok(())
     }

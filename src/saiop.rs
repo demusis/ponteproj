@@ -1990,6 +1990,7 @@ impl Store {
                 "Lote #{batch_id} revertido ({removed} removidos, {preserved} preservados por terem edição local)"
             ),
         )?;
+        crate::intranet::forget_orphan_versions(&tx)?;
         tx.commit()?;
         Ok((removed, preserved))
     }
@@ -2185,6 +2186,7 @@ impl Store {
                 }
             ),
         )?;
+        crate::intranet::forget_orphan_versions(&tx)?;
         tx.commit()?;
         Ok(())
     }

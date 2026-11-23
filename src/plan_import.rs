@@ -898,6 +898,8 @@ struct TaskRow {
     id: i64,
     trashed: bool,
     title: String,
+    /// The document the task hangs from.
+    document_id: Option<i64>,
 }
 /// A name or uid of a category or project resolved against the library.
 struct Entry {
@@ -938,6 +940,15 @@ impl Written {
     fn any(&self) -> bool {
         self.document || self.content || !self.tasks.is_empty() || self.triage_concluded
     }
+}
+
+/// Whether a version of a record is the one a plan creates: same title,
+/// text and type.
+fn is_record_of_plan(capture: &Capture, doc: &PlanDocument) -> bool {
+    let kind = capture.metadata.get("manual_kind").map(String::as_str);
+    capture.title == doc.title.trim()
+        && capture.text == doc.text.trim_end()
+        && kind == Some(doc.kind.as_str())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1086,6 +1097,7 @@ impl Store {
             id,
             trashed,
             title: task.title,
+            document_id,
         }))
     }
     /// The document a request created, through `requests` (which travels in
@@ -1100,6 +1112,23 @@ impl Store {
             )
             .optional()?)
     }
+    /// The version a request made, when the request belongs to `document`.
+    fn capture_of_request(&self, request: &str, document: i64) -> Result<Option<Capture>> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT c.payload FROM requests r JOIN captures c ON c.id=r.capture_id WHERE r.request_id=?1 AND r.document_id=?2",
+                rusqlite::params![request, document],
+                |r| r.get(0),
+            )
+            .optional()?;
+        blob.map(|b| {
+            serde_json::from_slice(&crate::protection::unseal(&b)?)
+                .context("O conteúdo do documento está danificado ou em formato incompatível.")
+        })
+        .transpose()
+    }
+
     /// A stable identity of a document, for a plan that targets it by number:
     /// the id of a request that created it (it travels in the snapshots) or,
     /// when it has none, its identity hash (for an official document the
@@ -1465,10 +1494,17 @@ impl Store {
 
     /// Refuses, before writing, a plan that still has something to create
     /// but whose record is not where the receipt says.
-    fn guard_pending(&self, plan: &Plan, state: &State, run: Option<&PlanRun>) -> Result<()> {
+    fn guard_pending(
+        &self,
+        plan: &Plan,
+        request: &str,
+        state: &State,
+        run: Option<&PlanRun>,
+    ) -> Result<()> {
         let Some(run) = run else {
             return Ok(());
         };
+        self.guard_resumed_target(plan, request, state, run)?;
         match state.doc_state {
             ItemState::Trashed => bail!(
                 "O plano ainda tem o que criar, mas o documento dele está na Lixeira. Restaure-o (ou conclua o que falta à mão) e repita o comando; nada é criado numa Lixeira."
@@ -1507,6 +1543,63 @@ impl Store {
         Ok(())
     }
 
+    /// A resumed run writes only on the record the plan created or targeted.
+    /// What the receipt holds (`request:`/`identity:`, or the plan's own
+    /// request id for a record it creates) is not proof enough: after an
+    /// exchange between copies the same request id can name another record
+    /// (two records that came with the same request id, one of them refused).
+    /// So the record found must also be the plan's: the one it created has
+    /// the plan's title, text and type; the one it targeted by number has
+    /// that number, now or before on this computer. A task of the plan that
+    /// was already written must hang from that same record. Otherwise nothing
+    /// is written.
+    fn guard_resumed_target(
+        &self,
+        plan: &Plan,
+        request: &str,
+        state: &State,
+        run: &PlanRun,
+    ) -> Result<()> {
+        let Some(doc) = &state.doc else {
+            return Ok(());
+        };
+        let found = format!("{} — {}", doc.capture.document_number, doc.capture.title);
+        if let Some(record) = &plan.document {
+            // The version the plan's own request made, not the latest one:
+            // a record the person corrected since is still the plan's.
+            let made = self.capture_of_request(request, doc.id)?;
+            ensure!(
+                made.as_ref().is_some_and(|c| is_record_of_plan(c, record)),
+                "request_id: a retomada deste plano encontrou, pelo identificador do pedido, outro registro ({found}), não o que o plano criou (\"{}\"). Isso acontece quando dois registros chegam à sincronização com o mesmo identificador e um deles é recusado. Nada foi gravado, para não colocar as tarefas no registro errado. Confira os cartões de conflito e crie o que falta à mão.",
+                record.title.trim()
+            );
+        } else if let (Some(number), false) = (&plan.document_number, run.target.is_empty()) {
+            let wanted = crate::storage::identity_hash_for_number(number);
+            let has_number = crate::storage::identity_hash_for_number(&doc.capture.document_number)
+                == wanted
+                || self
+                    .previous_numbers(doc.id)
+                    .iter()
+                    .any(|old| crate::storage::identity_hash_for_number(old) == wanted);
+            ensure!(
+                has_number,
+                "document_number: a retomada deste plano encontrou, pelo recibo guardado, o documento {found}, que não tem nem teve neste computador o número {} do arquivo. O documento original pode ter sido recusado numa sincronização (dois registros com o mesmo identificador de pedido). Nada foi gravado, para não colocar as tarefas no documento errado. Confira os cartões de conflito e crie o que falta à mão.",
+                number.trim()
+            );
+        }
+        for (index, (row, _)) in state.tasks.iter().enumerate() {
+            if let Some(row) = row {
+                ensure!(
+                    row.document_id == Some(doc.id),
+                    "tasks[{}]: a tarefa \"{}\" deste plano já foi gravada em outro documento, não em {found}. Nada foi gravado, para não dividir o plano entre dois documentos. Confira o documento da tarefa e crie o que falta à mão.",
+                    index + 1,
+                    row.title
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// The document of a first run on an existing record, as the app finds it
     /// by number; the two ways it can be missing are told apart.
     fn existing_document_to_use(&self, plan: &Plan) -> Result<i64> {
@@ -1533,14 +1626,11 @@ impl Store {
     ) -> Result<PlanResult> {
         if let (Some(doc), Some(id)) = (&plan.document, self.document_of_request(&checked.request)?)
         {
-            if let Some(row) = self.doc_row(id)? {
-                let kind = row.capture.metadata.get("manual_kind").map(String::as_str);
+            if let Some(made) = self.capture_of_request(&checked.request, id)? {
                 ensure!(
-                    row.capture.title == doc.title.trim()
-                        && row.capture.text == doc.text.trim_end()
-                        && kind == Some(doc.kind.as_str()),
+                    is_record_of_plan(&made, doc),
                     "request_id: este identificador já foi usado, neste acervo, para outro registro ({}). Use um request_id novo para este plano.",
-                    row.capture.document_number
+                    made.document_number
                 );
             }
         }
@@ -1583,7 +1673,7 @@ impl Store {
         if state.nothing_pending() {
             return self.plan_outcome(plan, &checked, dry_run, &Written::default(), false);
         }
-        self.guard_pending(plan, &state, run.as_ref())?;
+        self.guard_pending(plan, &checked.request, &state, run.as_ref())?;
         // The references are settled before anything is reserved, so a plan
         // that names a category wrongly leaves no trace at all.
         self.resolve_references(plan, &mut checked.tasks.clone(), &state)?;
@@ -1610,7 +1700,7 @@ impl Store {
         if state.nothing_pending() {
             return self.plan_outcome(plan, checked, false, &written, false);
         }
-        self.guard_pending(plan, &state, Some(&run))?;
+        self.guard_pending(plan, request, &state, Some(&run))?;
         let mut tasks = checked.tasks.clone();
         let document_categories = self.resolve_references(plan, &mut tasks, &state)?;
         let new_document = plan.document.is_some();

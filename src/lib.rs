@@ -76,6 +76,10 @@ pub mod work_context;
 pub mod work_templates;
 pub mod workload;
 
+/// F1 of Frente F: characterization tests of row ids (tests only).
+#[cfg(test)]
+mod f1_inventory;
+
 pub mod dossier;
 
 pub mod pdf_reader;
@@ -97,6 +101,7 @@ pub mod categories;
 /// Categories on the screens: chips, picker, filter and manager.
 #[cfg(feature = "desktop")]
 pub mod category_ui;
+pub(crate) mod coverage;
 /// Projects on the task screens: chip, picker and filter.
 #[cfg(feature = "desktop")]
 pub mod project_ui;

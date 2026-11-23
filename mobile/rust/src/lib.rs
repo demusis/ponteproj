@@ -156,8 +156,14 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
         "O arquivo de sincronização não foi encontrado."
     );
     let mut files = vec![path.to_owned()];
-    if !pending.is_empty() && std::path::Path::new(pending).exists() {
-        files.push(pending.to_owned());
+    // Every pending copy the app keeps, one per line: the one kept by an
+    // earlier exchange and any output staged beside it when that one could
+    // not be replaced ("pendente-novo"). Each is read again, so what only a
+    // staged copy holds is merged (or kept aside) like the rest.
+    for one in pending.lines().map(str::trim).filter(|p| !p.is_empty()) {
+        if std::path::Path::new(one).exists() && !files.iter().any(|f| f == one) {
+            files.push(one.to_owned());
+        }
     }
     // The paths are an input of this exchange, not something saved up front:
     // a file this build refuses (newer format or schema) must change nothing
@@ -196,11 +202,22 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
         // Also false when the working copy needed a rewrite that did not
         // succeed: the pending copy may then be the newest one there is, and
         // nothing has reached Drive yet.
+        //
+        // And false unless every copy read is proved to be in the result:
+        // rewritten with it, equal to it, or kept aside.
         "pending_settled": report.preserve_failed.is_empty()
+            && report.unsettled.is_empty()
             && !report
                 .unwritten
                 .iter()
                 .any(|w| std::path::Path::new(w) == std::path::Path::new(path)),
+        // What the person must know about what was kept aside (the items
+        // and where the copy is), in the computer's words.
+        "notes": report.notes.clone(),
+        // Each copy read whose content is not proved to be in the result:
+        // the app keeps exactly these and may let the others go (every
+        // other pending copy is settled on its own).
+        "unsettled": report.unsettled.clone(),
         // How many copies could not be rewritten (also in the summary).
         "unwritten": report.unwritten.len(),
         // Records of this phone that the copy numbered differently (also in
@@ -5507,6 +5524,293 @@ mod tests {
         let answer = sync_paths(&mut phone, &work_s, &pending.display().to_string(), KEY).unwrap();
         assert_eq!(answer["written"], json!(true), "{answer}");
         assert_eq!(answer["pending_settled"], json!(true), "{answer}");
+    }
+
+    /// F0 (R2-B4): an exchange whose output had to be staged beside an
+    /// unsettled pending copy ("pendente-novo.ponte") and never reached Drive.
+    /// The next exchange gets both pending copies (one per line) and reads the
+    /// staged one too: what only it holds reaches the working copy.
+    #[test]
+    fn the_staged_pending_copy_is_read_again_by_the_next_exchange() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        // The older pending copy: what Drive had then.
+        let pending = dir.0.join("pendente.ponte");
+        std::fs::copy(&drive, &pending).unwrap();
+        // The phone's task goes into an output that is staged, not uploaded.
+        create_task(&mut phone, &json!({"title": "Só no pendente-novo"})).unwrap();
+        let sent = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(sent["written"], json!(true));
+        let staged = dir.0.join("pendente-novo.ponte");
+        std::fs::copy(&work, &staged).unwrap();
+        // The phone's own guard copy is lost, and the computer moves Drive on.
+        let _ = std::fs::remove_file(dir.0.join("celular.sqlite3-guarda.ponte"));
+        let cfg = computer.load_intranet_config().unwrap();
+        let mut task = ponteproj::tasks::Task::blank(None);
+        task.title = "Do computador".into();
+        computer.save_task(&task).unwrap();
+        computer
+            .sync_with_folders(&cfg, KEY, false, &ponteproj::ai::Reporter::silent())
+            .unwrap();
+        std::fs::copy(&drive, &work).unwrap();
+
+        let both = format!("{}\n{}", pending.display(), staged.display());
+        let answer = sync_paths(&mut phone, &work_s, &both, KEY).unwrap();
+        assert_eq!(answer["written"], json!(true), "{answer}");
+        let out = ponteproj::sharedfolder::read(&work, KEY).unwrap().unwrap();
+        let titles: Vec<&str> = out
+            .payload
+            .snapshot
+            .tasks
+            .iter()
+            .map(|t| t.title.as_str())
+            .collect();
+        assert!(titles.contains(&"Só no pendente-novo"), "{titles:?}");
+        assert!(titles.contains(&"Do computador"), "{titles:?}");
+        assert_eq!(answer["pending_settled"], json!(true), "{answer}");
+    }
+
+    /// Review 1: a staged pending copy, first published by a forked library
+    /// (same lineage, empty journal, nothing applied), holds standalone task
+    /// X with the same row number and title as another task of the Drive
+    /// copy. Drive has the same revision, a later write and one applied
+    /// change. A new phone joins with both. The staged copy may be called
+    /// settled only if X is proved to be somewhere: in the result, or in a
+    /// copy kept aside.
+    #[test]
+    fn a_staged_copy_is_settled_only_when_what_it_holds_is_proved_kept() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        let reporter = ponteproj::ai::Reporter::silent();
+        let cfg = computer.load_intranet_config().unwrap();
+        let mut task = ponteproj::tasks::Task::blank(None);
+        task.title = "Do computador".into();
+        computer.save_task(&task).unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        let shared = ponteproj::sharedfolder::read(&drive, KEY).unwrap().unwrap();
+        assert!(!shared.payload.applied.is_empty());
+        let (number, title) = {
+            let first = &shared.payload.snapshot.tasks[0];
+            (first.id, first.title.clone())
+        };
+        // The forked library: one standalone task X, same number and title as
+        // the Drive copy's first task, but another task (its own uid).
+        let mut forked = open(&dir.0, "bifurcado.sqlite3", "Bifurcado");
+        let mut x = ponteproj::tasks::Task::blank(None);
+        x.title = title.clone();
+        let x_id = forked.save_task(&x).unwrap();
+        assert_eq!(x_id, number, "same row number");
+        let x_uid = forked
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == x_id)
+            .unwrap()
+            .uid;
+        let mut snapshot = forked.export_snapshot().unwrap();
+        snapshot.revision = shared.header.revision;
+        let staged = dir.0.join("pendente-novo.ponte");
+        fn request<'a>(
+            header: &'a ponteproj::sharedfolder::Header,
+            writer: &'a str,
+            writer_name: &'a str,
+        ) -> ponteproj::sharedfolder::WriteRequest<'a> {
+            ponteproj::sharedfolder::WriteRequest {
+                lineage: &header.lineage,
+                revision: header.revision,
+                writer,
+                writer_name,
+                schema_version: header.schema_version,
+            }
+        }
+        ponteproj::sharedfolder::write(
+            &staged,
+            KEY,
+            &request(&shared.header, "bifurcado", "Bifurcado"),
+            &ponteproj::sharedfolder::Payload {
+                snapshot,
+                applied: Vec::new(),
+                journal: Vec::new(),
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        // Drive is written again (same content and revision), later.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        ponteproj::sharedfolder::write(
+            &drive,
+            KEY,
+            &request(
+                &shared.header,
+                &shared.header.writer,
+                &shared.header.writer_name,
+            ),
+            &shared.payload,
+            &shared.blobs,
+        )
+        .unwrap();
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        let answer = sync_paths(
+            &mut phone,
+            &work.display().to_string(),
+            &staged.display().to_string(),
+            KEY,
+        )
+        .unwrap();
+        let has_x = |path: &std::path::Path| {
+            ponteproj::sharedfolder::read(path, KEY)
+                .ok()
+                .flatten()
+                .is_some_and(|c| c.payload.snapshot.tasks.iter().any(|t| t.uid == x_uid))
+        };
+        let kept_aside = std::fs::read_dir(&dir.0).unwrap().any(|e| {
+            let path = e.unwrap().path();
+            path.to_string_lossy().contains("-divergente-") && has_x(&path)
+        });
+        if answer["pending_settled"] == json!(true) {
+            assert!(
+                has_x(&work) || kept_aside,
+                "settled although X is nowhere: {answer}"
+            );
+        }
+        assert!(has_x(&work) || has_x(&staged) || kept_aside, "X lost: {answer}");
+        assert!(
+            answer["notes"].to_string().contains(&title) || has_x(&work),
+            "the person is told: {answer}"
+        );
+    }
+
+    /// Review 9: when the exchange keeps a pending copy aside, the answer
+    /// to the app carries the note that says so and names the copy kept.
+    #[test]
+    fn the_notes_of_an_exchange_reach_the_phone() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        // The phone makes work that only reaches the pending copy (the upload
+        // to Drive never happened), whose history was then summarized.
+        create_task(&mut phone, &json!({"title": "Só no celular"})).unwrap();
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        let pending = dir.0.join("pendente.ponte");
+        let copy = ponteproj::sharedfolder::read(&work, KEY).unwrap().unwrap();
+        let mut payload = copy.payload;
+        payload.journal.clear();
+        ponteproj::sharedfolder::write(
+            &pending,
+            KEY,
+            &ponteproj::sharedfolder::WriteRequest {
+                lineage: &copy.header.lineage,
+                revision: copy.header.revision,
+                writer: &copy.header.writer,
+                writer_name: &copy.header.writer_name,
+                schema_version: copy.header.schema_version,
+            },
+            &payload,
+            &copy.blobs,
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(dir.0.join("celular.sqlite3-guarda.ponte"));
+        // Meanwhile the computer moves the Drive copy two revisions ahead.
+        let cfg = computer.load_intranet_config().unwrap();
+        let reporter = ponteproj::ai::Reporter::silent();
+        for title in ["Do computador", "Outra do computador"] {
+            let mut task = ponteproj::tasks::Task::blank(None);
+            task.title = title.into();
+            computer.save_task(&task).unwrap();
+            computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        }
+        std::fs::copy(&drive, &work).unwrap();
+        // The archive is named after what the pending copy holds now.
+        let aside = ponteproj::sharedfolder::aside_path(&pending).unwrap();
+
+        let answer = sync_paths(&mut phone, &work_s, &pending.display().to_string(), KEY).unwrap();
+        assert!(aside.is_file(), "{answer}");
+        let name = aside.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(answer["notes"].to_string().contains(&name), "{answer}");
+    }
+
+    /// Review 2.3: two pending copies, one that must be kept aside and
+    /// cannot be (its archive name is taken), and a staged one whose content
+    /// the result holds. Only the blocked one is reported unsettled.
+    #[test]
+    fn each_pending_copy_is_settled_on_its_own() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        // The phone makes work that only reaches the pending copy (the upload
+        // to Drive never happened), whose history was then summarized.
+        create_task(&mut phone, &json!({"title": "Só no celular"})).unwrap();
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        let pending = dir.0.join("pendente.ponte");
+        let copy = ponteproj::sharedfolder::read(&work, KEY).unwrap().unwrap();
+        let mut payload = copy.payload;
+        payload.journal.clear();
+        ponteproj::sharedfolder::write(
+            &pending,
+            KEY,
+            &ponteproj::sharedfolder::WriteRequest {
+                lineage: &copy.header.lineage,
+                revision: copy.header.revision,
+                writer: &copy.header.writer,
+                writer_name: &copy.header.writer_name,
+                schema_version: copy.header.schema_version,
+            },
+            &payload,
+            &copy.blobs,
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(dir.0.join("celular.sqlite3-guarda.ponte"));
+        // Meanwhile the computer moves the Drive copy two revisions ahead.
+        let cfg = computer.load_intranet_config().unwrap();
+        let reporter = ponteproj::ai::Reporter::silent();
+        for title in ["Do computador", "Outra do computador"] {
+            let mut task = ponteproj::tasks::Task::blank(None);
+            task.title = title.into();
+            computer.save_task(&task).unwrap();
+            computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        }
+        std::fs::copy(&drive, &work).unwrap();
+        let before = std::fs::read(&pending).unwrap();
+
+        let staged = dir.0.join("pendente-novo.ponte");
+        std::fs::copy(&drive, &staged).unwrap();
+        let aside = ponteproj::sharedfolder::aside_path(&pending).unwrap();
+        std::fs::create_dir(&aside).unwrap();
+        let both = format!("{}\n{}", pending.display(), staged.display());
+        let answer = sync_paths(&mut phone, &work_s, &both, KEY).unwrap();
+        let unsettled: Vec<String> = answer["unsettled"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no per-copy verdict: {answer}"))
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+        assert!(unsettled.contains(&pending.display().to_string()), "{answer}");
+        assert!(!unsettled.contains(&staged.display().to_string()), "{answer}");
+        assert_eq!(std::fs::read(&pending).unwrap(), before, "the blocked copy is untouched");
+        std::fs::remove_dir(&aside).unwrap();
     }
 
     #[test]

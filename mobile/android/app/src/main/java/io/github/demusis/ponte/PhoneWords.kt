@@ -81,6 +81,12 @@ internal object PhoneWords {
     private val OS_ERROR = Regex("""\s*:\s*[^:]*?\(os error \d+\)""")
     private val ANY_PATH = Regex(PATH)
 
+    /** src/intranet.rs (`archive_advice`): the guard copy could not be kept aside for lack of space. */
+    private val GUARD_NO_SPACE = Regex(
+        """A cópia de segurança deste computador tem (.+?) que não (está|estão) no resultado desta sincronização """ +
+            """\((.*)\), e não foi possível guardá-la à parte \(.*\)\. Falta espaço no disco"""
+    )
+
     /**
      * Messages of the core (sharedfolder.rs, intranet.rs, mobile/rust/src/lib.rs), most specific
      * first. Each one is matched whole, so nothing else is touched.
@@ -155,11 +161,39 @@ internal object PhoneWords {
         "este computador" to "este aparelho"
     )
 
+    /** Opens what the exchange tells about copies kept aside (items it could not prove are in the result). */
+    const val SYNC_NOTES_HEADER = "Atenção (nada foi apagado):"
+
+    /**
+     * What the exchange says about copies it kept aside and why ([notes] of the core's answer),
+     * for the phone: each note on its own line, a file kept aside named by its file name (the
+     * folder is the app's own), after [SYNC_NOTES_HEADER]; "" when there is nothing to tell.
+     */
+    fun syncNotes(notes: List<String>): String {
+        val lines = notes.map { it.trim() }.filter { it.isNotEmpty() }.map { note ->
+            adapt(ANY_PATH.replace(note) { m -> m.value.substringAfterLast('/').substringAfterLast('\\') })
+        }
+        return if (lines.isEmpty()) "" else (listOf(SYNC_NOTES_HEADER) + lines).joinToString("\n")
+    }
+
+    /**
+     * A failure after the core already kept copies aside (the upload to Drive, its check):
+     * the failure ([explain], told as a Drive failure) and then [notesText] ([syncNotes]), so
+     * what was kept and where is never lost behind the error.
+     */
+    fun failureWithNotes(e: Throwable, fallback: String, notesText: String): String =
+        explain(e, fallback, driveFile = true) + if (notesText.isEmpty()) "" else "\n" + notesText
+
     /**
      * Rewrites a text that came from the core (a status, a summary or an error, never document
      * data) for the phone; text it does not know is returned as it was.
      */
     fun adapt(text: String): String {
+        GUARD_NO_SPACE.find(text)?.let { m ->
+            return "A cópia de segurança deste aparelho tem ${m.groupValues[1]} que não ${m.groupValues[2]} no " +
+                "resultado desta sincronização (${m.groupValues[3]}) e não pôde ser guardada à parte: falta espaço. " +
+                "Libere espaço no celular; a próxima sincronização tenta de novo. Nada foi gravado nem substituído."
+        }
         if (text.contains("No space left on device")) return NO_SPACE
         var t = OS_ERROR.replace(text, "")
         for ((re, to) in sentences) t = re.replace(t, to)

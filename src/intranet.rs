@@ -961,6 +961,146 @@ pub struct SyncConflict {
     /// library, like the whole conflict.
     #[serde(default)]
     pub identity: Vec<String>,
+    /// The `uid` of the change the card holds (empty on cards of older
+    /// versions): a change already held by a card here is not carded again
+    /// (the same older copy merged twice, or seen again from a cloud cache).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mutation_uid: String,
+    /// When the person resolved it (empty: still waiting). A resolved card
+    /// is kept, hidden, for a while ([`RESOLVED_KEPT`], [`RESOLVED_DAYS`])
+    /// only so that the same refused change, met again in an old copy, does
+    /// not come back as a new card.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resolved_at: String,
+}
+
+/// How many resolved cards are remembered, and for how long.
+const RESOLVED_KEPT: usize = 1_000;
+const RESOLVED_DAYS: i64 = 180;
+
+/// The `uid`s of the changes this library already holds a card for,
+/// waiting or resolved.
+fn carded_uids(conn: &Connection) -> Result<std::collections::BTreeSet<String>> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut statement = conn.prepare("SELECT payload FROM offline_conflicts")?;
+    let rows = statement.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+    for row in rows {
+        if let Some(held) = unseal(&row?)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<SyncConflict>(&b).ok())
+        {
+            if !held.mutation_uid.is_empty() {
+                out.insert(held.mutation_uid);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Marks a card resolved (kept hidden, see [`SyncConflict::resolved_at`])
+/// and forgets the resolved cards beyond the limits; a card of an older
+/// version, without the change's `uid`, has nothing to remember and goes.
+fn retire_conflict(conn: &Connection, id: i64) -> Result<()> {
+    let blob: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT payload FROM offline_conflicts WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let card = blob
+        .and_then(|b| unseal(&b).ok())
+        .and_then(|b| serde_json::from_slice::<SyncConflict>(&b).ok());
+    match card {
+        Some(mut card) if !card.mutation_uid.is_empty() => {
+            card.resolved_at = now_iso();
+            conn.execute(
+                "UPDATE offline_conflicts SET payload=?1 WHERE id=?2",
+                params![seal(&serde_json::to_vec(&card)?)?, id],
+            )?;
+        }
+        _ => {
+            conn.execute("DELETE FROM offline_conflicts WHERE id=?1", [id])?;
+        }
+    }
+    let cutoff = (Utc::now() - chrono::Duration::days(RESOLVED_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mut resolved: Vec<(i64, String)> = Vec::new();
+    let mut statement = conn.prepare("SELECT id,payload FROM offline_conflicts")?;
+    let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+    for row in rows {
+        let (id, blob) = row?;
+        if let Some(held) = unseal(&blob)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<SyncConflict>(&b).ok())
+        {
+            if !held.resolved_at.is_empty() {
+                resolved.push((id, held.resolved_at));
+            }
+        }
+    }
+    resolved.sort_by(|a, b| b.1.cmp(&a.1));
+    for (index, (id, at)) in resolved.iter().enumerate() {
+        if index >= RESOLVED_KEPT || *at < cutoff {
+            conn.execute("DELETE FROM offline_conflicts WHERE id=?1", [id])?;
+        }
+    }
+    Ok(())
+}
+
+/// What the person can do when a copy could not be kept aside, from the
+/// cause the system gave.
+fn archive_advice(error: &anyhow::Error, path: &std::path::Path) -> String {
+    let folder = path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let io = error
+        .chain()
+        .find_map(|e| e.downcast_ref::<std::io::Error>());
+    match io {
+        Some(e)
+            if e.kind() == std::io::ErrorKind::StorageFull
+                || matches!(e.raw_os_error(), Some(28 | 39 | 112)) =>
+        {
+            "Falta espaço no disco: libere espaço e sincronize de novo.".to_owned()
+        }
+        Some(e) if e.kind() == std::io::ErrorKind::PermissionDenied => format!(
+            "A pasta {folder} não permite gravar: confira as permissões dela (ou se outro programa está com o arquivo aberto) e sincronize de novo."
+        ),
+        _ if error.to_string().contains("Já existe um arquivo em") => format!(
+            "Outro arquivo ocupa o nome da cópia em {folder}: mova-o para outro lugar (sem apagá-lo antes de conferir o que ele tem) e sincronize de novo."
+        ),
+        _ => format!(
+            "Confira o espaço livre e as permissões da pasta {folder} e sincronize de novo."
+        ),
+    }
+}
+
+/// Stores a conflict card, unless one for the same change (`mutation_uid`)
+/// is already here. Answers whether it was stored.
+fn insert_conflict(conn: &Connection, conflict: &SyncConflict) -> Result<bool> {
+    if !conflict.mutation_uid.is_empty() {
+        let mut statement = conn.prepare("SELECT payload FROM offline_conflicts")?;
+        let rows = statement.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        for row in rows {
+            let held: SyncConflict = match unseal(&row?)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+            {
+                Some(held) => held,
+                None => continue,
+            };
+            if held.mutation_uid == conflict.mutation_uid {
+                return Ok(false);
+            }
+        }
+    }
+    conn.execute(
+        "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
+        params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
+    )?;
+    Ok(true)
 }
 
 /// One field that differs between the host and the offline edit.
@@ -1890,6 +2030,75 @@ pub(crate) fn record_mutation(
     Ok(next_version)
 }
 
+/// The kinds of `item_versions` keyed by a row id, with the table whose `id`
+/// that row id names. A row id can be given again to another item (a shared
+/// folder rebuilds the library from the copy, so a purged top id is reused):
+/// a version row left behind for a removed item would describe the next one.
+/// Kinds keyed by a uid or a setting key (`version_key`) are not here: those
+/// keys are never given to another item.
+pub(crate) const ROW_VERSION_KINDS: &[(&str, &str)] = &[
+    ("document", "documents"),
+    ("note", "documents"),
+    ("work_context", "documents"),
+    ("capture", "captures"),
+    ("draft", "drafts"),
+    ("analysis", "analyses"),
+    ("page_text", "files"),
+    ("task", "tasks"),
+    ("attachment", "attachments"),
+    ("attachment_text", "attachments"),
+    ("document_link", "document_links"),
+    ("saiop", "saiop_attendances"),
+    ("saiop_batch", "saiop_batches"),
+];
+
+/// SQL condition, over `item_versions`, of a version row whose item is gone.
+fn orphan_version_condition() -> String {
+    ROW_VERSION_KINDS
+        .iter()
+        .map(|(kind, table)| format!("(kind='{kind}' AND item_id NOT IN (SELECT id FROM {table}))"))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+/// Removes the version rows of items that no longer exist (the item and
+/// everything that went with it: notes, versions, files, tasks,
+/// attachments...). Runs in the transaction that removed them, after
+/// `record_mutation`, which writes a version row for the removed item too.
+pub(crate) fn forget_orphan_versions(tx: &Connection) -> Result<usize> {
+    Ok(tx.execute(
+        &format!(
+            "DELETE FROM item_versions WHERE {}",
+            orphan_version_condition()
+        ),
+        [],
+    )?)
+}
+
+/// The uid of a task that reaches this library without one (a copy written
+/// before task uids): derived only from what every device that adopts the
+/// same copy reads in it (the main computer's generation, empty in a shared
+/// folder, and the task's own number, document, title and action), so that
+/// all of them give it the same uid instead of a random one each.
+pub(crate) fn derived_task_uid(generation: &str, task: &crate::tasks::Task) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"ponte:tarefa-sem-uid:1");
+    hash.update([0u8]);
+    hash.update(generation.as_bytes());
+    hash.update([0u8]);
+    hash.update(task.id.to_be_bytes());
+    hash.update(task.document_id.unwrap_or(0).to_be_bytes());
+    hash.update(task.title.as_bytes());
+    hash.update([0u8]);
+    hash.update(task.action.as_bytes());
+    let digest = hash.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .to_string()
+}
+
 fn insert_outbox_row(conn: &Connection, entry: &OutboxEntry) -> Result<()> {
     conn.execute(
         "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
@@ -2753,7 +2962,12 @@ impl Store {
         let raw_versions = self
             .conn
             .prepare(
-                "SELECT kind,item_id,version,payload FROM item_versions ORDER BY kind,item_id",
+                // A version row of an item that is gone never travels: the
+                // next item given that id would inherit it.
+                &format!(
+                    "SELECT kind,item_id,version,payload FROM item_versions WHERE NOT ({}) ORDER BY kind,item_id",
+                    orphan_version_condition()
+                ),
             )?
             .query_map([], |r| {
                 Ok((
@@ -3208,7 +3422,7 @@ impl Store {
                 carry_old_task_fields(old, &mut value, snapshot.schema_version);
             }
             if value.uid.is_empty() {
-                value.uid = uuid::Uuid::new_v4().to_string();
+                value.uid = derived_task_uid(&snapshot.generation, &value);
             }
             tx.execute(
                 "INSERT INTO tasks(id,document_id,payload,uid) VALUES(?1,?2,?3,?4)",
@@ -4063,6 +4277,26 @@ impl Store {
                                 .map(|s| s as &dyn crate::renumber::Records),
                         )
                     });
+                // An edit without a version of its own is not sent over a
+                // newer value the main computer already holds.
+                let stale = match (&remapped, host_frame.as_deref()) {
+                    (Ok(mutation), Some(frame)) => {
+                        plain_edit_conflict(mutation, entry.base.as_ref(), frame).err()
+                    }
+                    _ => None,
+                };
+                if let Some(reason) = stale {
+                    let learned = ids.learn(&entry.created, None);
+                    let sent = OutboxEntry {
+                        mutation: remapped.clone().unwrap_or_else(|_| entry.mutation.clone()),
+                        ..entry.clone()
+                    };
+                    let mut conflict = build_sync_conflict(&sent, &reason, host_frame.as_deref());
+                    conflict.identity = identity;
+                    self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
+                    pushed_offline = true;
+                    continue;
+                }
                 let creation = crate::renumber::creation_document(&entry.mutation, &entry.created);
                 let sent = match remapped {
                     Ok(mutation) => OutboxEntry {
@@ -4278,10 +4512,7 @@ impl Store {
                         for entry in &replaced_queue {
                             let mut conflict = build_sync_conflict(entry, &reason, Some(&snapshot));
                             conflict.unresolved = true;
-                            tx.execute(
-                                "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                                params![conflict.created_at, seal(&serde_json::to_vec(&conflict)?)?],
-                            )?;
+                            insert_conflict(tx, &conflict)?;
                         }
                         delete_sent_outboxes(tx, &moved)
                     },
@@ -4645,6 +4876,16 @@ impl Store {
                 || (copies[0].header.writer == cfg.folder_writer
                     && !guard_missing)
                 || copies[0].content_identity() == cfg.folder_identity)
+            // Every other copy holds that same content: the same write, or
+            // equal content (a copy at the same revision with other content
+            // is merged, and kept aside if it holds what the result lacks).
+            && copies.iter().skip(1).all(|c| {
+                guard_path.as_deref() == Some(c.path.as_path())
+                    || (c.header.revision == copies[0].header.revision
+                        && c.header.writer == copies[0].header.writer
+                        && c.header.written_at == copies[0].header.written_at)
+                    || c.content_identity() == copies[0].content_identity()
+            })
         {
             report.revision = cfg.synced_revision;
             return Ok(report);
@@ -4708,6 +4949,25 @@ impl Store {
         // the base is one that cannot.
         let mut donor_applied: std::collections::BTreeSet<String> = Default::default();
         let base_snapshot = copies.first().map(|c| &c.payload.snapshot);
+        // What refused changes created, kept in their conflict cards: here
+        // (this computer's own changes) and by the copy they came from.
+        let mut cards_here = crate::coverage::Removed::default();
+        let mut cards_from: BTreeMap<usize, crate::coverage::Removed> = BTreeMap::new();
+        // What the replays made of this library's items and of each copy's.
+        let mut replayed_here = crate::coverage::Replayed::default();
+        let mut replayed_from: BTreeMap<usize, crate::coverage::Replayed> = BTreeMap::new();
+        // Which copies hold each change of their journals, and what it
+        // created there, with that copy's numbers.
+        let mut holders_of: BTreeMap<String, Vec<(usize, Vec<crate::idmap::CreatedId>)>> =
+            BTreeMap::new();
+        for (index, copy) in copies.iter().enumerate() {
+            for entry in &copy.payload.journal {
+                holders_of
+                    .entry(entry.uid.clone())
+                    .or_default()
+                    .push((index, entry.created.clone()));
+            }
+        }
         if first_write {
             reporter.step("Preparando a primeira cópia a partir do acervo deste computador…");
             for entry in &outbox {
@@ -5008,14 +5268,30 @@ impl Store {
                         )
                     });
                 let outcome = match &remapped {
-                    Ok(mutation) => store
-                        .execute_mutation(&entry.actor, mutation.clone())
-                        .map_err(|error| error.to_string()),
+                    Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &store)
+                        .and_then(|_| {
+                            store
+                                .execute_mutation(&entry.actor, mutation.clone())
+                                .map_err(|error| error.to_string())
+                        }),
                     Err(reason) => Err(reason.clone()),
                 };
                 match (remapped, outcome) {
                     (Ok(mutation), Ok(reply)) => {
                         let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
+                        // An import that landed on a record already there
+                        // (another one with the same request) proves nothing.
+                        // Every copy that holds this change: what it created
+                        // there is what it created here.
+                        if !matches!(&reply, MutationReply::Receipt(r) if r.duplicate) {
+                            for (holder, there) in holders_of.get(&entry.uid).into_iter().flatten()
+                            {
+                                replayed_from
+                                    .entry(*holder)
+                                    .or_default()
+                                    .learn(there, &created);
+                            }
+                        }
                         report.merged_foreign += 1;
                         let revision = store.cabinet_revision()?;
                         applied.insert(entry.uid.clone());
@@ -5036,6 +5312,10 @@ impl Store {
                         let unresolved = remapped.is_err();
                         let error = outcome.err().unwrap_or_default();
                         resolved.insert(entry.uid.clone(), None);
+                        cards_from
+                            .entry(index)
+                            .or_default()
+                            .kept_in_card(&entry.mutation, &entry.created);
                         let as_entry = OutboxEntry {
                             id: 0,
                             created_at: entry.created_at.clone(),
@@ -5058,7 +5338,14 @@ impl Store {
                         );
                         conflict.identity = identity;
                         conflicts.push(conflict);
-                        applied.insert(entry.uid.clone());
+                        // Refused here: NOT marked as incorporated. The
+                        // computer that made the change keeps, in its guard
+                        // copy, the copy it last wrote; seeing that the change
+                        // is not incorporated, it replays it at its next
+                        // exchange, and there the refusal becomes a conflict
+                        // card of its own author (once: its guard is then
+                        // rewritten without it). Marked as applied, the author
+                        // would skip it and never learn it was refused.
                         report.conflicts += 1;
                     }
                 }
@@ -5172,14 +5459,20 @@ impl Store {
                         )
                     });
                 let outcome = match &remapped {
-                    Ok(mutation) => store
-                        .execute_mutation(&entry.actor, mutation.clone())
-                        .map_err(|error| error.to_string()),
+                    Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &store)
+                        .and_then(|_| {
+                            store
+                                .execute_mutation(&entry.actor, mutation.clone())
+                                .map_err(|error| error.to_string())
+                        }),
                     Err(reason) => Err(reason.clone()),
                 };
                 match (remapped, outcome) {
                     (Ok(mutation), Ok(reply)) => {
                         let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
+                        if !matches!(&reply, MutationReply::Receipt(r) if r.duplicate) {
+                            replayed_here.learn(&entry.created, &created);
+                        }
                         ids.learn(&entry.created, Some(&created));
                         if let (Some(doc), Some(outcome)) = (
                             crate::renumber::creation_document(&entry.mutation, &entry.created),
@@ -5208,6 +5501,7 @@ impl Store {
                     }
                     (remapped, outcome) => {
                         ids.learn(&entry.created, None);
+                        cards_here.kept_in_card(&entry.mutation, &entry.created);
                         if let Some(doc) =
                             crate::renumber::creation_document(&entry.mutation, &entry.created)
                         {
@@ -5249,6 +5543,19 @@ impl Store {
             collect_blobs(source, &final_snapshot)?
         };
         let revision = final_snapshot.revision;
+        // The removals the result records, read before its journal is
+        // summarized (what is summarized away no longer explains anything).
+        let mut removed = crate::coverage::Removed::default();
+        for entry in &journal {
+            removed.note(&entry.mutation);
+        }
+        let result_index = crate::coverage::ResultIndex::of(&final_snapshot);
+        let final_identity = sharedfolder::snapshot_identity(&final_snapshot);
+        // The identity of each copy's content, computed once.
+        let identities: BTreeMap<PathBuf, String> = copies
+            .iter()
+            .map(|c| (c.path.clone(), c.content_identity()))
+            .collect();
         sharedfolder::trim_journal(&mut journal);
         let payload = Payload {
             snapshot: final_snapshot.clone(),
@@ -5282,8 +5589,14 @@ impl Store {
             if guard_path == Some(copy.path.as_path()) {
                 continue;
             }
-            // A copy already at this exact state is left alone.
-            if changed_content || copy.header.revision < revision || preserve.contains(&copy.path) {
+            // A copy already at this exact state is left alone; one at the
+            // same revision with other content is rewritten (after the
+            // check below keeps aside what it alone holds).
+            if changed_content
+                || copy.header.revision < revision
+                || preserve.contains(&copy.path)
+                || identities.get(&copy.path) != Some(&final_identity)
+            {
                 targets.push(copy.path.clone());
             }
         }
@@ -5293,7 +5606,110 @@ impl Store {
                 plural(targets.len(), "pasta", "pastas")
             ));
         }
+        // Nothing that a copy about to be rewritten, the guard copy or this
+        // library holds goes without a copy kept aside first, unless the
+        // result has it (see `coverage` for what proves that) or a removal
+        // the result records explains its absence. Numbers count only for a
+        // copy proved to use the result's numbering: it took changes, all of
+        // which the result has (a copy that took none, like the first
+        // publication of a forked library, proves nothing).
+        let result_applied: std::collections::BTreeSet<&String> = payload.applied.iter().collect();
+        let mut preserve = preserve.to_vec();
+        let mut uncovered: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+        let removed_by_uid = removed.by_uid_only();
+        let no_cards = crate::coverage::Removed::default();
+        for (index, copy) in copies.iter().enumerate() {
+            let is_guard = guard_path == Some(copy.path.as_path());
+            if !is_guard && !targets.contains(&copy.path) {
+                continue;
+            }
+            let same_numbering = !copy.payload.applied.is_empty()
+                && copy
+                    .payload
+                    .applied
+                    .iter()
+                    .all(|uid| result_applied.contains(uid));
+            let by_journal = if same_numbering {
+                &removed
+            } else {
+                &removed_by_uid
+            };
+            let cards = cards_from.get(&index).unwrap_or(&no_cards);
+            let lost = crate::coverage::dropped(
+                &crate::coverage::SnapshotHolder(&copy.payload.snapshot),
+                &crate::coverage::Check {
+                    result: &result_index,
+                    explained: &[by_journal, cards],
+                    same_numbering,
+                    replayed: replayed_from.get(&index),
+                },
+            )?;
+            if !lost.is_empty() {
+                if !is_guard && !preserve.contains(&copy.path) {
+                    preserve.push(copy.path.clone());
+                }
+                uncovered.insert(copy.path.clone(), lost);
+            }
+        }
+        // The guard copy holds what only it may have: it is kept aside,
+        // verified, BEFORE anything is written or adopted. If that cannot be
+        // done the exchange stops here, so the guard stays as it is, still
+        // trusted (the recorded revision does not move), for the next one.
+        if let Some((path, lost)) = guard_path.and_then(|p| uncovered.get(p).map(|l| (p, l))) {
+            match sharedfolder::keep_aside(path) {
+                Ok(aside) => report.notes.push(format!(
+                    "A cópia de segurança deste computador tinha {} que não {} no resultado desta sincronização: {}. Ela foi guardada em {}; nada foi reinserido no acervo.",
+                    plural(lost.len(), "item", "itens"),
+                    if lost.len() == 1 { "está" } else { "estão" },
+                    crate::coverage::describe(lost),
+                    aside.display()
+                )),
+                Err(error) => bail!(
+                    "A cópia de segurança deste computador tem {} que não {} no resultado desta sincronização ({}), e não foi possível guardá-la à parte ({error:#}). {} Nada foi gravado nem substituído; a próxima sincronização tenta de novo.",
+                    plural(lost.len(), "item", "itens"),
+                    if lost.len() == 1 { "está" } else { "estão" },
+                    crate::coverage::describe(lost),
+                    archive_advice(&error, path)
+                ),
+            }
+        }
+        if temp.is_some() && !joining && !pure {
+            // This library numbers like the copy it adopted last (the one
+            // whose content it recorded, or the guard it wrote): what the
+            // replays of that copy's changes made of them counts here too.
+            for (index, copy) in copies.iter().enumerate() {
+                let adopted = guard_path == Some(copy.path.as_path())
+                    || (!cfg.folder_identity.is_empty()
+                        && identities.get(&copy.path) == Some(&cfg.folder_identity));
+                if let (true, Some(made)) = (adopted, replayed_from.get(&index)) {
+                    replayed_here.absorb(made);
+                }
+            }
+            // Read with narrow queries, not a whole export of the library.
+            let lost = crate::coverage::dropped(
+                &crate::coverage::LibraryHolder::new(&self.conn)?,
+                &crate::coverage::Check {
+                    result: &result_index,
+                    explained: &[&removed, &cards_here],
+                    same_numbering: true,
+                    replayed: Some(&replayed_here),
+                },
+            )?;
+            if !lost.is_empty() {
+                let kept = self.backup_before_replacement()?.context(
+                    "Este computador tem itens que não estão no resultado da sincronização, e não há onde guardar uma cópia do acervo antes de substituí-lo. Nada foi gravado nem substituído.",
+                )?;
+                report.notes.push(format!(
+                    "{} deste computador não {} no resultado desta sincronização e nenhuma alteração registrada explica a falta: {}. Uma cópia do acervo daqui, de antes da sincronização, foi guardada em {}; nada foi reinserido.",
+                    plural(lost.len(), "item", "itens"),
+                    if lost.len() == 1 { "está" } else { "estão" },
+                    crate::coverage::describe(&lost),
+                    kept.display()
+                ));
+            }
+        }
         let mut failures = Vec::new();
+        let mut archived: Vec<PathBuf> = Vec::new();
         for path in &targets {
             // Does not fit: no folder is rewritten (nor its copy kept aside),
             // each stays as it was and the exchange says why.
@@ -5307,13 +5723,25 @@ impl Store {
             // What the rewrite would drop is kept first, beside it; if that
             // cannot be done, the copy is left as it is.
             if preserve.contains(path) {
+                archived.push(path.clone());
                 match sharedfolder::keep_aside(path) {
-                    Ok(aside) => report.notes.push(format!(
-                        "A cópia de {} tinha alterações que não puderam ser reaplicadas; ela foi guardada em {}.",
-                        path.display(),
-                        aside.display()
-                    )),
+                    Ok(aside) => report.notes.push(match uncovered.get(path) {
+                        Some(lost) => format!(
+                            "A cópia de {} tinha {} que não {} no resultado desta sincronização: {}. Ela foi guardada em {} antes de ser regravada; nada foi reinserido no acervo.",
+                            path.display(),
+                            plural(lost.len(), "item", "itens"),
+                            if lost.len() == 1 { "está" } else { "estão" },
+                            crate::coverage::describe(lost),
+                            aside.display()
+                        ),
+                        None => format!(
+                            "A cópia de {} tinha alterações que não puderam ser reaplicadas; ela foi guardada em {}.",
+                            path.display(),
+                            aside.display()
+                        ),
+                    }),
                     Err(error) => {
+                        archived.retain(|p| p != path);
                         failures.push(format!(
                             "{} não foi regravada, para não perder o que só ela tem: {error}",
                             path.display()
@@ -5343,6 +5771,22 @@ impl Store {
             );
         }
         report.notes.extend(failures);
+        // What each copy read is proved to be in the result: rewritten with
+        // it, equal to it, or kept aside (for the phone: only such a pending
+        // copy may be deleted).
+        for copy in copies {
+            if guard_path == Some(copy.path.as_path()) {
+                continue;
+            }
+            let shown = copy.path.display().to_string();
+            let settled = report.written_to.contains(&shown)
+                || archived.contains(&copy.path)
+                || (!report.unwritten.contains(&shown)
+                    && identities.get(&copy.path) == Some(&final_identity));
+            if !settled {
+                report.unsettled.push(shown);
+            }
+        }
         // Only now, with the folders written, does this become this
         // computer's last write.
         // (A library that does not fit has no guard copy either.)
@@ -5364,12 +5808,15 @@ impl Store {
         updated.folder_lineage = lineage.to_owned();
         updated.folder_identity = sharedfolder::snapshot_identity(&final_snapshot);
         let replaced = temp.is_some();
+        // A change already carded here (waiting or resolved) is not carded
+        // or counted again.
+        let carded = carded_uids(&self.conn)?;
+        let before = conflicts.len();
+        conflicts.retain(|c| c.mutation_uid.is_empty() || !carded.contains(&c.mutation_uid));
+        report.conflicts -= before - conflicts.len();
         let finish = |tx: &rusqlite::Transaction| -> Result<()> {
             for conflict in &conflicts {
-                tx.execute(
-                    "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                    params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
-                )?;
+                insert_conflict(tx, conflict)?;
             }
             ensure_queue_settled(tx, &processed_outbox)?;
             delete_sent_outboxes(tx, &processed_outbox)?;
@@ -5441,10 +5888,7 @@ impl Store {
         }
         let tx = self.conn.transaction()?;
         for conflict in conflicts {
-            tx.execute(
-                "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
-            )?;
+            insert_conflict(&tx, conflict)?;
         }
         tx.commit()?;
         Ok(())
@@ -5463,10 +5907,7 @@ impl Store {
         let tx = self.conn.transaction()?;
         crate::idmap::save(&tx, learned)?;
         if let Some(conflict) = conflict {
-            tx.execute(
-                "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
-            )?;
+            insert_conflict(&tx, conflict)?;
         }
         delete_sent_outbox(&tx, entry_id, entry_uid)?;
         tx.commit()?;
@@ -6064,6 +6505,20 @@ impl Store {
                     expected_version: None,
                 })
             }
+            IntranetMutation::SetLinkActive { id, .. } => {
+                let active = self.plain_value("document_link", *id)?;
+                Some(IntranetMutation::SetLinkActive {
+                    id: *id,
+                    active: active == "true",
+                })
+            }
+            IntranetMutation::UpdateAttachment { id, .. } => {
+                let description = self.plain_value("attachment", *id)?;
+                Some(IntranetMutation::UpdateAttachment {
+                    id: *id,
+                    description,
+                })
+            }
             IntranetMutation::SaveResourceUse { item, .. } if !item.uid.is_empty() => {
                 let current = self
                     .list_resource_uses()
@@ -6309,6 +6764,10 @@ impl Store {
         for row in rows {
             let (id, created_at, blob) = row?;
             let mut item: SyncConflict = serde_json::from_slice(&unseal(&blob)?)?;
+            // Resolved: remembered only to not card the same change again.
+            if !item.resolved_at.is_empty() {
+                continue;
+            }
             item.id = id;
             item.created_at = created_at;
             out.push(item);
@@ -6369,10 +6828,7 @@ impl Store {
                 }
             }
         }
-        self.conn.execute(
-            "DELETE FROM offline_conflicts WHERE id=?1",
-            params![conflict_id],
-        )?;
+        retire_conflict(&self.conn, conflict_id)?;
         Ok(())
     }
 
@@ -8460,7 +8916,7 @@ impl Store {
         }
         let tx = self.conn.transaction()?;
         for id in older {
-            tx.execute("DELETE FROM offline_conflicts WHERE id=?1", params![id])?;
+            retire_conflict(&tx, *id)?;
         }
         tx.commit()?;
         Ok(older.len())
@@ -9133,6 +9589,11 @@ pub struct FolderSyncReport {
     /// the cloud client, a full disk): they stay as they were and the next
     /// exchange tries again.
     pub unwritten: Vec<String>,
+    /// Copies read by this exchange whose content is not proved to be in
+    /// what it published: not rewritten with the result, not equal to it and
+    /// not kept aside. Whoever holds such a copy must keep it (the phone's
+    /// pending copies).
+    pub unsettled: Vec<String>,
     /// Manual records of this computer that the copy numbered differently
     /// (found when the copy was adopted; each is also a notice kept until
     /// the person dismisses it).
@@ -9235,6 +9696,101 @@ pub(crate) fn collect_blobs(
 }
 
 /// A conflict to record, `unresolved` when the change cannot be translated.
+/// The item an edit without a version of its own changes (activating or
+/// deactivating a link, the description of an attachment), as its kind in
+/// `item_versions` and its id, with the value the edit gives it.
+fn plain_edit(mutation: &IntranetMutation) -> Option<(&'static str, i64, String)> {
+    match mutation {
+        IntranetMutation::SetLinkActive { id, active } => {
+            Some(("document_link", *id, active.to_string()))
+        }
+        IntranetMutation::UpdateAttachment { id, description } => {
+            Some(("attachment", *id, description.trim().to_owned()))
+        }
+        _ => None,
+    }
+}
+
+/// What a library or a copy says of the item of a plain edit: its value now
+/// (`None`: no such item).
+pub(crate) trait PlainEditFrame {
+    fn plain_value(&self, kind: &str, id: i64) -> Option<String>;
+}
+
+impl PlainEditFrame for Store {
+    fn plain_value(&self, kind: &str, id: i64) -> Option<String> {
+        match kind {
+            "document_link" => self
+                .conn
+                .query_row("SELECT active FROM document_links WHERE id=?1", [id], |r| {
+                    r.get::<_, bool>(0)
+                })
+                .optional()
+                .ok()
+                .flatten()
+                .map(|active| active.to_string()),
+            "attachment" => {
+                let blob: Vec<u8> = self
+                    .conn
+                    .query_row("SELECT metadata FROM attachments WHERE id=?1", [id], |r| {
+                        r.get(0)
+                    })
+                    .optional()
+                    .ok()
+                    .flatten()?;
+                let meta: crate::attachments::AttachmentMeta =
+                    serde_json::from_slice(&unseal(&blob).ok()?).ok()?;
+                Some(meta.description.trim().to_owned())
+            }
+            _ => None,
+        }
+    }
+}
+
+impl PlainEditFrame for CabinetSnapshot {
+    fn plain_value(&self, kind: &str, id: i64) -> Option<String> {
+        match kind {
+            "document_link" => self
+                .document_links
+                .iter()
+                .find(|l| l.id == id)
+                .map(|l| l.active.to_string()),
+            "attachment" => self
+                .attachments
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| a.meta.description.trim().to_owned()),
+            _ => None,
+        }
+    }
+}
+
+/// `Err` (the reason, for the conflict card) when a plain edit (see
+/// [`plain_edit`]) would overwrite a change made elsewhere since the edit
+/// was written: its item no longer holds the value the edit was based on
+/// (`base`, recorded when the edit was queued) and does not already hold
+/// the value the edit gives. These edits carry no version, so this is the
+/// only check: without a recorded base (a change queued by an older Ponte)
+/// the edit is applied, as before. A value only this computer wrote since is
+/// the base of its next edit, so its own edits are never refused.
+pub(crate) fn plain_edit_conflict(
+    mutation: &IntranetMutation,
+    base: Option<&IntranetMutation>,
+    frame: &dyn PlainEditFrame,
+) -> Result<(), String> {
+    let (Some((kind, id, value)), Some((_, _, based_on))) =
+        (plain_edit(mutation), base.and_then(plain_edit))
+    else {
+        return Ok(());
+    };
+    match frame.plain_value(kind, id) {
+        Some(now) if now != value && now != based_on => Err(
+            "Este item foi alterado em outro computador depois da versão sobre a qual esta alteração foi feita; ela não foi aplicada para não desfazer a outra. Confira o item e refaça a alteração, se ainda for o caso.".to_owned(),
+        ),
+        _ => Ok(()),
+    }
+}
+
 fn conflict_for(
     entry: &OutboxEntry,
     reason: &str,
@@ -9387,6 +9943,8 @@ fn build_sync_conflict(
         mutation: entry.mutation.clone(),
         unresolved: false,
         identity: Vec::new(),
+        mutation_uid: entry.uid.clone(),
+        resolved_at: String::new(),
     }
 }
 
@@ -14309,6 +14867,8 @@ mod tests {
             }),
             unresolved: false,
             identity: Vec::new(),
+            mutation_uid: String::new(),
+            resolved_at: String::new(),
         };
         let diffs = store.conflict_differences(&conflict);
         let by_label = |label: &str| {
@@ -15137,6 +15697,8 @@ mod conflict_card_tests {
             base: None,
             unresolved: false,
             identity: Vec::new(),
+            mutation_uid: String::new(),
+            resolved_at: String::new(),
         }
     }
 
@@ -16138,6 +16700,8 @@ mod resources_sync_tests {
             base: None,
             unresolved: false,
             identity: Vec::new(),
+            mutation_uid: String::new(),
+            resolved_at: String::new(),
         };
         let save_use = |item: &ResourceUse| {
             conflict(IntranetMutation::SaveResourceUse {
@@ -17265,6 +17829,8 @@ mod resources_sync_tests {
             base: None,
             unresolved: false,
             identity: Vec::new(),
+            mutation_uid: String::new(),
+            resolved_at: String::new(),
         };
         // Same thing but for the kind: equal, with nothing to compare.
         let mut other_kind = held.clone();

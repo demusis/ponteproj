@@ -218,8 +218,35 @@ pub fn keep_aside(path: &Path) -> Result<PathBuf> {
         ensure!(same, "Já existe um arquivo em {}.", aside.display());
         return Ok(aside);
     }
-    std::fs::copy(path, &aside)
-        .with_context(|| format!("Não foi possível guardar uma cópia de {}.", path.display()))?;
+    // Written beside it under a temporary name and renamed only when read
+    // back whole: an interruption never leaves a partial file at the
+    // archive's name (which would then refuse every later attempt).
+    let fail = || format!("Não foi possível guardar uma cópia de {}.", path.display());
+    let bytes = std::fs::read(path).with_context(fail)?;
+    let part = PathBuf::from(format!("{}.parte", aside.display()));
+    let written = (|| -> std::io::Result<bool> {
+        {
+            let mut file = std::fs::File::create(&part)?;
+            std::io::Write::write_all(&mut file, &bytes)?;
+            file.sync_all()?;
+        }
+        Ok(std::fs::read(&part)? == bytes)
+    })();
+    match written {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = std::fs::remove_file(&part);
+            anyhow::bail!("{} A cópia gravada não confere.", fail());
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&part);
+            return Err(error).with_context(fail);
+        }
+    }
+    if let Err(error) = std::fs::rename(&part, &aside) {
+        let _ = std::fs::remove_file(&part);
+        return Err(error).with_context(fail);
+    }
     Ok(aside)
 }
 

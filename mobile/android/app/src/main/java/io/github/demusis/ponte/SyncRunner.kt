@@ -215,6 +215,8 @@ internal object SyncRunner {
         for (n in listOf("acervo.sqlite3", "acervo.sqlite3-wal", "acervo.sqlite3-shm", PENDING)) {
             File(ctx.filesDir, n).delete()
         }
+        // Outputs staged beside the pending copy belong to the library that is going away too.
+        SyncIo.pendingCopies(ctx.filesDir).forEach { it.delete() }
         // A share in progress belonged to the data that is going away: its draft and copy are removed too.
         ShareDraftStore(File(ctx.filesDir, ShareDraftStore.DIR)).wipe()
         // The calendar sync remembers events of the old library: forget them and turn it off.
@@ -298,6 +300,9 @@ internal object SyncRunner {
         SyncIo.removeStale(dir)
         val work = File(dir, SyncIo.WORK_PREFIX + System.currentTimeMillis() + SyncIo.WORK_SUFFIX)
         val pending = pendingFile(ctx)
+        // Every pending copy kept by earlier exchanges: the pending one and any output
+        // staged beside it ("pendente-novo…"). All of them are read again.
+        val pendings = SyncIo.pendingCopies(pending.parentFile ?: ctx.filesDir)
         SyncIo.withCleanup(listOf(work)) {
             if (!ready) throw CoreException("O acervo ainda não está pronto. Espere um instante e tente de novo.")
             if (note != null) check(core.saveNote(note.first, note.second))
@@ -306,57 +311,71 @@ internal object SyncRunner {
             val original = readUri(ctx, uri, work)
 
             // b. let the core merge; it may rewrite the working file (atomically)
-            val r = check(core.sync(work.absolutePath, if (pending.exists()) pending.absolutePath else "", pass))
+            val r = check(core.sync(work.absolutePath, pendings.joinToString("\n") { it.absolutePath }, pass))
             // What another device saved as holidays is in force here now.
             if (r.has("holidays")) mirrorHolidays(ctx, r.optString("holidays"))
             val summary = r.optString("summary")
             val conflicts = r.optInt("conflicts", 0)
             var message = "Sincronizado: " + PhoneWords.adapt(summary)
+            // What was kept aside and where: told whatever happens next (upload errors included).
+            val notes = r.optJSONArray("notes")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+            val notesText = PhoneWords.syncNotes(notes)
             var isError = false
-            // The pending copy may go only when the core says that what it
-            // held is merged or kept; an answer without it keeps the copy.
-            val pendingSettled = r.optBoolean("pending_settled", false)
+            // Each pending copy goes only on the core's word that IT is settled (its content is
+            // in the result, equal to it or kept aside); an answer that says nothing about each
+            // keeps all of them unless it calls them all settled.
+            val unsettled = r.optJSONArray("unsettled")?.let { a -> (0 until a.length()).map { a.optString(it) } }
+            val settled = SyncIo.settledPendings(pendings, work.absolutePath, unsettled, r.optBoolean("pending_settled", false))
+            // The new output may become the pending copy when that one is settled (or absent).
+            val pendingFree = !pending.exists() || pending in settled
 
-            if (r.optBoolean("written")) {
-                // c. the core has already taken what this phone had to send: the
-                // merged copy must survive whatever happens next, so it is kept
-                // before anything else can fail.
-                // Where it is kept depends on the core's word about the pending
-                // copy: unsettled, that copy may be the only one with some work
-                // and is never replaced (see SyncIo.keepNewOutput).
-                val kept = SyncIo.keepNewOutput(work, pending, pendingSettled)
-                // the core says how long the file it wrote is: anything else is not what it meant
-                if (r.has("bytes") && r.optLong("bytes", -1) != work.length()) {
-                    throw CoreException("O arquivo de sincronização não ficou completo. Tente sincronizar de novo.")
-                }
-                val want = SyncIo.hashFile(work)
-                if (!SyncIo.unchanged(original, readUri(ctx, uri, null))) {
-                    isError = true
-                    message = "O arquivo mudou no Drive durante a sincronização. " +
-                        "As alterações ficaram guardadas neste aparelho e vão na próxima sincronização."
-                } else {
-                    // d. write, then verify by reading back; one retry
-                    var ok = false
-                    for (attempt in 1..2) {
-                        writeUri(ctx, uri, work)
-                        // read back whatever was written, however long
-                        if (SyncIo.unchanged(want, readUri(ctx, uri, null, Long.MAX_VALUE))) { ok = true; break }
+            try {
+                if (r.optBoolean("written")) {
+                    // c. the core has already taken what this phone had to send: the
+                    // merged copy must survive whatever happens next, so it is kept
+                    // before anything else can fail.
+                    // Where it is kept depends on the core's word about the pending
+                    // copy: unsettled, that copy may be the only one with some work
+                    // and is never replaced (see SyncIo.keepNewOutput).
+                    val kept = SyncIo.keepNewOutput(work, pending, pendingFree)
+                    // the core says how long the file it wrote is: anything else is not what it meant
+                    if (r.has("bytes") && r.optLong("bytes", -1) != work.length()) {
+                        throw CoreException("O arquivo de sincronização não ficou completo. Tente sincronizar de novo.")
                     }
-                    if (ok) {
-                        if (SyncIo.mayDropPending(pendingSettled)) pending.delete()
-                        // Verified on Drive: the staged output is not needed.
-                        if (kept != pending) kept.delete()
-                    } else {
+                    val want = SyncIo.hashFile(work)
+                    if (!SyncIo.unchanged(original, readUri(ctx, uri, null))) {
                         isError = true
-                        message = "Não foi possível conferir a gravação no Drive. " +
+                        message = "O arquivo mudou no Drive durante a sincronização. " +
                             "As alterações ficaram guardadas neste aparelho e vão na próxima sincronização."
+                    } else {
+                        // d. write, then verify by reading back; one retry
+                        var ok = false
+                        for (attempt in 1..2) {
+                            writeUri(ctx, uri, work)
+                            // read back whatever was written, however long
+                            if (SyncIo.unchanged(want, readUri(ctx, uri, null, Long.MAX_VALUE))) { ok = true; break }
+                        }
+                        if (ok) {
+                            // Each settled pending copy goes; one the core did not settle stays.
+                            settled.forEach { it.delete() }
+                            if (kept == pending) pending.delete()
+                            // Verified on Drive: the staged output is not needed.
+                            else kept.delete()
+                        } else {
+                            isError = true
+                            message = "Não foi possível conferir a gravação no Drive. " +
+                                "As alterações ficaram guardadas neste aparelho e vão na próxima sincronização."
+                        }
                     }
+                } else {
+                    // f. nothing written although the pending copies were read too: the Drive copy
+                    // already holds what each settled one had, so those are no longer needed.
+                    settled.forEach { it.delete() }
                 }
-            } else if (pending.exists() && SyncIo.mayDropPending(pendingSettled)) {
-                // f. nothing written although the pending copy was read too:
-                // the Drive copy already holds everything it had (otherwise
-                // the core would have rewritten it), so it is no longer needed.
-                pending.delete()
+            } catch (e: Throwable) {
+                // What was kept aside is told even when the upload fails.
+                if (notesText.isEmpty()) throw e
+                throw PonteException(PhoneWords.failureWithNotes(e, SYNC_FAILED, notesText))
             }
 
             // e. conflicts
@@ -370,6 +389,10 @@ internal object SyncRunner {
             if (listErr != null) {
                 isError = true
                 message += "\n$listErr"
+            }
+            if (notesText.isNotEmpty()) {
+                isError = true
+                message += "\n" + notesText
             }
             setStatus(message, isError)
         }
@@ -538,10 +561,56 @@ internal object SyncIo {
      * and the output is staged beside it under another name. Returns where it is.
      */
     fun keepNewOutput(work: File, pending: File, coreSaysSettled: Boolean): File {
-        val target = if (mayDropPending(coreSaysSettled)) pending else File(pending.parentFile, STAGED)
+        if (!mayDropPending(coreSaysSettled)) {
+            // A staged copy that already holds this very output is reused, never staged again.
+            val want = hashFile(work)
+            pendingCopies(pending.parentFile!!)
+                .firstOrNull { it != pending && it.length() == want.length && hashFile(it) == want }
+                ?.let { return it }
+        }
+        val target = if (mayDropPending(coreSaysSettled)) pending else stagedTarget(pending.parentFile!!)
         keep(work, target)
         return target
     }
+
+    /**
+     * The pending copies [pendings] the core calls settled, each on its own: those not in its
+     * [unsettled] list, unless the working copy [work] itself is (then nothing reached Drive and
+     * none is settled). A core that sends no list settles all of them or none ([allSettled]).
+     */
+    fun settledPendings(pendings: List<File>, work: String, unsettled: List<String>?, allSettled: Boolean): List<File> =
+        when {
+            unsettled == null -> if (mayDropPending(allSettled)) pendings else emptyList()
+            work in unsettled -> emptyList()
+            else -> pendings.filter { it.absolutePath !in unsettled }
+        }
+
+    /**
+     * Where a new output is staged: "pendente-novo.ponte", or the first free
+     * "pendente-novo-N.ponte" when an earlier staged copy is still there (the core
+     * did not call it settled, so it may hold the only copy of some work).
+     */
+    fun stagedTarget(dir: File): File {
+        val first = File(dir, STAGED)
+        if (!first.exists()) return first
+        var n = 2
+        while (true) {
+            val next = File(dir, STAGED.removeSuffix(".ponte") + "-" + n + ".ponte")
+            if (!next.exists()) return next
+            n++
+        }
+    }
+
+    /**
+     * The pending copies in [dir], read again by every exchange until the core calls
+     * them settled: "pendente.ponte" and the outputs staged beside it. A copy the core
+     * kept aside ([ARCHIVE_MARK]) and a half-written one (".parte") are not among them.
+     */
+    fun pendingCopies(dir: File): List<File> =
+        (dir.listFiles() ?: emptyArray()).filter {
+            it.isFile && it.name.startsWith("pendente") && it.name.endsWith(".ponte") &&
+                !it.name.contains(ARCHIVE_MARK)
+        }.sortedBy { it.name }
 
     /**
      * Keeps [from] as [to] so that [to] is either the old file or the whole
