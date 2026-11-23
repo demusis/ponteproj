@@ -4141,7 +4141,6 @@ impl Store {
             // `ids`.
             let mut creation_results: BTreeMap<i64, crate::renumber::CreationOutcome> =
                 BTreeMap::new();
-            let mut plain_edits = PlainEdits::default();
             for entry in outbox {
                 let edit_source = crate::renumber::EditSource {
                     records: &*self,
@@ -4173,7 +4172,7 @@ impl Store {
                 // newer value the main computer already holds.
                 let stale = match (&remapped, host_frame.as_deref()) {
                     (Ok(mutation), Some(frame)) => {
-                        plain_edits.check(mutation, &entry.created_at, frame).err()
+                        plain_edit_conflict(mutation, entry.base.as_ref(), frame).err()
                     }
                     _ => None,
                 };
@@ -4242,7 +4241,6 @@ impl Store {
                             creation_results.insert(doc, outcome);
                         }
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
-                        plain_edits.record(&sent.mutation, &entry.created_at, &*snapshot);
                         host_frame = Some(snapshot);
                         pushed_offline = true;
                     }
@@ -4832,7 +4830,6 @@ impl Store {
         // the base is one that cannot.
         let mut donor_applied: std::collections::BTreeSet<String> = Default::default();
         let base_snapshot = copies.first().map(|c| &c.payload.snapshot);
-        let mut plain_edits = PlainEdits::default();
         // What refused changes created, kept in their conflict cards: here
         // (this computer's own changes) and by the copy they came from.
         let mut cards_here = crate::coverage::Removed::default();
@@ -5137,8 +5134,7 @@ impl Store {
                         )
                     });
                 let outcome = match &remapped {
-                    Ok(mutation) => plain_edits
-                        .check(mutation, &entry.created_at, &store)
+                    Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &store)
                         .and_then(|_| {
                             store
                                 .execute_mutation(&entry.actor, mutation.clone())
@@ -5148,7 +5144,6 @@ impl Store {
                 };
                 match (remapped, outcome) {
                     (Ok(mutation), Ok(reply)) => {
-                        plain_edits.record(&mutation, &entry.created_at, &store);
                         let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
                         report.merged_foreign += 1;
                         let revision = store.cabinet_revision()?;
@@ -5317,8 +5312,7 @@ impl Store {
                         )
                     });
                 let outcome = match &remapped {
-                    Ok(mutation) => plain_edits
-                        .check(mutation, &entry.created_at, &store)
+                    Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &store)
                         .and_then(|_| {
                             store
                                 .execute_mutation(&entry.actor, mutation.clone())
@@ -5328,7 +5322,6 @@ impl Store {
                 };
                 match (remapped, outcome) {
                     (Ok(mutation), Ok(reply)) => {
-                        plain_edits.record(&mutation, &entry.created_at, &store);
                         let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
                         ids.learn(&entry.created, Some(&created));
                         if let (Some(doc), Some(outcome)) = (
@@ -6274,6 +6267,20 @@ impl Store {
                 Some(IntranetMutation::SaveProject {
                     project: current,
                     expected_version: None,
+                })
+            }
+            IntranetMutation::SetLinkActive { id, .. } => {
+                let active = self.plain_value("document_link", *id)?;
+                Some(IntranetMutation::SetLinkActive {
+                    id: *id,
+                    active: active == "true",
+                })
+            }
+            IntranetMutation::UpdateAttachment { id, .. } => {
+                let description = self.plain_value("attachment", *id)?;
+                Some(IntranetMutation::UpdateAttachment {
+                    id: *id,
+                    description,
                 })
             }
             IntranetMutation::SaveResourceUse { item, .. } if !item.uid.is_empty() => {
@@ -9463,10 +9470,9 @@ fn plain_edit(mutation: &IntranetMutation) -> Option<(&'static str, i64, String)
 }
 
 /// What a library or a copy says of the item of a plain edit: its value now
-/// and its version row (`None`: no such item / no row).
+/// (`None`: no such item).
 pub(crate) trait PlainEditFrame {
     fn plain_value(&self, kind: &str, id: i64) -> Option<String>;
-    fn plain_version(&self, kind: &str, id: i64) -> Option<VersionMeta>;
 }
 
 impl PlainEditFrame for Store {
@@ -9497,9 +9503,6 @@ impl PlainEditFrame for Store {
             _ => None,
         }
     }
-    fn plain_version(&self, kind: &str, id: i64) -> Option<VersionMeta> {
-        self.item_version(kind, id).ok().filter(|m| m.version > 0)
-    }
 }
 
 impl PlainEditFrame for CabinetSnapshot {
@@ -9518,88 +9521,31 @@ impl PlainEditFrame for CabinetSnapshot {
             _ => None,
         }
     }
-    fn plain_version(&self, kind: &str, id: i64) -> Option<VersionMeta> {
-        self.item_versions
-            .iter()
-            .find(|(k, i, _)| k == kind && *i == id)
-            .map(|(_, _, meta)| meta.clone())
-    }
 }
 
-/// Whether the moment `a` (RFC 3339) comes after `b`; `false` when either
-/// cannot be read.
-fn written_after(a: &str, b: &str) -> bool {
-    match (
-        chrono::DateTime::parse_from_rfc3339(a),
-        chrono::DateTime::parse_from_rfc3339(b),
-    ) {
-        (Ok(a), Ok(b)) => a > b,
-        _ => false,
-    }
-}
-
-/// The plain edits (see [`plain_edit`]) applied during one exchange: for
-/// each item, the version the last of them left and when that edit was
-/// written. These edits carry no version to check, so the check is by time:
-/// one is refused when its item already holds a different value written
-/// after the edit was made (by another computer, or by a change replayed
-/// here), instead of overwriting that newer edit. A version this exchange
-/// wrote for one of its own plain edits counts from when that edit was
-/// written, not from when it was replayed.
-#[derive(Default)]
-pub(crate) struct PlainEdits(BTreeMap<(&'static str, i64), (i64, String)>);
-
-impl PlainEdits {
-    /// `Err` (the reason, for the conflict card) when `mutation`, written at
-    /// `written_at`, would overwrite a newer value of its item in `frame`.
-    pub(crate) fn check(
-        &self,
-        mutation: &IntranetMutation,
-        written_at: &str,
-        frame: &dyn PlainEditFrame,
-    ) -> Result<(), String> {
-        let Some((kind, id, value)) = plain_edit(mutation) else {
-            return Ok(());
-        };
-        match frame.plain_value(kind, id) {
-            // Gone, or already what the edit wants: nothing to protect.
-            None => return Ok(()),
-            Some(now) if now == value => return Ok(()),
-            Some(_) => {}
-        }
-        let Some(meta) = frame.plain_version(kind, id) else {
-            return Ok(());
-        };
-        let changed_at = match self.0.get(&(kind, id)) {
-            Some((version, at)) if *version == meta.version => at.clone(),
-            _ => meta.updated_at.clone(),
-        };
-        if written_after(&changed_at, written_at) {
-            let who = if meta.updated_by.trim().is_empty() {
-                "outro integrante".to_owned()
-            } else {
-                meta.updated_by.trim().to_owned()
-            };
-            return Err(format!(
-                "Este item foi alterado por {who} depois desta alteração ter sido feita; ela não foi aplicada para não desfazer a alteração mais nova. Confira o item e refaça a alteração, se ainda for o caso."
-            ));
-        }
-        Ok(())
-    }
-
-    /// Notes a plain edit just applied in `frame`.
-    pub(crate) fn record(
-        &mut self,
-        mutation: &IntranetMutation,
-        written_at: &str,
-        frame: &dyn PlainEditFrame,
-    ) {
-        if let Some((kind, id, _)) = plain_edit(mutation) {
-            if let Some(meta) = frame.plain_version(kind, id) {
-                self.0
-                    .insert((kind, id), (meta.version, written_at.to_owned()));
-            }
-        }
+/// `Err` (the reason, for the conflict card) when a plain edit (see
+/// [`plain_edit`]) would overwrite a change made elsewhere since the edit
+/// was written: its item no longer holds the value the edit was based on
+/// (`base`, recorded when the edit was queued) and does not already hold
+/// the value the edit gives. These edits carry no version, so this is the
+/// only check: without a recorded base (a change queued by an older Ponte)
+/// the edit is applied, as before. A value only this computer wrote since is
+/// the base of its next edit, so its own edits are never refused.
+pub(crate) fn plain_edit_conflict(
+    mutation: &IntranetMutation,
+    base: Option<&IntranetMutation>,
+    frame: &dyn PlainEditFrame,
+) -> Result<(), String> {
+    let (Some((kind, id, value)), Some((_, _, based_on))) =
+        (plain_edit(mutation), base.and_then(plain_edit))
+    else {
+        return Ok(());
+    };
+    match frame.plain_value(kind, id) {
+        Some(now) if now != value && now != based_on => Err(
+            "Este item foi alterado em outro computador depois da versão sobre a qual esta alteração foi feita; ela não foi aplicada para não desfazer a outra. Confira o item e refaça a alteração, se ainda for o caso.".to_owned(),
+        ),
+        _ => Ok(()),
     }
 }
 

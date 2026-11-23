@@ -2127,47 +2127,135 @@ fn pair_with_link_and_attachment() -> (Pair, i64, i64) {
     (p, doc, link)
 }
 
-/// F0 (R2-B7, item 8), shared folder: B deactivates a link and changes the
-/// description of an attachment without exchanging; A, later, deactivates
-/// and reactivates the link and writes another description, and publishes
-/// first. B's older edits are not applied over A's newer ones: each becomes a
-/// conflict card on B, and both computers keep A's values.
+/// F0 (R2-B7, item 8), shared folder: B changes the description of an
+/// attachment without exchanging; A, meanwhile, writes another description
+/// and publishes first. B's edit was made on a description that is no longer
+/// there: it becomes a conflict card on B, and both computers keep A's.
+/// (A link's on/off state is a yes/no without a version: an edit based on
+/// "active" cannot tell "never touched" from "deactivated and reactivated",
+/// so links keep the 0.50.0 behaviour; see the review round.)
 #[test]
-fn f0_an_older_link_or_description_edit_does_not_overwrite_a_newer_one_in_a_folder() {
-    let (mut p, doc, link) = pair_with_link_and_attachment();
+fn f0_an_older_description_edit_does_not_overwrite_a_newer_one_in_a_folder() {
+    let (mut p, doc, _link) = pair_with_link_and_attachment();
     let attachment =
         p.b.list_attachments(crate::attachments::Owner::Document(doc))
             .unwrap()[0]
             .id;
-    p.b.set_link_active(link, false).unwrap();
     p.b.update_attachment_description(attachment, "descrição de B (antes)")
         .unwrap();
-    tick();
-    p.a.set_link_active(link, false).unwrap();
-    p.a.set_link_active(link, true).unwrap();
     p.a.update_attachment_description(attachment, "descrição de A (depois)")
         .unwrap();
     sync(&mut p.a);
     let report = sync(&mut p.b);
     sync(&mut p.a);
     for (who, store) in [("A", &p.a), ("B", &p.b)] {
-        assert!(link_active(store, link), "{who}: link deactivated");
         assert_eq!(description(store, doc), "descrição de A (depois)", "{who}");
     }
     let cards = p.b.list_sync_conflicts().unwrap();
-    assert_eq!(report.conflicts, 2, "{cards:?}");
-    assert_eq!(cards.len(), 2, "{cards:?}");
+    assert_eq!(report.conflicts, 1, "{cards:?}");
+    assert_eq!(cards.len(), 1, "{cards:?}");
     assert!(
-        cards
-            .iter()
-            .all(|c| c.reason.contains("alteração mais nova")),
+        cards[0].reason.contains("depois da versão sobre a qual"),
         "{cards:?}"
     );
 }
 
+/// Review 3: a computer adds an attachment and a link without exchanging,
+/// edits the attachment's description and deactivates the link, then
+/// exchanges: its own edits are applied, with no card. Later, the other
+/// computer, which has seen that description, changes it again: applied too.
+#[test]
+fn f0r_own_edits_of_a_new_attachment_or_link_are_never_refused() {
+    let mut p = pair();
+    let doc = p.b.list_documents("").unwrap()[0].id;
+    let other =
+        p.b.import_capture(&capture(&number("b", 1), "Outro documento"))
+            .unwrap()
+            .document_id;
+    p.b.add_document_link(doc, other, "relacionado", "base")
+        .unwrap();
+    let link = link_id(&p.b, doc, other);
+    p.b.add_attachment(
+        crate::attachments::Owner::Document(doc),
+        "anexo.pdf",
+        "descrição inicial",
+        b"%PDF-1.4 anexo",
+    )
+    .unwrap();
+    let attachment =
+        p.b.list_attachments(crate::attachments::Owner::Document(doc))
+            .unwrap()[0]
+            .id;
+    tick();
+    p.b.update_attachment_description(attachment, "descrição de B")
+        .unwrap();
+    p.b.set_link_active(link, false).unwrap();
+    // Another computer published meanwhile, so the replay restamps them.
+    p.a.save_note(doc, "Nota de A").unwrap();
+    sync(&mut p.a);
+    sync(&mut p.b);
+    sync(&mut p.a);
+    assert!(
+        p.b.list_sync_conflicts().unwrap().is_empty(),
+        "{:?}",
+        p.b.list_sync_conflicts().unwrap()
+    );
+    for (who, store) in [("A", &p.a), ("B", &p.b)] {
+        assert_eq!(description(store, doc), "descrição de B", "{who}");
+        assert!(!link_active(store, link), "{who}");
+    }
+    let attachment =
+        p.a.list_attachments(crate::attachments::Owner::Document(doc))
+            .unwrap()[0]
+            .id;
+    p.a.update_attachment_description(attachment, "descrição de A, depois")
+        .unwrap();
+    sync(&mut p.a);
+    sync(&mut p.b);
+    assert!(p.a.list_sync_conflicts().unwrap().is_empty());
+    assert_eq!(description(&p.b, doc), "descrição de A, depois");
+}
+
+/// Review 3, team: a client offline adds an attachment and edits its
+/// description; at the next exchange both are sent, with no card.
+#[test]
+fn f0r_a_team_client_s_own_edit_of_a_new_attachment_is_sent() {
+    let mut t = Team::new();
+    let doc = t.client.list_documents("").unwrap()[0].id;
+    t.offline();
+    t.client
+        .add_attachment(
+            crate::attachments::Owner::Document(doc),
+            "anexo.pdf",
+            "descrição inicial",
+            b"%PDF-1.4 anexo",
+        )
+        .unwrap();
+    let attachment = t
+        .client
+        .list_attachments(crate::attachments::Owner::Document(doc))
+        .unwrap()[0]
+        .id;
+    tick();
+    t.client
+        .update_attachment_description(attachment, "descrição do cliente")
+        .unwrap();
+    t.host
+        .import_capture(&capture(&number("c", 1), "Documento do principal"))
+        .unwrap();
+    t.online();
+    t.client.sync_from_host(false).unwrap();
+    assert!(
+        t.client.list_sync_conflicts().unwrap().is_empty(),
+        "{:?}",
+        t.client.list_sync_conflicts().unwrap()
+    );
+    assert_eq!(description(&t.host, doc), "descrição do cliente");
+}
+
 /// F0 (item 8), shared folder, the other order: A changes first and
-/// publishes, B changes later (after A's copy was written) and then
-/// exchanges. B's edit is the newer one and is applied, without a card.
+/// publishes, B receives it and only then changes the same items and
+/// exchanges. B's edits were made on the current values: applied, no card.
 #[test]
 fn f0_a_newer_link_or_description_edit_is_applied_in_a_folder() {
     let (mut p, doc, link) = pair_with_link_and_attachment();
@@ -2178,6 +2266,7 @@ fn f0_a_newer_link_or_description_edit_is_applied_in_a_folder() {
     p.a.update_attachment_description(attachment, "descrição de A (antes)")
         .unwrap();
     sync(&mut p.a);
+    sync(&mut p.b);
     tick();
     p.b.set_link_active(link, false).unwrap();
     p.b.update_attachment_description(attachment, "descrição de B (depois)")
@@ -2222,22 +2311,18 @@ fn f0_a_team_client_s_older_plain_edit_does_not_overwrite_the_principal_s_newer_
         .list_attachments(crate::attachments::Owner::Document(doc))
         .unwrap()[0]
         .id;
+    let _ = link;
     t.offline();
-    t.client.set_link_active(link, false).unwrap();
     t.client
         .update_attachment_description(attachment, "descrição do cliente (antes)")
         .unwrap();
-    assert_eq!(t.client.list_offline_outbox().unwrap().len(), 2);
-    tick();
-    t.host.set_link_active(link, false).unwrap();
-    t.host.set_link_active(link, true).unwrap();
+    assert_eq!(t.client.list_offline_outbox().unwrap().len(), 1);
     t.host
         .update_attachment_description(attachment, "descrição do principal (depois)")
         .unwrap();
     t.online();
     t.client.sync_from_host(false).unwrap();
     for (who, store) in [("principal", &t.host), ("cliente", &t.client)] {
-        assert!(link_active(store, link), "{who}: link deactivated");
         assert_eq!(
             description(store, doc),
             "descrição do principal (depois)",
@@ -2245,7 +2330,7 @@ fn f0_a_team_client_s_older_plain_edit_does_not_overwrite_the_principal_s_newer_
         );
     }
     let cards = t.client.list_sync_conflicts().unwrap();
-    assert_eq!(cards.len(), 2, "{cards:?}");
+    assert_eq!(cards.len(), 1, "{cards:?}");
     assert!(t.client.list_offline_outbox().unwrap().is_empty());
 }
 
