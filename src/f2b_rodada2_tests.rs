@@ -485,7 +485,7 @@ fn f2b_r2_08_an_unchecked_online_answer_keeps_the_request() {
         })
         .unwrap();
     client.suppress_remote = false;
-    *hooks::CORRUPT_MUTATED.lock().unwrap() = Some(db.clone());
+    hooks::CORRUPT_MUTATED.arm(&db);
     let notes = |s: &Store| -> i64 {
         s.conn
             .query_row(
@@ -496,7 +496,7 @@ fn f2b_r2_08_an_unchecked_online_answer_keeps_the_request() {
             .unwrap()
     };
     let _ = client.save_note(doc, "Nota feita on-line");
-    *hooks::CORRUPT_MUTATED.lock().unwrap() = None;
+    hooks::CORRUPT_MUTATED.disarm(&db);
     let queued = client.list_offline_outbox().unwrap();
     assert_eq!(queued.len(), 1, "the request is kept");
     assert!(queued[0].attempted && !queued[0].uid.is_empty());

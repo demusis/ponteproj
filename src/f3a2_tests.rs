@@ -377,13 +377,16 @@ fn f3_0a2_refless_journal_entry_after_refs_since_is_a_card() {
         b.load_document(doc).unwrap().note,
         "Nota escrita pelo número"
     );
+    let cards = b.list_sync_conflicts().unwrap();
+    let card = cards
+        .iter()
+        .find(|c| c.mutation_uid == "f3a2-sem-provas-0000000000000001")
+        .unwrap_or_else(|| panic!("{cards:?}"));
+    // Damaged (rule 4), not any other refusal.
     assert!(
-        b.list_sync_conflicts()
-            .unwrap()
-            .iter()
-            .any(|c| c.mutation_uid == "f3a2-sem-provas-0000000000000001"),
-        "{:?}",
-        b.list_sync_conflicts().unwrap()
+        card.reason.starts_with(crate::idrefs::DAMAGED),
+        "{}",
+        card.reason
     );
 }
 
@@ -442,9 +445,23 @@ fn f3_0a2_host_crash_after_effect_before_rekey() {
     t.client.save_note(x, "Nota em X").unwrap();
     let mine = ident(&t.client, "document", x);
     t.online();
-    *hooks::CRASH_BEFORE_REKEY.lock().unwrap() = Some(t.db.clone());
+    hooks::CRASH_BEFORE_REKEY.arm(&t.db);
     let first = t.client.sync_from_host(false);
-    *hooks::CRASH_BEFORE_REKEY.lock().unwrap() = None;
+    let fired = !hooks::CRASH_BEFORE_REKEY.disarm(&t.db);
+    assert!(fired, "the main computer fell at the rekey");
+    // Before it opens again: X is there with the identity it got at the
+    // insert, and its log is pending.
+    let fallen: Vec<i64> = t
+        .host
+        .list_documents("")
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.document_number == number)
+        .map(|d| d.id)
+        .collect();
+    assert_eq!(fallen.len(), 1, "the effect committed");
+    assert_ne!(ident(&t.host, "document", fallen[0]), mine);
+    assert!(count(&t.host, "SELECT count(*) FROM carry_log WHERE row_id>0") > 0);
     t.online();
     t.client.sync_from_host(false).unwrap();
     let on_host: Vec<i64> = t
@@ -477,23 +494,721 @@ fn f3_0a2_host_crash_after_effect_before_rekey() {
 fn f3_0a2_lost_reply_target_deleted_retry_acknowledged() {
     let mut t = Team::new();
     let doc = t.client.list_documents("").unwrap()[0].id;
-    *hooks::CORRUPT_MUTATED.lock().unwrap() = Some(t.db.clone());
+    hooks::CORRUPT_MUTATED.arm(&t.db);
     let lost = t.client.add_attachment(
         crate::attachments::Owner::Document(doc),
         "perdido.pdf",
         "resposta perdida",
         b"%PDF-1.4 anexo",
     );
-    *hooks::CORRUPT_MUTATED.lock().unwrap() = None;
+    hooks::CORRUPT_MUTATED.disarm(&t.db);
     assert!(lost.is_err());
     let queued = t.client.list_offline_outbox().unwrap();
     assert_eq!(queued.len(), 1);
     assert!(queued[0].attempted);
     assert_eq!(count(&t.host, "SELECT count(*) FROM attachments"), 1);
     t.host.delete_document(doc).unwrap();
+    assert_eq!(hooks::rpc_count(&t.db, "Mutate"), 1);
+    assert_eq!(hooks::rpc_count(&t.db, "ReceiptOf"), 0);
     t.client.sync_from_host(false).unwrap();
+    // Settled by its receipt alone: asked once, never sent again.
+    assert_eq!(hooks::rpc_count(&t.db, "ReceiptOf"), 1);
+    assert_eq!(hooks::rpc_count(&t.db, "Mutate"), 1, "no second execution");
     assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
     assert!(t.client.list_offline_outbox().unwrap().is_empty());
     assert_eq!(count(&t.host, "SELECT count(*) FROM attachments"), 0);
     assert!(t.client.list_documents("").unwrap().is_empty());
+}
+
+// ------------------------------------------------ revisão F3.0a2 --
+//
+// Each test reproduces a finding of `revisao-f3-0a2.md`; each is red on
+// `3d26e5f` (said test by test) and green with its fix.
+
+impl Team {
+    /// Another client of the same main computer, synchronized once.
+    fn join(&mut self, member: &str) -> Store {
+        let mut other = Store::open(&self._dir.path().join(format!("{member}.sqlite3"))).unwrap();
+        other
+            .save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::Client,
+                member_name: member.into(),
+                host_url: format!("http://{}", self.server.as_ref().unwrap().local_addr()),
+                cabinet_token: self.token.clone(),
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+        other.sync_from_host(false).unwrap();
+        other
+    }
+
+    fn client_db(&self) -> PathBuf {
+        self._dir.path().join("client.sqlite3")
+    }
+}
+
+fn task_of(store: &Store, id: i64) -> crate::tasks::Task {
+    store
+        .list_tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.id == id)
+        .unwrap()
+}
+
+fn host_task_titled(store: &Store, title: &str) -> crate::tasks::Task {
+    store
+        .list_tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.title == title)
+        .unwrap()
+}
+
+fn note_of(store: &Store, doc: i64) -> String {
+    store.load_document(doc).unwrap().note.trim().to_owned()
+}
+
+/// One shared file, A and B, promoted by A, with nothing in the library.
+fn two_empty() -> (tempfile::TempDir, PathBuf, Store, Store) {
+    hooks::PROMOTION.with(|c| c.set(true));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Drive").join("ponte-sync.ponte");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let files = vec![path.display().to_string()];
+    let config = |member: &str| IntranetConfig {
+        mode: IntranetMode::SharedFolder,
+        member_name: member.into(),
+        folder_files: files.clone(),
+        folder_key: KEY.into(),
+        ..IntranetConfig::default()
+    };
+    let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+    a.save_intranet_config(&config("Casa")).unwrap();
+    fsync(&mut a);
+    let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+    b.save_intranet_config(&config("Trabalho")).unwrap();
+    fsync(&mut b);
+    fsync(&mut a);
+    fsync(&mut b);
+    (dir, path, a, b)
+}
+
+/// Finding 1 (BLOCKER) / frozen rules 5, 6 and 23. A 9/2 base with an
+/// epoch and no triple at all (everything was deleted) is still a 9: a
+/// replayed change with `Some(refs)` is checked and resolved, so a `Frame`
+/// number of another frame becomes a card, never a note written by number.
+///
+/// Red on `3d26e5f`: `use_refs` is the base having triples, so the refs are
+/// dropped, the change is taken as legacy and the note lands by number.
+#[test]
+fn f3_0a2r_empty_nine_base_still_resolves_the_proofs() {
+    let (dir, path, mut a, mut b) = two_empty();
+    let x = b
+        .import_capture(&capture("SEFAZ-PRO-2026/00950", "Criado em B."))
+        .unwrap()
+        .document_id;
+    b.save_note(x, "Nota de B").unwrap();
+    fsync(&mut b);
+    fsync(&mut a);
+    let on_a = a.list_documents("").unwrap()[0].id;
+    a.delete_document(on_a).unwrap();
+    for attendance in a.list_saiop_attendances().unwrap() {
+        a.delete_saiop_attendance(attendance.id).unwrap();
+    }
+    fsync(&mut a);
+    let base = nine(&path);
+    assert!(
+        base.payload.snapshot.idents.is_empty(),
+        "no triple left: {:?}",
+        base.payload.snapshot.idents
+    );
+    assert!(!base.payload.snapshot.ident_epoch.is_empty(), "still a 9");
+    assert_eq!(base.header.level, crate::sharedfolder::LEVEL);
+    // B's guard still holds the creation and the note; under new uids they
+    // are changes the base never applied, and the note's proof becomes a
+    // `Frame` number (of B's frame, not of the copy being built).
+    let guard = guard_of(dir.path(), "b");
+    // Written over that empty 9/2, B's changes still carry their proofs.
+    let written = crate::sharedfolder::read(&guard, KEY).unwrap().unwrap();
+    let mine: Vec<_> = written
+        .payload
+        .journal
+        .iter()
+        .filter(|e| e.actor == "Trabalho")
+        .map(|e| (e.label.clone(), e.refs.is_some(), e.legacy))
+        .collect();
+    assert_eq!(mine.len(), 2, "{mine:?}");
+    assert!(
+        mine.iter().all(|(_, refs, legacy)| *refs && !legacy),
+        "{mine:?}"
+    );
+    let note_uid = "f3a2r-nota-pelo-numero-000000001".to_owned();
+    crate::sharedfolder::reseal_for_test(&guard, KEY, crate::sharedfolder::LEVEL, |_, payload| {
+        for entry in &mut payload.journal {
+            match &mut entry.mutation {
+                crate::intranet::IntranetMutation::ImportCapture { .. } => {
+                    entry.uid = "f3a2r-criacao-de-novo-0000000001".into();
+                }
+                crate::intranet::IntranetMutation::SaveNote { note, .. } => {
+                    entry.uid = note_uid.clone();
+                    *note = "Nota escrita pelo número".into();
+                    for site in &mut entry.refs.as_mut().expect("refs").mutation {
+                        site.proof = Proof::Frame;
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
+    .unwrap();
+    fsync(&mut b);
+    let docs = b.list_documents("").unwrap();
+    assert!(
+        docs.iter()
+            .all(|d| note_of(&b, d.id) != "Nota escrita pelo número"),
+        "nothing written by number"
+    );
+    let cards = b.list_sync_conflicts().unwrap();
+    let card = cards
+        .iter()
+        .find(|c| c.mutation_uid == note_uid)
+        .unwrap_or_else(|| panic!("{cards:?}"));
+    assert!(
+        card.reason.starts_with(crate::idrefs::UNPROVEN),
+        "{}",
+        card.reason
+    );
+}
+
+/// Finding 2 (BLOCKER) / frozen rule 10. The main computer commits the
+/// effect of a carried creation and its log, then its rekey fails with an
+/// error (it still answers). That is not a refusal: the client keeps the
+/// entry (attempted), asks its receipt next time and the creation gets its
+/// identity from the log; the note on it lands, no card.
+///
+/// Red on `3d26e5f`: the error after the effect is answered 400, so the
+/// client cards the creation and drops it; the note becomes a card too.
+#[test]
+fn f3_0a2r_failure_after_the_effect_is_not_a_refusal() {
+    let mut t = Team::new();
+    t.offline();
+    let number = "SEFAZ-PRO-2026/00951";
+    let x = t
+        .client
+        .import_capture(&capture(number, "Criado sem conexão."))
+        .unwrap()
+        .document_id;
+    t.client.save_note(x, "Nota em X").unwrap();
+    let mine = ident(&t.client, "document", x);
+    t.online();
+    hooks::FAIL_REKEY_AT.arm(&t.db);
+    let first = t.client.sync_from_host(false);
+    let fired = !hooks::FAIL_REKEY_AT.disarm(&t.db);
+    assert!(fired, "the rekey failed on the main computer");
+    assert!(first.is_err(), "nothing settled yet");
+    assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
+    let queue = t.client.list_offline_outbox().unwrap();
+    assert_eq!(queue.len(), 2, "{queue:?}");
+    assert!(queue[0].attempted);
+    assert!(
+        count(&t.host, "SELECT count(*) FROM carry_log WHERE row_id>0") > 0,
+        "the log is pending"
+    );
+    t.client.sync_from_host(false).unwrap();
+    let on_host: Vec<i64> = t
+        .host
+        .list_documents("")
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.document_number == number)
+        .map(|d| d.id)
+        .collect();
+    assert_eq!(on_host.len(), 1, "X is unique");
+    assert_eq!(ident(&t.host, "document", on_host[0]), mine);
+    assert_eq!(note_of(&t.host, on_host[0]), "Nota em X");
+    assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
+    assert_eq!(count(&t.host, "SELECT count(*) FROM carry_log"), 0);
+}
+
+/// Finding 2, the client's window: an entry is marked attempted, under a
+/// valid uid, before its `Mutate` leaves (a crash right after the send
+/// leaves it asking its receipt first).
+///
+/// Red on `3d26e5f`: the entry is marked attempted only after a lost
+/// answer.
+#[test]
+fn f3_0a2r_attempted_is_persisted_before_the_send() {
+    let mut t = Team::new();
+    let doc = t.client.list_documents("").unwrap()[0].id;
+    t.offline();
+    t.client.save_note(doc, "Nota da fila").unwrap();
+    t.online();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<(bool, String)>));
+    let (client_db, into) = (t.client_db(), seen.clone());
+    hooks::arm_before_mutate(
+        &t.db,
+        Box::new(move |_| {
+            let conn = rusqlite::Connection::open(&client_db).unwrap();
+            let blob: Vec<u8> = conn
+                .query_row("SELECT payload FROM offline_outbox", [], |r| r.get(0))
+                .unwrap();
+            let entry: OutboxEntry =
+                serde_json::from_slice(&crate::protection::unseal(&blob).unwrap()).unwrap();
+            *into.lock().unwrap() = Some((entry.attempted, entry.uid));
+        }),
+    );
+    t.client.sync_from_host(false).unwrap();
+    let (attempted, uid) = seen.lock().unwrap().clone().expect("the hook ran");
+    assert!(attempted, "attempted before the send");
+    assert_eq!(uid.len(), 32, "{uid}");
+    assert_eq!(note_of(&t.host, doc), "Nota da fila");
+}
+
+/// Finding 3 (HIGH) / frozen rules 6, 9 and 11. A creates a task online:
+/// the main computer saves it with identity H and the answer is lost, so A
+/// applies it here with C. B takes H and edits the task (proving H) before
+/// A asks the receipt. The receipt never replaces H (B may hold it): B's
+/// next edit, still proving H, lands.
+///
+/// Red on `3d26e5f`: `rekey_inserted` gives the task C on the main
+/// computer without a new revision; B is told it is up to date and its
+/// edit proving H is refused.
+#[test]
+fn f3_0a2r_late_receipt_keeps_the_identity_already_published() {
+    let mut t = Team::new();
+    let mut b = t.join("SERVIDOR-B");
+    let doc = t.client.list_documents("").unwrap()[0].id;
+    hooks::DROP_REPLY.arm(&t.db);
+    let local = t
+        .client
+        .save_task(&crate::tasks::Task {
+            title: "Tarefa de A".into(),
+            ..crate::tasks::Task::new(doc)
+        })
+        .unwrap();
+    assert!(!hooks::DROP_REPLY.disarm(&t.db), "answer dropped");
+    let queue = t.client.list_offline_outbox().unwrap();
+    assert_eq!(queue.len(), 1);
+    assert!(
+        queue[0].attempted && !queue[0].idents.is_empty(),
+        "{queue:?}"
+    );
+    let c = ident(&t.client, "task", local);
+    let on_host = host_task_titled(&t.host, "Tarefa de A").id;
+    let h = ident(&t.host, "task", on_host);
+    assert_ne!(c, h);
+    // B takes H and edits the task, between A's two requests.
+    b.sync_from_host(false).unwrap();
+    assert_eq!(ident(&b, "task", on_host), h);
+    let mut theirs = task_of(&b, on_host);
+    theirs.notes = "Primeira edição de B".into();
+    b.save_task(&theirs).unwrap();
+    // A asks its receipt.
+    t.client.sync_from_host(false).unwrap();
+    assert_eq!(ident(&t.host, "task", on_host), h, "H kept");
+    assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
+    // B, told it is up to date or not, edits again proving H.
+    b.sync_from_host(false).unwrap();
+    let mut theirs = task_of(&b, on_host);
+    theirs.notes = "Segunda edição de B".into();
+    b.save_task(&theirs).unwrap();
+    assert_eq!(task_of(&t.host, on_host).notes, "Segunda edição de B");
+}
+
+/// Finding 3, the dependents: A edits its task offline (proving C) before
+/// its receipt is asked. C is bound to H by the receipt and the slot the
+/// creation inserted (never by replacing H): the edit lands on the task,
+/// and H stays.
+///
+/// Red on `3d26e5f`: the task's identity on the main computer becomes C.
+#[test]
+fn f3_0a2r_late_receipt_binds_the_dependents_without_rekey() {
+    let mut t = Team::new();
+    let doc = t.client.list_documents("").unwrap()[0].id;
+    hooks::DROP_REPLY.arm(&t.db);
+    let local = t
+        .client
+        .save_task(&crate::tasks::Task {
+            title: "Tarefa de A".into(),
+            ..crate::tasks::Task::new(doc)
+        })
+        .unwrap();
+    let on_host = host_task_titled(&t.host, "Tarefa de A").id;
+    let h = ident(&t.host, "task", on_host);
+    let mut mine = task_of(&t.client, local);
+    mine.notes = "Notas de A".into();
+    t.client.save_task(&mine).unwrap();
+    assert_eq!(t.client.list_offline_outbox().unwrap().len(), 2);
+    t.client.sync_from_host(false).unwrap();
+    assert_eq!(ident(&t.host, "task", on_host), h, "H kept");
+    assert_eq!(task_of(&t.host, on_host).notes, "Notas de A");
+    assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
+    assert!(t.client.list_offline_outbox().unwrap().is_empty());
+}
+
+/// Finding 4 (HIGH) / frozen rule 9. C imports offline a capture new to
+/// its library and unlinks the triage task made with it. The main computer
+/// has that capture as an older version, and no task linked to the
+/// document: the import there is a duplicate that inserts a triage task.
+/// A duplicate gives no identity: the task keeps its own, the unlink of
+/// C's triage task proves nothing there and becomes a card, and the task
+/// stays linked. Both when the answer arrives and after a fall before the
+/// rekey (completed from the log).
+///
+/// Red on `3d26e5f`: the inserted task takes C's triage identity (by the
+/// rekey, or by `complete_carry` as the only task in the log) and the
+/// unlink lands.
+#[test]
+fn f3_0a2r_duplicate_import_lends_no_identity() {
+    duplicate_import_case(false);
+}
+
+#[test]
+fn f3_0a2r_duplicate_import_lends_no_identity_after_a_fall() {
+    duplicate_import_case(true);
+}
+
+fn duplicate_import_case(fall: bool) {
+    let mut t = Team::new();
+    let number = "SEFAZ-PRO-2026/00960";
+    let older = capture(number, "Primeira versão.");
+    let doc = t.host.import_capture(&older).unwrap().document_id;
+    let mut newer = capture(number, "Segunda versão.");
+    newer.captured_at = "2026-11-05T12:00:00Z".into();
+    t.host.import_capture(&newer).unwrap();
+    for task in t.host.list_tasks().unwrap() {
+        if task.document_id == Some(doc) {
+            t.host.relink_task(task.id, None, None).unwrap();
+        }
+    }
+    t.offline();
+    let mut again = older.clone();
+    again.request_id = uuid::Uuid::new_v4().to_string();
+    let mine = t.client.import_capture(&again).unwrap().document_id;
+    let triage = t
+        .client
+        .list_tasks()
+        .unwrap()
+        .into_iter()
+        .find(|task| task.document_id == Some(mine))
+        .expect("triage task")
+        .id;
+    let triage_ident = ident(&t.client, "task", triage);
+    t.client.relink_task(triage, None, None).unwrap();
+    t.online();
+    if fall {
+        hooks::CRASH_BEFORE_REKEY.arm(&t.db);
+        assert!(t.client.sync_from_host(false).is_err());
+        assert!(!hooks::CRASH_BEFORE_REKEY.disarm(&t.db), "fell");
+        t.online();
+    }
+    t.client.sync_from_host(false).unwrap();
+    let linked: Vec<i64> = t
+        .host
+        .list_tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|task| task.document_id == Some(doc))
+        .map(|task| task.id)
+        .collect();
+    assert_eq!(linked.len(), 1, "the duplicate's triage task, still linked");
+    assert_ne!(ident(&t.host, "task", linked[0]), triage_ident);
+    let held: i64 = t
+        .host
+        .conn
+        .query_row(
+            "SELECT count(*) FROM item_ident WHERE ident=?1",
+            [&triage_ident],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(held, 0, "C's triage identity is on no row");
+    let cards = t.client.list_sync_conflicts().unwrap();
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert!(matches!(
+        cards[0].mutation,
+        crate::intranet::IntranetMutation::RelinkTask { .. }
+    ));
+}
+
+/// Finding 5 (HIGH) / frozen rule 7. A resource use is the item of its
+/// change by its uid: moving its link from document A to B (or dropping
+/// it) offline is an edit of the same use, not a base about another item.
+///
+/// Red on `3d26e5f`: the first site (A in the base, B or none in the
+/// change) is compared, so the edit becomes a card.
+#[test]
+fn f3_0a2r_resource_use_relink_is_the_same_item() {
+    let mut t = Team::new();
+    let a_doc = t.host.list_documents("").unwrap()[0].id;
+    let b_doc = t
+        .host
+        .import_capture(&capture("SEFAZ-PRO-2026/00970", "Documento B."))
+        .unwrap()
+        .document_id;
+    let room = t
+        .host
+        .save_resource(
+            &crate::resources::Resource {
+                name: "Sala de reuniões".into(),
+                kind: "sala".into(),
+                quantity: 1,
+                ..crate::resources::Resource::default()
+            },
+            None,
+        )
+        .unwrap();
+    let uid = t
+        .host
+        .save_resource_use(
+            &crate::resources::ResourceUse {
+                resource_uid: room,
+                who: "Servidor A".into(),
+                start: "2099-01-05T09:00".into(),
+                end: "2099-01-05T10:00".into(),
+                document_id: Some(a_doc),
+                ..crate::resources::ResourceUse::default()
+            },
+            None,
+        )
+        .unwrap();
+    t.client.sync_from_host(true).unwrap();
+    let use_on = |store: &Store| {
+        store
+            .list_resource_uses()
+            .unwrap()
+            .into_iter()
+            .find(|u| u.uid == uid)
+            .unwrap()
+    };
+    for target in [Some(b_doc), None] {
+        t.offline();
+        let mut item = use_on(&t.client);
+        item.document_id = target;
+        t.client.save_resource_use(&item, None).unwrap();
+        t.online();
+        t.client.sync_from_host(false).unwrap();
+        assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
+        assert_eq!(use_on(&t.host).document_id, target);
+    }
+}
+
+/// Finding 6 (HIGH). An entry an older Ponte queued without uid gets a
+/// stable uuid before its first attempt: when that answer is lost, its
+/// receipt settles it and the queue goes on.
+///
+/// Red on `3d26e5f`: the stand-in `legacy-{created_at}-{id}` is not a
+/// valid uid, so the retry's `ReceiptOf` is refused and the drain stops
+/// there at every exchange.
+#[test]
+fn f3_0a2r_pre_uid_entry_survives_a_lost_answer() {
+    let mut t = Team::new();
+    let doc = t.client.list_documents("").unwrap()[0].id;
+    t.offline();
+    t.client.save_note(doc, "Nota da fila antiga").unwrap();
+    edit_last_queued(&t.client, |entry| {
+        entry.uid = String::new();
+        entry.refs = None;
+    });
+    t.online();
+    hooks::CORRUPT_MUTATED.arm(&t.db);
+    assert!(t.client.sync_from_host(false).is_err(), "answer unusable");
+    hooks::CORRUPT_MUTATED.disarm(&t.db);
+    let queue = t.client.list_offline_outbox().unwrap();
+    assert_eq!(queue.len(), 1);
+    assert!(queue[0].attempted);
+    t.client.sync_from_host(false).unwrap();
+    assert!(t.client.list_offline_outbox().unwrap().is_empty());
+    assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
+    assert_eq!(note_of(&t.host, doc), "Nota da fila antiga");
+    assert_eq!(hooks::rpc_count(&t.db, "Mutate"), 1, "applied once");
+}
+
+/// Finding 6, an entry already attempted under an invalid uid: nothing
+/// proves whether it was applied. It becomes a card of uncertain state
+/// (never sent again by number) and the entries after it go on.
+///
+/// Red on `3d26e5f`: its `ReceiptOf` is refused and the drain stops.
+#[test]
+fn f3_0a2r_attempted_invalid_uid_is_an_uncertain_card() {
+    let mut t = Team::new();
+    let doc = t.client.list_documents("").unwrap()[0].id;
+    let other = t
+        .host
+        .import_capture(&capture("SEFAZ-PRO-2026/00980", "Outro."))
+        .unwrap()
+        .document_id;
+    t.client.sync_from_host(true).unwrap();
+    t.offline();
+    t.client.save_note(doc, "Nota incerta").unwrap();
+    edit_last_queued(&t.client, |entry| {
+        entry.uid = "legacy-2026-11-23T10:00:00Z-1".into();
+        entry.refs = None;
+        entry.attempted = true;
+    });
+    t.client.save_note(other, "Nota seguinte").unwrap();
+    t.online();
+    t.client.sync_from_host(false).unwrap();
+    assert!(t.client.list_offline_outbox().unwrap().is_empty());
+    assert_eq!(note_of(&t.host, other), "Nota seguinte");
+    assert_ne!(note_of(&t.host, doc), "Nota incerta");
+    let cards = t.client.list_sync_conflicts().unwrap();
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert!(cards[0].unresolved);
+    assert!(matches!(
+        &cards[0].mutation,
+        crate::intranet::IntranetMutation::SaveNote { note, .. } if note == "Nota incerta"
+    ));
+}
+
+/// Finding 7 (HIGH) / frozen rule 23, online. The client still shows X;
+/// another device deleted it. A note saved on X is refused by its proof
+/// there: it becomes a card holding the note, never reapplied by number.
+///
+/// Red on `3d26e5f`: the error goes back to the caller and no card keeps
+/// the note.
+#[test]
+fn f3_0a2r_proof_refusal_online_is_a_card() {
+    let mut t = Team::new();
+    let x = t
+        .host
+        .import_capture(&capture("SEFAZ-PRO-2026/00990", "Será apagado."))
+        .unwrap()
+        .document_id;
+    t.client.sync_from_host(true).unwrap();
+    t.host.delete_document(x).unwrap();
+    assert!(t.client.save_note(x, "Nota sobre X").is_err());
+    let cards = t.client.list_sync_conflicts().unwrap();
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert!(cards[0].unresolved, "never by number");
+    assert_eq!(cards[0].reason, crate::idrefs::UNPROVEN);
+    assert!(matches!(
+        &cards[0].mutation,
+        crate::intranet::IntranetMutation::SaveNote { note, .. } if note == "Nota sobre X"
+    ));
+}
+
+/// Finding 7, in the drain: X is deleted on the main computer between the
+/// client's read of its frame and the change's arrival. The proof refusal
+/// is a card of the original change, unresolved.
+///
+/// Red on `3d26e5f`: the card takes the path of an ordinary refusal
+/// (`unresolved=false`).
+#[test]
+fn f3_0a2r_proof_refusal_in_the_drain_is_unresolved() {
+    let mut t = Team::new();
+    let x = t
+        .host
+        .import_capture(&capture("SEFAZ-PRO-2026/00991", "Será apagado."))
+        .unwrap()
+        .document_id;
+    t.client.sync_from_host(true).unwrap();
+    t.offline();
+    t.client.save_note(x, "Nota na fila").unwrap();
+    t.online();
+    hooks::arm_before_mutate(
+        &t.db,
+        Box::new(move |host| host.delete_document(x).unwrap()),
+    );
+    t.client.sync_from_host(false).unwrap();
+    assert!(!hooks::before_mutate_armed(&t.db), "hook ran");
+    let cards = t.client.list_sync_conflicts().unwrap();
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert!(cards[0].unresolved, "never by number");
+    assert_eq!(cards[0].reason, crate::idrefs::UNPROVEN);
+    assert!(matches!(
+        &cards[0].mutation,
+        crate::intranet::IntranetMutation::SaveNote { document_id, note, .. }
+            if note == "Nota na fila" && *document_id == x
+    ));
+}
+
+/// The previous fixer's deviation (rule 23): an entry kept as it is (an
+/// older Ponte's) and a later edit of the same item expecting the version
+/// it leaves. When the kept one becomes a card, the later one is a card
+/// too: it never lands over another device's version.
+///
+/// Red on `3d26e5f`: the later note expects `v+1`, which is the other
+/// device's version, and overwrites it.
+#[test]
+fn f3_0a2r_follower_of_a_carded_entry_is_carded_in_the_drain() {
+    let mut t = Team::new();
+    let doc = t.client.list_documents("").unwrap()[0].id;
+    t.offline();
+    t.client.save_note(doc, "Primeira nota de A").unwrap();
+    edit_last_queued(&t.client, |entry| entry.refs = None);
+    t.client.save_note(doc, "Segunda nota de A").unwrap();
+    assert_eq!(t.client.list_offline_outbox().unwrap().len(), 2);
+    t.host.save_note(doc, "Nota de outro aparelho").unwrap();
+    t.online();
+    t.client.sync_from_host(false).unwrap();
+    assert_eq!(note_of(&t.host, doc), "Nota de outro aparelho");
+    assert_eq!(t.cards(), 2, "{:?}", t.client.list_sync_conflicts());
+}
+
+/// The same chain in the replay of a library's own queue in the folders.
+///
+/// Red on `3d26e5f`: the later note lands over A's.
+#[test]
+fn f3_0a2r_follower_of_a_carded_entry_is_carded_in_the_folders() {
+    let (_dir, _path, mut a, mut b) = two();
+    let doc = b.list_documents("").unwrap()[0].id;
+    b.save_note(doc, "Primeira nota de B").unwrap();
+    edit_last_queued(&b, |entry| entry.refs = None);
+    b.save_note(doc, "Segunda nota de B").unwrap();
+    assert_eq!(b.list_offline_outbox().unwrap().len(), 2);
+    a.save_note(doc, "Nota de A").unwrap();
+    fsync(&mut a);
+    fsync(&mut b);
+    assert_eq!(note_of(&b, doc), "Nota de A");
+    assert_eq!(b.list_sync_conflicts().unwrap().len(), 2);
+}
+
+/// Test weakness 3 of the review: a legacy entry (marked in the journal)
+/// that arrives from a divergent journal is replayed by number, no card.
+///
+/// Guard: green on `3d26e5f` (the mark is honored); red if the mark were
+/// ignored (the entry, above `refs_since` without refs, would be a card).
+#[test]
+fn f3_0a2r_legacy_entry_from_a_divergent_journal_is_replayed() {
+    let (dir, _path, mut a, mut b) = two();
+    let doc = b.list_documents("").unwrap()[0].id;
+    b.save_note(doc, "Nota da fila antiga").unwrap();
+    edit_last_queued(&b, |entry| entry.refs = None);
+    fsync(&mut b);
+    // Only in B's guard, under a new uid: a change the folder never saw.
+    let guard = guard_of(dir.path(), "b");
+    let uid = "f3a2r-legada-divergente-00000001".to_owned();
+    crate::sharedfolder::reseal_for_test(&guard, KEY, crate::sharedfolder::LEVEL, |_, payload| {
+        let entry = payload
+            .journal
+            .iter_mut()
+            .find(|e| e.legacy)
+            .expect("the legacy entry");
+        entry.uid = uid.clone();
+        entry.label = "Nota legada divergente".into();
+        if let crate::intranet::IntranetMutation::SaveNote {
+            note,
+            expected_version,
+            ..
+        } = &mut entry.mutation
+        {
+            *note = "Nota legada divergente".into();
+            *expected_version = None;
+        }
+    })
+    .unwrap();
+    a.import_capture(&capture("SEFAZ-PRO-2026/00999", "De A."))
+        .unwrap();
+    fsync(&mut a);
+    fsync(&mut b);
+    assert!(
+        b.list_sync_conflicts().unwrap().is_empty(),
+        "{:?}",
+        b.list_sync_conflicts()
+    );
+    assert_eq!(note_of(&b, doc), "Nota legada divergente");
+    fsync(&mut a);
+    assert_eq!(note_of(&a, doc), "Nota legada divergente");
 }

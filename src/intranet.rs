@@ -12337,7 +12337,17 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
         let path_guard = db_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("O computador principal está ocupado. Tente de novo."))?;
-        answer_rpc(&path_guard, &auth_token, &body)
+        let answered = answer_rpc(&path_guard, &auth_token, &body);
+        // Tests: the answer to a change dropped on the way back.
+        #[cfg(any(test, feature = "test-support"))]
+        if matches!(
+            serde_json::from_slice::<RpcRequest>(&body),
+            Ok(RpcRequest::V2 { request, .. }) if matches!(*request, RpcRequest::Mutate { .. })
+        ) && crate::idents::hooks::drop_reply(&path_guard)
+        {
+            return Ok(());
+        }
+        answered
     };
     write_http_json(&mut stream, status, &response)
 }
@@ -12385,6 +12395,21 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
         }
         _ => return (503, error(LEGACY_REFUSED.into())),
     };
+    #[cfg(any(test, feature = "test-support"))]
+    if let RpcRequest::V2 { request, .. } = &rpc_req {
+        let name = serde_json::to_value(&**request)
+            .ok()
+            .and_then(|v| match v {
+                serde_json::Value::Object(map) => map.keys().next().cloned(),
+                serde_json::Value::String(name) => Some(name),
+                _ => None,
+            })
+            .unwrap_or_default();
+        crate::idents::hooks::RPC_SEEN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((db_path.to_path_buf(), name));
+    }
     let mut store = match Store::open_service(db_path) {
         Ok(s) => s,
         Err(e) => {
@@ -12545,6 +12570,8 @@ fn process_rpc_at(
                 expected_generation.is_empty() || expected_generation == generation,
                 "{HISTORY_CHANGED}"
             );
+            #[cfg(any(test, feature = "test-support"))]
+            crate::idents::hooks::before_mutate(store);
             let receipted = valid_mutation_uid(&mutation_uid);
             // Already applied (its answer was lost on the way back): the same
             // answer, and nothing is applied again, whatever happened to the
@@ -12726,15 +12753,7 @@ fn known_mutation(
 fn corrupt_for_test(store: &Store, snapshot: &mut CabinetSnapshot) {
     #[cfg(any(test, feature = "test-support"))]
     {
-        let mut target = crate::idents::hooks::CORRUPT_MUTATED
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let ours = store
-            .conn
-            .path()
-            .is_some_and(|p| target.as_deref() == Some(std::path::Path::new(p)));
-        if ours {
-            *target = None;
+        if crate::idents::hooks::CORRUPT_MUTATED.take(store.conn.path().map(std::path::Path::new)) {
             snapshot.idents.pop();
         }
     }

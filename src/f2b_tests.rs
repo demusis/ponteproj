@@ -1291,7 +1291,7 @@ fn f2b_b26_invalid_mutated_snapshot_keeps_the_entry() {
     team.client.save_note(doc, "Nota do cliente").unwrap();
     assert_eq!(team.client.list_offline_outbox().unwrap().len(), 1);
     team.online();
-    *hooks::CORRUPT_MUTATED.lock().unwrap() = Some(team.db.clone());
+    hooks::CORRUPT_MUTATED.arm(&team.db);
     let revision = team.client.cabinet_revision().unwrap();
     let error = team.client.sync_from_host(false).unwrap_err().to_string();
     assert!(error.contains("identidade"), "{error}");
@@ -1307,7 +1307,7 @@ fn f2b_b26_invalid_mutated_snapshot_keeps_the_entry() {
         .unwrap();
     assert_eq!(learned, 0, "nothing learned");
     assert_eq!(team.client.cabinet_revision().unwrap(), revision);
-    *hooks::CORRUPT_MUTATED.lock().unwrap() = None;
+    hooks::CORRUPT_MUTATED.disarm(&team.db);
 }
 
 /// B27. A request of an older Ponte (bare, not V2) gets 503 before the

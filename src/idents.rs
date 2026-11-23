@@ -957,6 +957,8 @@ pub(crate) fn rekey(
     }
     #[cfg(any(test, feature = "test-support"))]
     hooks::crash_before_rekey(conn);
+    #[cfg(any(test, feature = "test-support"))]
+    hooks::fail_rekey_at(conn)?;
     let rows = slot_rows(conn, mutation, reply, inserted)?;
     for slot in carried {
         let Some((kind, _, row, _)) = rows
@@ -1125,27 +1127,133 @@ pub mod hooks {
         pub static DROP_TRIPLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
+    /// Library files a fault is armed for, each once (tests run in
+    /// parallel: one test never takes or clears another's).
+    #[derive(Default)]
+    pub struct Armed(std::sync::Mutex<Vec<std::path::PathBuf>>);
+
+    impl Armed {
+        pub const fn new() -> Self {
+            Self(std::sync::Mutex::new(Vec::new()))
+        }
+
+        /// Arms the fault for the library at `path`.
+        pub fn arm(&self, path: &std::path::Path) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(path.to_path_buf());
+        }
+
+        /// Takes the fault armed for `path`, if any (it fires once).
+        pub fn take(&self, path: Option<&std::path::Path>) -> bool {
+            let Some(path) = path else { return false };
+            let mut armed = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            match armed.iter().position(|p| p == path) {
+                Some(at) => {
+                    armed.remove(at);
+                    true
+                }
+                None => false,
+            }
+        }
+
+        /// Disarms the fault of `path`: whether it was still armed (it
+        /// never fired).
+        pub fn disarm(&self, path: &std::path::Path) -> bool {
+            self.take(Some(path))
+        }
+    }
+
     /// The library file of a main computer whose next answer to a change
     /// carries a snapshot with a broken identity (its server runs on
     /// another thread).
-    pub static CORRUPT_MUTATED: std::sync::Mutex<Option<std::path::PathBuf>> =
-        std::sync::Mutex::new(None);
+    pub static CORRUPT_MUTATED: Armed = Armed::new();
 
     /// The library file of a main computer that falls (its connection
     /// thread panics, as a crash would: no answer) at its next rekey of a
     /// carried change, after the change's own effect was committed.
-    pub static CRASH_BEFORE_REKEY: std::sync::Mutex<Option<std::path::PathBuf>> =
-        std::sync::Mutex::new(None);
+    pub static CRASH_BEFORE_REKEY: Armed = Armed::new();
 
     pub(crate) fn crash_before_rekey(conn: &rusqlite::Connection) {
-        let mut target = CRASH_BEFORE_REKEY.lock().unwrap_or_else(|e| e.into_inner());
-        let ours = conn
-            .path()
-            .is_some_and(|p| target.as_deref() == Some(std::path::Path::new(p)));
-        if ours {
-            *target = None;
-            drop(target);
+        if CRASH_BEFORE_REKEY.take(conn.path().map(std::path::Path::new)) {
             panic!("queda injetada antes da troca de identidades (teste)");
+        }
+    }
+
+    /// The library file of a main computer whose next rekey of a carried
+    /// change fails with an error (it still answers), after the change's
+    /// own effect was committed.
+    pub static FAIL_REKEY_AT: Armed = Armed::new();
+
+    pub(crate) fn fail_rekey_at(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+        if FAIL_REKEY_AT.take(conn.path().map(std::path::Path::new)) {
+            anyhow::bail!("falha injetada na troca de identidades do principal (teste)");
+        }
+        Ok(())
+    }
+
+    /// The library file of a main computer that processes its next change
+    /// (`Mutate`) and drops the answer (the connection closes without it).
+    pub static DROP_REPLY: Armed = Armed::new();
+
+    pub(crate) fn drop_reply(db: &std::path::Path) -> bool {
+        DROP_REPLY.take(Some(db))
+    }
+
+    /// Every request a main computer answered, as (library file, name of
+    /// the request inside the protocol V2).
+    pub static RPC_SEEN: std::sync::Mutex<Vec<(std::path::PathBuf, String)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// How many requests named `name` the main computer of `db` answered.
+    pub fn rpc_count(db: &std::path::Path, name: &str) -> usize {
+        RPC_SEEN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(p, n)| p == db && n == name)
+            .count()
+    }
+
+    type MutateHook = Box<dyn FnOnce(&mut crate::storage::Store) + Send>;
+
+    /// Runs once on the main computer of that library file, when a change
+    /// arrives (`Mutate`) and before anything of it is checked or resolved.
+    static BEFORE_MUTATE: std::sync::Mutex<Vec<(std::path::PathBuf, MutateHook)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// Arms [`BEFORE_MUTATE`] for the main computer of `db`.
+    pub fn arm_before_mutate(db: &std::path::Path, hook: MutateHook) {
+        BEFORE_MUTATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((db.to_path_buf(), hook));
+    }
+
+    /// Whether the hook of `db` is still armed (never ran); disarms it.
+    pub fn before_mutate_armed(db: &std::path::Path) -> bool {
+        let mut armed = BEFORE_MUTATE.lock().unwrap_or_else(|e| e.into_inner());
+        match armed.iter().position(|(p, _)| p == db) {
+            Some(at) => {
+                armed.remove(at);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn before_mutate(store: &mut crate::storage::Store) {
+        let hook = {
+            let mut armed = BEFORE_MUTATE.lock().unwrap_or_else(|e| e.into_inner());
+            let at = store
+                .conn
+                .path()
+                .and_then(|p| armed.iter().position(|(t, _)| t == std::path::Path::new(p)));
+            at.map(|at| armed.remove(at).1)
+        };
+        if let Some(hook) = hook {
+            hook(store);
         }
     }
 }
