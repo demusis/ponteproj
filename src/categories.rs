@@ -935,7 +935,7 @@ mod tests {
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, crate::storage::SCHEMA_VERSION);
+        assert_eq!(version, crate::storage::LIBRARY_SCHEMA);
         assert!(store.list_categories().unwrap().is_empty());
         assert!(store.list_tasks().unwrap().iter().any(|t| t.id == task));
         assert_eq!(store.list_documents("").unwrap()[0].id, document);
@@ -946,7 +946,7 @@ mod tests {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(&format!(
             "PRAGMA user_version={};",
-            crate::storage::SCHEMA_VERSION + 1
+            crate::storage::LIBRARY_SCHEMA + 1
         ))
         .unwrap();
         drop(conn);

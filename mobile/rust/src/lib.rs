@@ -5865,4 +5865,57 @@ mod tests {
         assert_eq!(phone.list_projects().unwrap().len(), 1);
         assert_eq!(phone.list_tasks().unwrap().len(), 2, "the tasks stay");
     }
+
+    /// F2a: a phone library of schema 21 (Ponte de bolso 0.27), with a note
+    /// still queued, is moved to schema 22 by the core at opening (every row
+    /// gets its identity, the copy is kept beside it) and keeps exchanging
+    /// the same format-8 file with a computer.
+    #[test]
+    fn a_phone_library_of_schema_21_migrates_to_22_and_keeps_syncing() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut computer, drive, id) = first_transport(&dir.0);
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let work_s = work.display().to_string();
+        let path = dir.0.join("celular.sqlite3");
+        {
+            let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+            sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+            phone.save_note(id, "Nota de antes da atualização").unwrap();
+        }
+        ponteproj::idents::test_support::downgrade_to_21(&path).unwrap();
+        assert_eq!(ponteproj::idents::test_support::user_version(&path).unwrap(), 21);
+
+        let mut phone = Store::open(&path).unwrap();
+        let (version, problems, idents) =
+            ponteproj::idents::test_support::check_library(&path).unwrap();
+        assert_eq!(version, 22);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(idents > 0);
+        let copies: Vec<String> = std::fs::read_dir(dir.0.join("backups"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("antes-do-acervo-22-") && n.ends_with(".sqlite3"))
+            .collect();
+        assert_eq!(copies.len(), 1, "{copies:?}");
+
+        // The queued note still goes, in the same file format.
+        let answer = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(answer["written"], json!(true));
+        let header = ponteproj::sharedfolder::read_header(&work).unwrap().unwrap();
+        assert_eq!((header.format, header.schema_version), (8, 21));
+        std::fs::copy(&work, &drive).unwrap();
+        let cfg = computer.load_intranet_config().unwrap();
+        computer
+            .sync_with_folders(&cfg, KEY, false, &ponteproj::ai::Reporter::silent())
+            .unwrap();
+        assert_eq!(
+            computer.load_document(id).unwrap().note,
+            "Nota de antes da atualização"
+        );
+        let (_, problems, _) = ponteproj::idents::test_support::check_library(&path).unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
+    }
 }

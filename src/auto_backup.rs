@@ -1751,7 +1751,7 @@ mod tests {
             "ponte_client_schema",
             0,
             rusqlite::functions::FunctionFlags::SQLITE_UTF8,
-            |_| Ok(crate::storage::SCHEMA_VERSION),
+            |_| Ok(crate::storage::LIBRARY_SCHEMA),
         )
         .unwrap();
         conn.execute("UPDATE notes SET payload=X'0011223344'", [])

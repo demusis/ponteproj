@@ -75,6 +75,10 @@ pub const SYNC_TABLES: &[(&str, &str)] = &[
         "o registro das alterações recebidas de outros computadores",
     ),
     ("client_cache", "o esquema da última cópia da equipe"),
+    (
+        "ident_state",
+        "a origem das identidades dos itens (as identidades ficam)",
+    ),
 ];
 
 /// What the chosen file is.
@@ -368,9 +372,9 @@ fn check_source(conn: &Connection, source: &Path) -> Result<i64> {
         source.display()
     );
     ensure!(
-        version <= crate::storage::SCHEMA_VERSION,
+        version <= crate::storage::LIBRARY_SCHEMA,
         "Esta cópia foi feita por uma versão mais nova do Ponte (versão {version} do acervo; este Ponte conhece até a {}). Atualize o Ponte e tente de novo. Nada foi criado.",
-        crate::storage::SCHEMA_VERSION
+        crate::storage::LIBRARY_SCHEMA
     );
     Ok(version)
 }
@@ -459,7 +463,7 @@ fn open_raw(path: &Path) -> Result<Connection> {
         rusqlite::functions::FunctionFlags::SQLITE_UTF8
             | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
             | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
-        |_| Ok(crate::storage::SCHEMA_VERSION),
+        |_| Ok(crate::storage::LIBRARY_SCHEMA),
     )?;
     Ok(conn)
 }
@@ -511,6 +515,20 @@ fn table_label(table: &str) -> &'static str {
     }
 }
 
+/// What names a row of `table` in a message: its `rowid`, or 0 for a table
+/// without one (`item_ident`, schema 22, is `WITHOUT ROWID`).
+fn row_label(conn: &Connection, table: &str) -> Result<&'static str> {
+    let without_rowid: bool = conn
+        .query_row(
+            "SELECT coalesce((SELECT wr FROM pragma_table_list WHERE schema='main' AND name=?1),0)",
+            [table],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    Ok(if without_rowid { "0" } else { "rowid" })
+}
+
 fn columns_of(conn: &Connection, table: &str) -> Result<Vec<(String, String)>> {
     Ok(conn
         .prepare(&format!(
@@ -530,7 +548,8 @@ pub fn verify_sealed(conn: &Connection) -> Result<usize> {
     for table in tables(conn)? {
         for (column, _) in columns_of(conn, &table)? {
             let sql = format!(
-                "SELECT rowid, {c} FROM {t} WHERE typeof({c})='blob' AND substr({c},1,6)=X'504F4E54452D'",
+                "SELECT {r}, {c} FROM {t} WHERE typeof({c})='blob' AND substr({c},1,6)=X'504F4E54452D'",
+                r = row_label(conn, &table)?,
                 c = quoted(&column),
                 t = quoted(&table)
             );
@@ -598,7 +617,8 @@ pub fn verify_sealed_strict(conn: &Connection) -> Result<std::result::Result<usi
                 continue;
             }
             let sql = format!(
-                "SELECT rowid, {c} FROM {t} WHERE {c} IS NOT NULL",
+                "SELECT {r}, {c} FROM {t} WHERE {c} IS NOT NULL",
+                r = row_label(conn, &table)?,
                 c = quoted(&column),
                 t = quoted(&table)
             );
@@ -1176,7 +1196,7 @@ mod tests {
             .unwrap()
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, crate::storage::SCHEMA_VERSION);
+        assert_eq!(version, crate::storage::LIBRARY_SCHEMA);
     }
 
     #[test]
@@ -1186,7 +1206,7 @@ mod tests {
         let source = copy_of(&db, local.path());
         Connection::open(&source)
             .unwrap()
-            .pragma_update(None, "user_version", crate::storage::SCHEMA_VERSION + 1)
+            .pragma_update(None, "user_version", crate::storage::LIBRARY_SCHEMA + 1)
             .unwrap();
         let before = folders(local.path());
         let error = restore_local_copy(&source, &Place::new(Some(&home), &home), now())

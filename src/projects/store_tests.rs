@@ -1159,7 +1159,7 @@ fn as_left_by_schema_20(path: &std::path::Path) {
         "ponte_client_schema",
         0,
         rusqlite::functions::FunctionFlags::SQLITE_UTF8,
-        |_| Ok(crate::storage::SCHEMA_VERSION),
+        |_| Ok(crate::storage::LIBRARY_SCHEMA),
     )
     .unwrap();
     conn.execute_batch("DROP TABLE projects; DROP TABLE client_cache; PRAGMA user_version=20;")

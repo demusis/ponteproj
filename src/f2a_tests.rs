@@ -291,12 +291,9 @@ fn f2a_b1_only_inserted_rows_get_carried_idents() {
     let mut p = pair();
     let doc_a = p.a.list_documents("").unwrap()[0].id;
     let triage = |s: &Store, doc: i64| {
-        one(
-            &s.conn,
-            "SELECT min(id) FROM tasks WHERE document_id=?1 AND action='triar'",
-            doc,
-        )
-        .expect("tarefa de triagem")
+        Store::triage_task_in(&s.conn, doc)
+            .unwrap()
+            .expect("tarefa de triagem")
     };
     let attendance = |s: &Store, doc: i64| {
         one(
@@ -372,10 +369,22 @@ fn f2a_b1_only_inserted_rows_get_carried_idents() {
             .unwrap();
     }
     assert!(crate::idents::logged(&p.a.conn).unwrap().is_empty());
-    p.a.save_note(doc_a, "nota desta conexão").unwrap();
+    // (Saved through `Store`, a note opens and closes a log of its own: the
+    // row is written directly on this connection.)
+    p.a.conn
+        .execute(
+            "INSERT INTO notes(document_id,payload,created_at) VALUES(?1,X'00','2026-11-23T10:00:00.000Z')",
+            [doc_a],
+        )
+        .unwrap();
+    let note = p.a.conn.last_insert_rowid();
     let logged = crate::idents::logged(&p.a.conn).unwrap();
     crate::idents::stop_log(&p.a.conn);
-    assert!(logged.iter().any(|(kind, _)| kind == "note"), "{logged:?}");
+    assert_eq!(
+        logged,
+        BTreeSet::from([("note".to_owned(), note)]),
+        "{logged:?}"
+    );
 }
 
 /// A2. X, queued in A as document 7, replayed into B where document 7 is
@@ -1117,9 +1126,37 @@ fn f2a_behaviour_unchanged() {
     let header = crate::sharedfolder::read_header(&p.drive).unwrap().unwrap();
     assert_eq!((header.format, header.schema_version), (8, 21));
     let copy = crate::sharedfolder::read(&p.drive, KEY).unwrap().unwrap();
-    let text = serde_json::to_string(&copy.payload.journal).unwrap()
-        + &serde_json::to_string(&copy.payload.snapshot).unwrap();
-    assert!(!text.contains("ident"), "o arquivo leva identidades");
+    fn keys(value: &serde_json::Value, out: &mut BTreeSet<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, inner) in map {
+                    out.insert(key.clone());
+                    keys(inner, out);
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|i| keys(i, out)),
+            _ => {}
+        }
+    }
+    let mut found = BTreeSet::new();
+    keys(
+        &serde_json::to_value(&copy.payload.journal).unwrap(),
+        &mut found,
+    );
+    keys(
+        &serde_json::to_value(&copy.payload.snapshot).unwrap(),
+        &mut found,
+    );
+    for key in [
+        "idents",
+        "ident",
+        "item_ident",
+        "current_pointer",
+        "ident_state",
+        "ident_epoch",
+    ] {
+        assert!(!found.contains(key), "o arquivo leva {key}");
+    }
     // The exported content does not depend on the F2a tables.
     let with = serde_json::to_vec(&p.a.export_snapshot().unwrap()).unwrap();
     p.a.conn
@@ -1171,6 +1208,58 @@ fn f2a_behaviour_unchanged() {
     assert_invariants(&client, "cliente, depois de enviar");
     let host = Store::open(&db).unwrap();
     assert_invariants(&host, "principal");
+}
+
+/// The installer's `--copia-antes-de-atualizar` copies a library of schema
+/// 21 (before the update) and one of schema 22 (a later update) as they are:
+/// it never migrates, and both copies check out.
+#[test]
+fn f2a_the_installer_copy_works_on_a_21_and_a_22_library() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = library_with_content(dir.path(), "PonteProj");
+    let data_dir = path.parent().unwrap().to_path_buf();
+    for (schema, stamp) in [(22, "20261123-100000"), (21, "20261123-100001")] {
+        if schema == 21 {
+            test_support::downgrade_to_21(&path).unwrap();
+        }
+        let before = counts(&Connection::open(&path).unwrap());
+        let outcome = crate::upgrade_backup::execute(
+            &crate::upgrade_backup::Options::default(),
+            &data_dir,
+            "0.52.0",
+            stamp,
+        )
+        .unwrap();
+        let crate::upgrade_backup::Outcome::BackedUp(copy) = outcome else {
+            panic!("{outcome:?}")
+        };
+        assert!(copy
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("antes-de-instalar-v0.52.0-"));
+        crate::upgrade_backup::verify(&copy).unwrap();
+        assert_eq!(test_support::user_version(&copy).unwrap(), schema);
+        assert_eq!(test_support::user_version(&path).unwrap(), schema);
+        assert_eq!(counts(&Connection::open(&copy).unwrap()), before);
+    }
+    // The 21 library, opened afterwards, migrates beside the installer's
+    // copies without touching them.
+    drop(Store::open(&path).unwrap());
+    assert_eq!(test_support::user_version(&path).unwrap(), 22);
+    let names: Vec<String> = std::fs::read_dir(data_dir.join("backups"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names
+            .iter()
+            .filter(|n| n.starts_with("antes-de-instalar-"))
+            .count(),
+        2,
+        "{names:?}"
+    );
+    assert_eq!(migration_copies(&path).len(), 1, "{names:?}");
 }
 
 /// Time of the 21→22 step on a library of 5,000 documents (each with a

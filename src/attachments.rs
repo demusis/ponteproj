@@ -727,6 +727,11 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Queued inside this transaction: the entry carries the identity of
+        // the attachment it inserts. A rollback closes the log again.
+        if queue_actor.is_some() {
+            crate::idents::start_log(&tx)?;
+        }
         if let Some(number) = request.expected_number {
             if Store::live_document_number(&tx, request.document_id)?
                 .as_deref()

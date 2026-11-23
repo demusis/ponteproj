@@ -2126,13 +2126,16 @@ pub(crate) fn queue_import_locally(
     added: &[(usize, i64)],
 ) -> Result<()> {
     let frame = crate::idmap::ConnFrame(tx);
+    // The rows this transaction inserted (the import opened the log).
+    let inserted = crate::idents::logged(tx)?;
     let mut entries = Vec::with_capacity(1 + added.len());
     let import = IntranetMutation::ImportCapture {
         capture: capture.clone(),
     };
-    let created =
-        crate::idmap::created_ids(&frame, &import, &MutationReply::Receipt(receipt.clone()))?;
-    entries.push((import, created));
+    let reply = MutationReply::Receipt(receipt.clone());
+    let created = crate::idmap::created_ids(&frame, &import, &reply)?;
+    let idents = crate::idents::created_idents(tx, &import, &reply, &inserted)?;
+    entries.push((import, created, idents));
     for (index, id) in added {
         let file = &files[*index];
         let mutation = IntranetMutation::AddAttachment {
@@ -2145,9 +2148,12 @@ pub(crate) fn queue_import_locally(
             data_base64: STANDARD.encode(file.data),
         };
         let created = crate::idmap::created_ids(&frame, &mutation, &MutationReply::Id(*id))?;
-        entries.push((mutation, created));
+        let idents =
+            crate::idents::created_idents(tx, &mutation, &MutationReply::Id(*id), &inserted)?;
+        entries.push((mutation, created, idents));
     }
-    for (mutation, created) in entries {
+    crate::idents::stop_log(tx);
+    for (mutation, created, idents) in entries {
         insert_outbox_row(
             tx,
             &OutboxEntry {
@@ -2160,7 +2166,7 @@ pub(crate) fn queue_import_locally(
                 uid: uuid::Uuid::new_v4().simple().to_string(),
                 created,
                 attempted: false,
-                idents: Vec::new(),
+                idents,
             },
         )?;
     }
@@ -2190,6 +2196,11 @@ pub(crate) fn queue_attachment_locally(
         data_base64: STANDARD.encode(data),
     };
     let created = crate::idmap::created_ids(&frame, &mutation, &MutationReply::Id(attachment_id))?;
+    // The rows this transaction inserted (the caller opened the log).
+    let inserted = crate::idents::logged(tx)?;
+    let idents =
+        crate::idents::created_idents(tx, &mutation, &MutationReply::Id(attachment_id), &inserted)?;
+    crate::idents::stop_log(tx);
     insert_outbox_row(
         tx,
         &OutboxEntry {
@@ -2202,7 +2213,7 @@ pub(crate) fn queue_attachment_locally(
             uid: uuid::Uuid::new_v4().simple().to_string(),
             created,
             attempted: false,
-            idents: Vec::new(),
+            idents,
         },
     )
 }
@@ -5469,8 +5480,11 @@ impl Store {
                 let outcome = match &remapped {
                     Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &store)
                         .and_then(|_| {
+                            // The rows it inserts there take the identities
+                            // it gave its rows here.
                             store
-                                .execute_mutation(&entry.actor, mutation.clone())
+                                .execute_carrying(&entry.actor, mutation.clone(), &entry.idents)
+                                .map(|(reply, _)| reply)
                                 .map_err(|error| error.to_string())
                         }),
                     Err(reason) => Err(reason.clone()),
@@ -5539,6 +5553,12 @@ impl Store {
         reporter.step("Reunindo PDFs e anexos…");
         let (final_snapshot, blobs) = match &temp {
             Some(store) => {
+                #[cfg(any(test, feature = "test-support"))]
+                crate::idents::hooks::PEEK_TEMP.with(|h| {
+                    if let Some(peek) = h.borrow_mut().as_mut() {
+                        peek(store);
+                    }
+                });
                 let snapshot = store.export_snapshot()?;
                 let blobs = collect_blobs(store, &snapshot)?;
                 (snapshot, blobs)
@@ -6151,9 +6171,11 @@ impl Store {
     ) -> Result<MutationReply> {
         let queued_mutation = self.prepare_mutation_for_outbox(mutation.clone());
         let base = self.snapshot_for_mutation(&queued_mutation);
-        let reply = self.execute_mutation(actor, mutation)?;
+        let (reply, inserted) = self.run_logged(|store| store.execute_mutation(actor, mutation))?;
         let created = crate::idmap::created_ids(&*self, &queued_mutation, &reply)?;
-        self.enqueue_offline_mutation(actor, queued_mutation, base, created, identity)?;
+        let idents =
+            crate::idents::created_idents(&self.conn, &queued_mutation, &reply, &inserted)?;
+        self.enqueue_offline_mutation(actor, queued_mutation, base, created, idents, identity)?;
         self.offline_queued += 1;
         Ok(reply)
     }
@@ -6527,6 +6549,7 @@ impl Store {
         mutation: IntranetMutation,
         base: Option<IntranetMutation>,
         created: Vec<crate::idmap::CreatedId>,
+        idents: Vec<crate::idents::SlotIdent>,
         identity: Option<(String, bool)>,
     ) -> Result<()> {
         let existing = self.list_offline_outbox()?;
@@ -6597,7 +6620,7 @@ impl Store {
                             _ => None,
                         };
                     }
-                    self.insert_outbox_entry(actor, mutation, base, Vec::new(), None)?;
+                    self.insert_outbox_entry(actor, mutation, base, Vec::new(), idents, None)?;
                     return Ok(());
                 }
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
@@ -6615,7 +6638,14 @@ impl Store {
                     // Edits create nothing: what the first one recorded stays.
                     created: prev.created,
                     attempted: false,
-                    idents: Vec::new(),
+                    // The rows a merged edit inserted (a second note) are the
+                    // ones its replay reproduces: their identities replace the
+                    // earlier ones. An edit that inserted nothing keeps them.
+                    idents: if idents.is_empty() {
+                        prev.idents
+                    } else {
+                        idents
+                    },
                 };
                 let payload = seal(&serde_json::to_vec(&updated)?)?;
                 if must_move {
@@ -6635,7 +6665,7 @@ impl Store {
                 return Ok(());
             }
         }
-        self.insert_outbox_entry(actor, mutation, base, created, identity)
+        self.insert_outbox_entry(actor, mutation, base, created, idents, identity)
     }
 
     fn insert_outbox_entry(
@@ -6644,6 +6674,7 @@ impl Store {
         mutation: IntranetMutation,
         base: Option<IntranetMutation>,
         created: Vec<crate::idmap::CreatedId>,
+        idents: Vec<crate::idents::SlotIdent>,
         identity: Option<(String, bool)>,
     ) -> Result<()> {
         let (uid, attempted) =
@@ -6658,7 +6689,7 @@ impl Store {
             uid,
             created,
             attempted,
-            idents: Vec::new(),
+            idents,
         };
         insert_outbox_row(&self.conn, &entry)
     }

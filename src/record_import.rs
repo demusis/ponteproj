@@ -1536,6 +1536,13 @@ mod tests {
                 for key in ["id", "created_at", "uid"] {
                     value.as_object_mut().unwrap().remove(key);
                 }
+                // The identities of the rows are random: the same kinds and
+                // slots are carried, not the same values.
+                if let Some(idents) = value.get_mut("idents").and_then(|v| v.as_array_mut()) {
+                    for slot in idents {
+                        slot["ident"] = serde_json::Value::from("…");
+                    }
+                }
                 value
             })
             .collect();

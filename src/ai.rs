@@ -4821,11 +4821,13 @@ mod role_tests {
         store.backup(&backup).unwrap();
         let restored = crate::storage::Store::open(&backup).unwrap();
         assert!(restored.ai_consent_given(id, chatgpt));
-        // The write guards do not stand in its way: it has none.
+        // The write guards do not stand in its way: since schema 22 it has
+        // only the guard against older versions of the Ponte (every table
+        // has it), none of the Lixeira's.
         let guards: i64 = store
             .conn
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='ai_consent'",
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='ai_consent' AND name NOT LIKE 'ponte\\_guard\\_%' ESCAPE '\\'",
                 [],
                 |r| r.get(0),
             )

@@ -11,7 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The library schema this build writes. 15 added the recursos; 16 adds the
@@ -25,7 +25,18 @@ use std::time::Duration;
 /// computer and phone of the library). 21 adds the projects (a table, a
 /// synced entity, and the project uid kept in the payload of the tasks): the
 /// number is stamped only once the table and the write guards exist.
+///
+/// Since schema 22 this is the schema of the CONTENT (what a snapshot, the
+/// header of a shared file, a portable copy and the team protocol carry)
+/// and the library file has its own number, [`LIBRARY_SCHEMA`].
 pub(crate) const SCHEMA_VERSION: i64 = 21;
+/// The schema of the library file (`user_version`, the guards and
+/// `ponte_client_schema`). 22 adds the identities of the items
+/// (`item_ident`), the current note and analysis of each document
+/// (`current_pointer`), the origin of the identities (`ident_state`) and the
+/// guards over every table; the content is unchanged (schema 21), so the
+/// shared file stays at format 8 and the team protocol as it was.
+pub(crate) const LIBRARY_SCHEMA: i64 = 22;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -135,6 +146,115 @@ impl Store {
     }
 }
 
+/// Every table of the library (not SQLite's own).
+fn library_tables(conn: &Connection) -> Result<Vec<String>> {
+    Ok(conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// The number of rows of each table.
+fn table_counts(conn: &Connection, tables: &[String]) -> Result<BTreeMap<String, i64>> {
+    let mut counts = BTreeMap::new();
+    for table in tables {
+        let n: i64 = conn.query_row(
+            &format!("SELECT count(*) FROM \"{}\"", table.replace('"', "\"\"")),
+            [],
+            |r| r.get(0),
+        )?;
+        counts.insert(table.clone(), n);
+    }
+    Ok(counts)
+}
+
+/// The copy made before the step to schema 22, of the state the caller
+/// holds locked (its write transaction has not written yet, so a second,
+/// read-only connection reads exactly that state): written as
+/// `backups/antes-do-acervo-22-<data>.sqlite3.partial` beside the library,
+/// checked (`quick_check`, `user_version` equal to `version`, the rows of
+/// every table equal to `counts`) and only then given its final name, never
+/// over another file. A failure leaves no partial file behind.
+fn copy_locked_state(db: &Path, version: i64, counts: &BTreeMap<String, i64>) -> Result<PathBuf> {
+    let folder = db
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .join("backups");
+    std::fs::create_dir_all(&folder).with_context(|| {
+        format!(
+            "Não foi possível criar a pasta da cópia de segurança ({}).",
+            folder.display()
+        )
+    })?;
+    let stem = format!(
+        "antes-do-acervo-22-{}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    );
+    let target = crate::upgrade_backup::first_free_name(&folder, &stem)?;
+    let partial = PathBuf::from(format!("{}.partial", target.display()));
+    let remove = |path: &Path| {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    };
+    let made = (|| -> Result<()> {
+        ensure!(
+            !partial.exists(),
+            "Já existe {}; nada foi alterado.",
+            partial.display()
+        );
+        {
+            let source = Connection::open_with_flags(
+                db,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .context("Não foi possível abrir o acervo para copiá-lo.")?;
+            crate::upgrade_backup::copy_from(&source, &partial)?;
+        }
+        crate::upgrade_backup::verify(&partial)?;
+        {
+            let copy = Connection::open(&partial)
+                .context("Não foi possível reabrir a cópia para conferi-la.")?;
+            let copied: i64 = copy.pragma_query_value(None, "user_version", |r| r.get(0))?;
+            ensure!(
+                copied == version,
+                "A cópia saiu com a versão {copied} do acervo, e não com a {version}."
+            );
+            let tables: Vec<String> = counts.keys().cloned().collect();
+            let copied = table_counts(&copy, &tables)?;
+            for (table, n) in counts {
+                ensure!(
+                    copied.get(table) == Some(n),
+                    "A cópia não tem as mesmas linhas de {table} ({:?} em vez de {n}).",
+                    copied.get(table)
+                );
+            }
+            copy.close()
+                .map_err(|(_, e)| e)
+                .context("Não foi possível fechar a cópia depois de conferi-la.")?;
+        }
+        crate::atomic_file::move_no_replace(&partial, &target).with_context(|| {
+            format!(
+                "Não foi possível dar o nome final à cópia ({}).",
+                target.display()
+            )
+        })?;
+        Ok(())
+    })();
+    match made {
+        Ok(()) => {
+            remove(&partial);
+            Ok(target)
+        }
+        Err(error) => {
+            remove(&partial);
+            Err(error)
+        }
+    }
+}
+
 fn document_active_guard_name(table: &str, operation: &str) -> String {
     format!("ponte_active_{table}_{}", operation.to_lowercase())
 }
@@ -211,15 +331,15 @@ impl Store {
             rusqlite::functions::FunctionFlags::SQLITE_UTF8
                 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
                 | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
-            |_| Ok(SCHEMA_VERSION),
+            |_| Ok(LIBRARY_SCHEMA),
         )?;
         // Check the version before changing any persistent database pragma.
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         ensure!(
-            version <= SCHEMA_VERSION,
+            version <= LIBRARY_SCHEMA,
             "Este acervo foi criado por uma versão mais nova do Ponte; atualize o Ponte antes de abri-lo."
         );
-        let upgrading = version < SCHEMA_VERSION;
+        let upgrading = version < LIBRARY_SCHEMA;
         // `cache_size` is in KiB when negative: 64 MB of pages kept in memory
         // (the default, about 2 MB, made a library of some size read its
         // pages from the file again at every query).
@@ -229,7 +349,7 @@ impl Store {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
         ensure!(
-            version <= SCHEMA_VERSION,
+            version <= LIBRARY_SCHEMA,
             "Este acervo foi criado por uma versão mais nova do Ponte."
         );
         if version == 0 {
@@ -321,21 +441,17 @@ impl Store {
         store.ensure_library_settings()?;
         store.ensure_projects()?;
         store.ensure_renumber_notices()?;
-        store.ensure_write_guards()?;
-        crate::idmap::init_watermark(&store.conn)?;
-        // Schema 15 (recursos) stamps the library, so an older Ponte refuses
-        // to open it with the "versão mais nova" message instead of saving
-        // without knowing the new tables. The other steps keep their own,
-        // lower numbers; this one is the last word.
-        if store
-            .conn
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?
-            < SCHEMA_VERSION
-        {
-            store
-                .conn
-                .pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(pause) = crate::idents::hooks::AFTER_ENSURE.with(|h| h.borrow_mut().take()) {
+            pause();
         }
+        // The last word: the step to schema 22 (identities, pointers and the
+        // guard set over every table) stamps the library in one transaction,
+        // after a verified copy of exactly the state it locked.
+        store.migrate_to_library_schema(path, version == 0)?;
+        store.ensure_write_guards()?;
+        crate::idents::install_insert_log(&store.conn)?;
+        crate::idmap::init_watermark(&store.conn)?;
         // Lazy, idempotent: libraries imported before this feature gain the
         // juntada links too. Unreadable content never prevents opening.
         if link_juntadas || upgrading {
@@ -348,95 +464,130 @@ impl Store {
     }
 
     /// Writes the guard triggers that are missing or differ from the expected
-    /// text. A library whose guards are all in place is not written to at
-    /// all: this runs at every opening, and a commit would move SQLite's
-    /// `data_version` for every other connection (the window's memo of reads
-    /// is emptied by it).
+    /// text (the repair at every opening). A library whose guards are all in
+    /// place is not written to at all: this runs at every opening, and a
+    /// commit would move SQLite's `data_version` for every other connection
+    /// (the window's memo of reads is emptied by it). The rewrite runs under
+    /// the write lock and only on a library of this schema: another process
+    /// may have changed it since this one read it.
     fn ensure_write_guards(&mut self) -> Result<()> {
         // `sqlite_master` keeps the statement as written, without the final
         // semicolon.
         let normal = |sql: &str| sql.trim().trim_end_matches(';').trim_end().to_owned();
-        let existing: std::collections::HashMap<String, String> = self
-            .conn
-            .prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte\\_%' ESCAPE '\\'")?
-            .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-            })?
-            .filter_map(|row| row.ok())
-            .filter_map(|(name, sql)| Some((name, normal(&sql?))))
-            .collect();
-        let stale: Vec<(String, String)> = Self::expected_guards()
-            .into_iter()
-            .filter(|(name, sql)| existing.get(name) != Some(&normal(sql)))
-            .collect();
-        if stale.is_empty() {
+        let stale = |conn: &Connection| -> Result<Vec<(String, String)>> {
+            let existing: std::collections::HashMap<String, String> = conn
+                .prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte\\_%' ESCAPE '\\'")?
+                .query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                })?
+                .filter_map(|row| row.ok())
+                .filter_map(|(name, sql)| Some((name, normal(&sql?))))
+                .collect();
+            Ok(Self::expected_guards(&library_tables(conn)?)
+                .into_iter()
+                .filter(|(name, sql)| existing.get(name) != Some(&normal(sql)))
+                .collect())
+        };
+        if stale(&self.conn)?.is_empty() {
             return Ok(());
         }
-        let tx = self.conn.transaction()?;
-        for (name, sql) in stale {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        ensure!(
+            version == LIBRARY_SCHEMA,
+            "Este acervo foi alterado por outra versão do Ponte enquanto abria; feche o Ponte e abra de novo."
+        );
+        for (name, sql) in stale(&tx)? {
             tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {sql}"))?;
         }
         tx.commit()?;
         Ok(())
     }
 
-    /// Every guard trigger of the library as (name, `CREATE TRIGGER` text).
-    /// Names and texts must stay as they are: an older Ponte rewrites the
-    /// guards it knows under the same names, and the library is compared
-    /// with this.
-    fn expected_guards() -> Vec<(String, String)> {
+    /// The step to the library schema 22, in ONE transaction under the write
+    /// lock (`desenho-f2-v2.md` §2.5): with the version read again under
+    /// the lock (a library another process already moved to 22 is left as
+    /// it is), the space checked, the rows of every table counted, and a
+    /// copy of exactly that state made from a second, read-only connection
+    /// and verified (`quick_check`, version, every count) beside the library
+    /// in `backups`; then the tables of schema 22, an identity for every row
+    /// and the pointers of every document, every guard rewritten for every
+    /// table, and `user_version` 22. Any error rolls back to the library as
+    /// it was (the copy stays). A library created by this very opening has
+    /// nothing to copy.
+    fn migrate_to_library_schema(&mut self, db: &Path, created_now: bool) -> Result<()> {
+        let stopped =
+            |step: &str| format!("A atualização do acervo parou em “{step}”; nada foi alterado.");
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .with_context(|| stopped("trava do acervo"))?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version >= LIBRARY_SCHEMA {
+            return Ok(());
+        }
+        ensure!(version >= 1, "{}", stopped("versão do acervo"));
+        let tables = library_tables(&tx).with_context(|| stopped("contagem das linhas"))?;
+        let counts = table_counts(&tx, &tables).with_context(|| stopped("contagem das linhas"))?;
+        if !created_now {
+            let (size, _) = crate::auto_backup::needed_space(db);
+            let needed = size.saturating_mul(2);
+            let folder = db
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let free = crate::auto_backup::free_space(folder).unwrap_or(u64::MAX);
+            ensure!(
+                free >= needed,
+                "Falta espaço para atualizar o acervo com segurança (são necessários {} MB). Libere espaço e abra o Ponte de novo; nada foi alterado.",
+                needed.div_ceil(1024 * 1024).max(1)
+            );
+            copy_locked_state(db, version, &counts)
+                .with_context(|| stopped("cópia de segurança"))?;
+        }
+        (|| -> Result<()> {
+            tx.execute_batch(crate::idents::TABLES_SQL)?;
+            tx.execute_batch(&crate::idents::backfill_sql())?;
+            let tables = library_tables(&tx)?;
+            for (name, sql) in Self::expected_guards(&tables) {
+                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {sql}"))?;
+            }
+            tx.pragma_update(None, "user_version", LIBRARY_SCHEMA)?;
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(fault) =
+                crate::idents::hooks::BEFORE_MIGRATION_COMMIT.with(|h| h.borrow_mut().take())
+            {
+                fault(db)?;
+            }
+            Ok(())
+        })()
+        .with_context(|| stopped("identidades e proteções"))?;
+        tx.commit().with_context(|| stopped("gravação"))?;
+        Ok(())
+    }
+
+    /// Every guard trigger of the library as (name, `CREATE TRIGGER` text),
+    /// for the tables `tables` (every table of the library). Names and texts
+    /// must stay as they are: an older Ponte rewrites the guards it knows
+    /// under the same names, and the library is compared with this.
+    fn expected_guards(tables: &[String]) -> Vec<(String, String)> {
         let mut guards = Vec::new();
-        for table in [
-            "documents",
-            "captures",
-            "requests",
-            "notes",
-            "drafts",
-            "analyses",
-            "tasks",
-            "work_context",
-            "files",
-            "page_text",
-            "document_links",
-            "personal_templates",
-            "trash",
-            "capture_refs",
-            "intranet_config",
-            "item_versions",
-            "team_events",
-            "offline_outbox",
-            "offline_conflicts",
-            "saiop_batches",
-            "saiop_attendances",
-            "ai_config",
-            "attachments",
-            "work_templates",
-            "work_template_versions",
-            "instruction_blocks",
-            "instruction_block_versions",
-            "template_examples",
-            "draft_generations",
-            "attachment_texts",
-            "mail_accounts",
-            "resources",
-            "resource_uses",
-            "categories",
-            "library_settings",
-            "projects",
-        ] {
+        for table in tables {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());
-                let sql = format!("CREATE TRIGGER {name} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {SCHEMA_VERSION} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;");
+                let sql = format!("CREATE TRIGGER {name} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {LIBRARY_SCHEMA} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;");
                 guards.push((name, sql));
                 // The same guard under a name that carries the schema: an
                 // older Ponte that opens the library meanwhile drops and
                 // writes again the guard it knows by the name above, with
                 // its own (lower) number, and must not weaken this one.
                 let versioned = format!(
-                    "ponte_guard_v{SCHEMA_VERSION}_{table}_{}",
+                    "ponte_guard_v{LIBRARY_SCHEMA}_{table}_{}",
                     operation.to_lowercase()
                 );
-                let sql = format!("CREATE TRIGGER {versioned} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {SCHEMA_VERSION} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;");
+                let sql = format!("CREATE TRIGGER {versioned} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {LIBRARY_SCHEMA} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;");
                 guards.push((versioned, sql));
             }
         }
@@ -488,6 +639,9 @@ impl Store {
             let sql = format!("CREATE TRIGGER {name} AFTER DELETE ON {table} BEGIN DELETE FROM capture_refs WHERE owner_kind='{kind}' AND owner_id=OLD.id; END;");
             guards.push((name, sql));
         }
+        // Schema 22: the triggers that give every new row its identity and
+        // keep the pointers of the documents.
+        guards.extend(crate::idents::triggers());
         guards
     }
 
@@ -539,6 +693,12 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Queued inside this transaction (shared-folder mode): the queue
+        // entries carry the identities of the rows it inserts. A rollback
+        // closes the log again.
+        if extras.is_some_and(|e| e.queue_actor.is_some()) {
+            crate::idents::start_log(&tx)?;
+        }
         // A manual record created without a number (connected computer, or
         // first creation here) gets the next one now, inside the transaction.
         let pending_manual = capture.is_manual() && capture.document_number == MANUAL_PENDING;
@@ -3709,7 +3869,7 @@ mod reopen_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("guards.sqlite3");
         let store = Store::open(&path).unwrap();
-        let expected = Store::expected_guards();
+        let expected = Store::expected_guards(&library_tables(&store.conn).unwrap());
         assert!(expected.len() > 200, "{}", expected.len());
         // What is on file is exactly what is expected (otherwise every
         // opening would rewrite them).

@@ -1,13 +1,29 @@
-//! Identities of the items (library schema 22, F2a): a random, fixed
-//! `ident` for every row of the twelve kinds that are addressed by row id,
-//! given in the same statement that inserts the row.
+//! Identities of the items (library schema 22, F2a of Frente F).
 //!
-//! STUB (tests first): only the types and the test helpers exist; the
-//! behaviour comes with the implementation.
+//! Every row of the twelve kinds that are addressed by row id gets a random
+//! `ident` (`item_ident`), given by a trigger in the same statement that
+//! inserts the row and removed with it, so no path that writes rows can
+//! forget it. The current note and the current analysis of each document
+//! are kept in `current_pointer` by triggers too (the rule of today: the
+//! newest note by number; the analysis made last by its own time, as
+//! `storage::current_analysis` chooses it). `ident_state` will say where
+//! the identities came from; nothing writes it yet.
+//!
+//! Each connection also logs, in TEMP tables of its own, the rows it
+//! inserts while a log is open ([`start_log`]): a change applied here
+//! records the identities of the rows IT inserted, by slot
+//! ([`created_idents`]), and a replay of that change elsewhere gives them to
+//! the rows the replay inserted for the same slots ([`rekey`]). A row a
+//! change only finds (an import of a known document) is never given an
+//! identity from elsewhere.
+//!
+//! Nothing reads the identities yet: every query still addresses rows by
+//! number, and the shared file and the team protocol do not carry them.
+use crate::idmap::{ConnFrame, IdKind};
 use crate::intranet::{IntranetMutation, MutationReply};
 use crate::storage::Store;
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -59,26 +75,386 @@ pub(crate) fn ident_of(conn: &Connection, kind: &str, row: i64) -> Result<Option
         .optional()?)
 }
 
-pub(crate) fn start_log(_conn: &Connection) -> Result<()> {
+/// The tables of schema 22. Created inside the 21→22 transaction (a
+/// leftover of an interrupted, foreign attempt is replaced: a library of
+/// schema 21 has none of them).
+pub(crate) const TABLES_SQL: &str = "
+DROP TABLE IF EXISTS item_ident;
+DROP TABLE IF EXISTS current_pointer;
+DROP TABLE IF EXISTS ident_state;
+CREATE TABLE item_ident(kind TEXT NOT NULL, row_id INTEGER NOT NULL, ident TEXT NOT NULL,
+  PRIMARY KEY(kind,row_id)) WITHOUT ROWID;
+CREATE UNIQUE INDEX item_ident_ident ON item_ident(ident);
+CREATE TABLE current_pointer(document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+  note_id INTEGER, analysis_id INTEGER);
+CREATE TABLE ident_state(id INTEGER PRIMARY KEY CHECK(id=1), origin TEXT NOT NULL, lineage TEXT, epoch TEXT);
+";
+
+/// A new random identity: 32 lowercase hex digits.
+const RANDOM_IDENT: &str = "lower(hex(randomblob(16)))";
+
+/// The moment an analysis was made, as `storage::current_analysis` reads
+/// it (an RFC 3339 time with its offset), or NULL when it does not read as
+/// one. SQLite keeps milliseconds, which is what the Ponte writes.
+fn analysis_time(column: &str) -> String {
+    format!(
+        "(CASE WHEN trim({column}) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T ][0-9][0-9]:[0-9][0-9]:[0-9][0-9]*' \
+         AND (trim({column}) GLOB '*Z' OR trim({column}) GLOB '*[+-][0-9][0-9]:[0-9][0-9]') \
+         THEN julianday(trim({column})) END)"
+    )
+}
+
+/// The current analysis of the document `document` (an SQL expression):
+/// the one made last by its own time, unreadable times first, ties by
+/// number, as `storage::current_analysis`.
+fn current_analysis_sql(document: &str) -> String {
+    let at = analysis_time("a.created_at");
+    format!(
+        "(SELECT a.id FROM analyses a WHERE a.document_id={document} ORDER BY {at} IS NULL, {at} DESC, a.id DESC LIMIT 1)"
+    )
+}
+
+/// Every row of the twelve kinds gets an identity, and every document its
+/// pointers (the documents in the Lixeira included: `documents` itself is
+/// never written, so its trash guard is never in the way).
+pub(crate) fn backfill_sql() -> String {
+    let mut sql = String::new();
+    for (kind, table) in KINDS {
+        sql.push_str(&format!(
+            "INSERT INTO item_ident(kind,row_id,ident) SELECT '{kind}',id,{RANDOM_IDENT} FROM {table};\n"
+        ));
+    }
+    sql.push_str(&format!(
+        "INSERT INTO current_pointer(document_id,note_id,analysis_id) SELECT d.id,(SELECT max(n.id) FROM notes n WHERE n.document_id=d.id),{} FROM documents d;\n",
+        current_analysis_sql("d.id")
+    ));
+    sql
+}
+
+/// The triggers of schema 22 that keep `item_ident` and `current_pointer`,
+/// as (name, `CREATE TRIGGER` text). They are part of the guard set of the
+/// library (`Store::expected_guards`): written in the 21→22 transaction and
+/// put back by the repair at every opening.
+pub(crate) fn triggers() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (kind, table) in KINDS {
+        // The delete before the insert makes a leftover impossible; an
+        // identity that already exists elsewhere (never, in practice: 128
+        // random bits) aborts the statement instead of being taken over.
+        let name = format!("ponte_ident_{table}_insert");
+        out.push((name.clone(), format!(
+            "CREATE TRIGGER {name} AFTER INSERT ON {table} BEGIN DELETE FROM item_ident WHERE kind='{kind}' AND row_id=NEW.id; INSERT INTO item_ident(kind,row_id,ident) VALUES('{kind}',NEW.id,{RANDOM_IDENT}); END;"
+        )));
+        let name = format!("ponte_ident_{table}_delete");
+        out.push((name.clone(), format!(
+            "CREATE TRIGGER {name} AFTER DELETE ON {table} BEGIN DELETE FROM item_ident WHERE kind='{kind}' AND row_id=OLD.id; END;"
+        )));
+        let name = format!("ponte_ident_{table}_renumber");
+        out.push((name.clone(), format!(
+            "CREATE TRIGGER {name} AFTER UPDATE OF id ON {table} WHEN NEW.id<>OLD.id BEGIN UPDATE item_ident SET row_id=NEW.id WHERE kind='{kind}' AND row_id=OLD.id; END;"
+        )));
+    }
+    let pointer_of =
+        |doc: &str| format!("INSERT OR IGNORE INTO current_pointer(document_id) VALUES({doc});");
+    let push = |out: &mut Vec<(String, String)>, name: &str, body: String| {
+        out.push((name.to_owned(), format!("CREATE TRIGGER {name} {body}")));
+    };
+    push(
+        &mut out,
+        "ponte_pointer_documents_insert",
+        format!(
+            "AFTER INSERT ON documents BEGIN {} END;",
+            pointer_of("NEW.id")
+        ),
+    );
+    let newest_note =
+        |doc: &str| format!("(SELECT max(n.id) FROM notes n WHERE n.document_id={doc})");
+    // A document that changes number takes its pointer row along, read
+    // again for the new number (its notes and analyses may have moved
+    // first, with the foreign keys off).
+    push(
+        &mut out,
+        "ponte_pointer_documents_renumber",
+        format!(
+            "AFTER UPDATE OF id ON documents WHEN NEW.id<>OLD.id BEGIN UPDATE OR REPLACE current_pointer SET document_id=NEW.id WHERE document_id=OLD.id; {} UPDATE current_pointer SET note_id={}, analysis_id={} WHERE document_id=NEW.id; END;",
+            pointer_of("NEW.id"),
+            newest_note("NEW.id"),
+            current_analysis_sql("NEW.id")
+        ),
+    );
+    push(
+        &mut out,
+        "ponte_pointer_notes_insert",
+        format!(
+            "AFTER INSERT ON notes BEGIN {} UPDATE current_pointer SET note_id=NEW.id WHERE document_id=NEW.document_id AND (note_id IS NULL OR note_id<NEW.id); END;",
+            pointer_of("NEW.document_id")
+        ),
+    );
+    push(
+        &mut out,
+        "ponte_pointer_notes_delete",
+        format!(
+            "AFTER DELETE ON notes BEGIN UPDATE current_pointer SET note_id={} WHERE document_id=OLD.document_id AND note_id=OLD.id; END;",
+            newest_note("OLD.document_id")
+        ),
+    );
+    push(
+        &mut out,
+        "ponte_pointer_notes_update",
+        format!(
+            "AFTER UPDATE OF id,document_id ON notes BEGIN UPDATE current_pointer SET note_id={} WHERE document_id IN (OLD.document_id,NEW.document_id); END;",
+            newest_note("current_pointer.document_id")
+        ),
+    );
+    push(
+        &mut out,
+        "ponte_pointer_analyses_insert",
+        format!(
+            "AFTER INSERT ON analyses BEGIN {} UPDATE current_pointer SET analysis_id={} WHERE document_id=NEW.document_id; END;",
+            pointer_of("NEW.document_id"),
+            current_analysis_sql("NEW.document_id")
+        ),
+    );
+    push(
+        &mut out,
+        "ponte_pointer_analyses_delete",
+        format!(
+            "AFTER DELETE ON analyses BEGIN UPDATE current_pointer SET analysis_id={} WHERE document_id=OLD.document_id AND analysis_id=OLD.id; END;",
+            current_analysis_sql("OLD.document_id")
+        ),
+    );
+    push(
+        &mut out,
+        "ponte_pointer_analyses_update",
+        format!(
+            "AFTER UPDATE OF id,document_id,created_at ON analyses BEGIN UPDATE current_pointer SET analysis_id={} WHERE document_id IN (OLD.document_id,NEW.document_id); END;",
+            current_analysis_sql("current_pointer.document_id")
+        ),
+    );
+    out
+}
+
+/// The log of the rows this connection inserts: a TEMP table, seen by this
+/// connection only (another process, or another connection of this one,
+/// never writes to it). Created at every opening.
+pub(crate) fn install_insert_log(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS ponte_inserted(kind TEXT NOT NULL, row_id INTEGER NOT NULL);",
+    )?;
     Ok(())
 }
 
-pub(crate) fn logged(_conn: &Connection) -> Result<Inserted> {
-    Ok(Inserted::new())
+/// The TEMP triggers that fill the log: they exist only while a log is
+/// open. (A TEMP trigger on a main table that stayed for the life of the
+/// connection would keep that connection from renaming tables whenever
+/// another connection had renamed the table away: SQLite checks it and
+/// cannot even drop it then.)
+fn log_triggers(create: bool) -> String {
+    let mut sql = String::new();
+    for (kind, table) in KINDS {
+        if create {
+            sql.push_str(&format!(
+                "CREATE TEMP TRIGGER IF NOT EXISTS ponte_log_{table} AFTER INSERT ON main.{table} \
+                 BEGIN INSERT INTO temp.ponte_inserted(kind,row_id) VALUES('{kind}',NEW.id); END;\n"
+            ));
+        } else {
+            sql.push_str(&format!("DROP TRIGGER IF EXISTS temp.ponte_log_{table};\n"));
+        }
+    }
+    sql
 }
 
-pub(crate) fn stop_log(_conn: &Connection) {}
+/// Opens the log of this connection, empty. Inside a transaction, a
+/// rollback closes it again.
+pub(crate) fn start_log(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&format!(
+        "DELETE FROM temp.ponte_inserted;\n{}",
+        log_triggers(true)
+    ))?;
+    Ok(())
+}
+
+/// The rows inserted since [`start_log`].
+pub(crate) fn logged(conn: &Connection) -> Result<Inserted> {
+    let mut statement = conn.prepare("SELECT kind,row_id FROM temp.ponte_inserted")?;
+    let rows = statement
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<Inserted>>()?;
+    Ok(rows)
+}
+
+/// Closes the log and empties it.
+pub(crate) fn stop_log(conn: &Connection) {
+    let _ = conn.execute_batch(&format!(
+        "{}DELETE FROM temp.ponte_inserted;",
+        log_triggers(false)
+    ));
+}
+
+/// The ident kind of an id-map kind.
+fn kind_of(kind: IdKind) -> &'static str {
+    match kind {
+        IdKind::Document => "document",
+        IdKind::Capture => "capture",
+        IdKind::File => "file",
+        IdKind::Task => "task",
+        IdKind::Saiop => "saiop",
+        IdKind::Attachment => "attachment",
+        IdKind::Draft => "draft",
+        IdKind::SaiopBatch => "saiop_batch",
+        IdKind::Link => "link",
+        IdKind::Example => "example",
+    }
+}
+
+/// The rows `mutation`, answered with `reply`, inserted for each of its
+/// slots, as (kind, slot, row): the slots of `idmap::created_ids` whose row
+/// is in `inserted`, plus `note` for a saved note and `analysis` for a
+/// saved analysis (the row of that document this very execution inserted,
+/// never the newest of the table).
+fn slot_rows(
+    conn: &Connection,
+    mutation: &IntranetMutation,
+    reply: &MutationReply,
+    inserted: &Inserted,
+) -> Result<Vec<(&'static str, String, i64)>> {
+    let mut out = Vec::new();
+    if inserted.is_empty() {
+        return Ok(out);
+    }
+    for created in crate::idmap::created_ids(&ConnFrame(conn), mutation, reply)? {
+        let kind = kind_of(created.kind);
+        if inserted.contains(&(kind.to_owned(), created.id)) {
+            out.push((kind, created.slot, created.id));
+        }
+    }
+    let own = |kind: &'static str, table: &str, document: i64| -> Result<Option<i64>> {
+        let mut newest = None;
+        for (_, row) in inserted.iter().filter(|(k, _)| k == kind) {
+            let of: Option<i64> = conn
+                .query_row(
+                    &format!("SELECT document_id FROM {table} WHERE id=?1"),
+                    [row],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if of == Some(document) {
+                newest = newest.max(Some(*row));
+            }
+        }
+        Ok(newest)
+    };
+    match mutation {
+        IntranetMutation::SaveNote { document_id, .. } => {
+            if let Some(row) = own("note", "notes", *document_id)? {
+                out.push(("note", "note".into(), row));
+            }
+        }
+        IntranetMutation::SaveAnalysis { document_id, .. } => {
+            if let Some(row) = own("analysis", "analyses", *document_id)? {
+                out.push(("analysis", "analysis".into(), row));
+            }
+        }
+        _ => {}
+    }
+    Ok(out)
+}
+
+/// The identities of the rows `mutation` inserted here, by slot: what a
+/// queued change carries (`OutboxEntry::idents`).
+pub(crate) fn created_idents(
+    conn: &Connection,
+    mutation: &IntranetMutation,
+    reply: &MutationReply,
+    inserted: &Inserted,
+) -> Result<Vec<SlotIdent>> {
+    let mut out = Vec::new();
+    for (kind, slot, row) in slot_rows(conn, mutation, reply, inserted)? {
+        if let Some(ident) = ident_of(conn, kind, row)? {
+            out.push(SlotIdent {
+                kind: kind.to_owned(),
+                slot,
+                ident,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Gives the rows a replay of `mutation` inserted (`inserted`) the
+/// identities the change carried, slot by slot. A slot whose row the replay
+/// did not insert keeps its own identity; an identity another row already
+/// holds is left there and counted.
+pub(crate) fn rekey(
+    conn: &Connection,
+    carried: &[SlotIdent],
+    mutation: &IntranetMutation,
+    reply: &MutationReply,
+    inserted: &Inserted,
+) -> Result<Rekeyed> {
+    let mut out = Rekeyed::default();
+    if carried.is_empty() {
+        return Ok(out);
+    }
+    let rows = slot_rows(conn, mutation, reply, inserted)?;
+    for slot in carried {
+        let Some((kind, _, row)) = rows
+            .iter()
+            .find(|(kind, name, _)| *kind == slot.kind && *name == slot.slot)
+        else {
+            continue;
+        };
+        let holder: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT kind,row_id FROM item_ident WHERE ident=?1",
+                [&slot.ident],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match holder {
+            Some((k, r)) if k == *kind && r == *row => {}
+            Some(_) => {
+                out.skipped += 1;
+                continue;
+            }
+            None => {
+                conn.execute(
+                    "UPDATE item_ident SET ident=?1 WHERE kind=?2 AND row_id=?3",
+                    params![slot.ident, kind, row],
+                )?;
+            }
+        }
+        out.applied.push((slot.clone(), *row));
+    }
+    Ok(out)
+}
 
 impl Store {
-    /// Applies a replayed change and gives the rows it inserted the
-    /// identities the change carried.
+    /// Runs `work` with the log of inserted rows open; answers its result
+    /// and the rows it inserted.
+    pub(crate) fn run_logged<T>(
+        &mut self,
+        work: impl FnOnce(&mut Store) -> Result<T>,
+    ) -> Result<(T, Inserted)> {
+        start_log(&self.conn)?;
+        let result = work(self);
+        let inserted = logged(&self.conn);
+        stop_log(&self.conn);
+        Ok((result?, inserted?))
+    }
+
+    /// Applies a replayed change (as `execute_mutation`) and gives the rows
+    /// it inserted the identities the change carried (see [`rekey`]).
     pub(crate) fn execute_carrying(
         &mut self,
         actor: &str,
         mutation: IntranetMutation,
-        _carried: &[SlotIdent],
+        carried: &[SlotIdent],
     ) -> Result<(MutationReply, Rekeyed)> {
-        Ok((self.execute_mutation(actor, mutation)?, Rekeyed::default()))
+        let applied = mutation.clone();
+        let (reply, inserted) = self.run_logged(|store| store.execute_mutation(actor, mutation))?;
+        let rekeyed = rekey(&self.conn, carried, &applied, &reply, &inserted)?;
+        Ok((reply, rekeyed))
     }
 }
 

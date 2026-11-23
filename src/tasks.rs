@@ -2236,7 +2236,7 @@ mod planning_tests {
         }
         // Opening again finishes the job: table, guards and the number.
         let store = Store::open(&path).unwrap();
-        assert_eq!(version(&store), crate::storage::SCHEMA_VERSION);
+        assert_eq!(version(&store), crate::storage::LIBRARY_SCHEMA);
         assert_eq!(store.library_setting("holidays").unwrap(), None);
     }
 
@@ -2263,7 +2263,7 @@ mod planning_tests {
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, crate::storage::SCHEMA_VERSION);
+        assert_eq!(version, crate::storage::LIBRARY_SCHEMA);
         assert_eq!(crate::storage::SCHEMA_VERSION, 21);
         assert!(store.list_projects().unwrap().is_empty());
         let guards: i64 = store
@@ -2298,7 +2298,7 @@ mod planning_tests {
             let conn = rusqlite::Connection::open(&path).unwrap();
             conn.execute_batch(&format!(
                 "PRAGMA user_version={};",
-                crate::storage::SCHEMA_VERSION + 1
+                crate::storage::LIBRARY_SCHEMA + 1
             ))
             .unwrap();
         }
