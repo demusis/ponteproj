@@ -162,6 +162,8 @@ struct PasteStep {
     title_edited: bool,
     /// Reading of `text`; recomputed when the text changes.
     parsed: Option<Result<crate::whatsapp::Conversation, String>>,
+    /// Why the chosen file could not be read (shown under the buttons).
+    file_error: String,
 }
 
 impl PasteStep {
@@ -173,6 +175,34 @@ impl PasteStep {
             title: String::new(),
             title_edited: false,
             parsed: None,
+            file_error: String::new(),
+        }
+    }
+
+    /// Takes the conversation from an exported `.txt` file: the file is read
+    /// and decoded here, then goes through the same reading as a paste.
+    fn load_file(&mut self, path: &std::path::Path) {
+        self.file_error.clear();
+        let result = (|| -> anyhow::Result<String> {
+            let size = std::fs::metadata(path)?.len();
+            anyhow::ensure!(
+                size <= 2 * crate::model::MAX_CAPTURE_TEXT_BYTES as u64,
+                "O arquivo passa do limite de um registro (500 KB). Exporte a conversa em partes menores."
+            );
+            crate::whatsapp::decode_export(&std::fs::read(path)?)
+        })();
+        match result {
+            Ok(text) => {
+                self.text = text;
+                if self.chat.trim().is_empty() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        self.chat = crate::whatsapp::chat_from_file_name(name);
+                    }
+                }
+                self.title_edited = false;
+                self.reread();
+            }
+            Err(error) => self.file_error = error.to_string(),
         }
     }
 

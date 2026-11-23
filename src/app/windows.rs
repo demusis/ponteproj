@@ -58,6 +58,24 @@ fn paste_step(ui: &mut egui::Ui, step: &mut PasteStep, message: &str) -> (bool, 
         ui,
         "Na conversa do WhatsApp, selecione as mensagens, copie (Ctrl+C) e cole aqui (Ctrl+V).",
     );
+    widgets::small_muted(
+        ui,
+        "Ou, no celular, use Exportar conversa ▸ Sem mídia, leve o arquivo ao computador e escolha o .txt abaixo. Se o WhatsApp entregar um .zip, extraia-o antes e escolha o .txt de dentro.",
+    );
+    if ui
+        .add(widgets::secondary("Importar arquivo de conversa (.txt)…"))
+        .on_hover_text("Lê o arquivo .txt gerado por Exportar conversa (Android ou iPhone).")
+        .clicked()
+    {
+        if let Some(path) =
+            crate::windows_ui::pick_file("Importar conversa", &[("Conversa (.txt)", "*.txt")])
+        {
+            step.load_file(&path);
+        }
+    }
+    if !step.file_error.is_empty() {
+        notice_line(ui, Tone::Danger, step.file_error.clone());
+    }
     widgets::field_label(ui, "Conversa com");
     let chat_changed = ui
         .add(

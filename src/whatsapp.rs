@@ -35,6 +35,8 @@ const HEADER_CHARS: usize = 48;
 
 const ERR_NONE: &str = "Não encontrei mensagens do WhatsApp neste texto. Selecione as mensagens na conversa, copie e cole aqui.";
 const ERR_COUNT: &str = "São mais de 500 mensagens. Cole a conversa em partes.";
+const ERR_SIZE_FILE: &str =
+    "O arquivo passa do limite de um registro (500 KB). Exporte a conversa em partes menores.";
 const ERR_SIZE: &str =
     "O texto passa do limite de um registro (500 KB). Cole a conversa em partes.";
 
@@ -237,7 +239,7 @@ fn stamp(inner: &str) -> Option<NaiveDateTime> {
 /// When `line` starts a message: its time and what follows the bracket.
 fn header(line: &str) -> Option<(NaiveDateTime, &str)> {
     if !line.starts_with('[') {
-        return None;
+        return android_header(line);
     }
     let end = line
         .char_indices()
@@ -246,6 +248,22 @@ fn header(line: &str) -> Option<(NaiveDateTime, &str)> {
         .find(|(_, c)| *c == ']')?
         .0;
     Some((stamp(&line[1..end])?, &line[end + 1..]))
+}
+
+/// The header of the Android export: `dd/mm/aaaa hh:mm - rest`, also with
+/// `dd/mm/aa`, a comma after the date and a 12-hour time (`a.m.`/`p.m.`). The
+/// stamp ends at the first hyphen that has white space on both sides (the
+/// hyphens of a date `12-05-2026` have none), within the first characters.
+fn android_header(line: &str) -> Option<(NaiveDateTime, &str)> {
+    if !line.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let chars: Vec<(usize, char)> = line.char_indices().take(HEADER_CHARS + 3).collect();
+    let at = (1..chars.len().saturating_sub(1)).find(|&i| {
+        chars[i].1 == '-' && chars[i - 1].1.is_whitespace() && chars[i + 1].1.is_whitespace()
+    })?;
+    let hyphen = chars[at].0;
+    Some((stamp(&line[..hyphen])?, &line[hyphen + 1..]))
 }
 
 /// Author and first line of the text after the bracket.
@@ -338,6 +356,44 @@ fn take_preamble(lines: &mut Vec<&str>) -> String {
     };
     lines.clear();
     text
+}
+
+// ---- the exported file ----
+
+/// The text of an exported conversation file (`.txt` of "Exportar conversa"):
+/// UTF-8, with or without BOM. A `.zip` (export with media) and any other
+/// encoding are refused with a sentence for the person.
+pub fn decode_export(bytes: &[u8]) -> Result<String> {
+    if bytes.starts_with(&[b'P', b'K', 3, 4]) {
+        bail!("Este arquivo é um .zip. Extraia-o e escolha o arquivo .txt que está dentro dele.");
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        bail!("O arquivo não está em UTF-8 (parece UTF-16). Abra-o no Bloco de Notas, salve como UTF-8 e escolha-o de novo.");
+    }
+    if bytes.len() > 2 * MAX_CAPTURE_TEXT_BYTES {
+        bail!(ERR_SIZE_FILE);
+    }
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Ok(text.to_owned()),
+        Err(_) => bail!("O arquivo não está em UTF-8; o Ponte só lê texto UTF-8. Abra-o no Bloco de Notas, salve como UTF-8 e escolha-o de novo."),
+    }
+}
+
+/// The chat name the phone puts in the file name ("Conversa do WhatsApp com
+/// Fulano.txt", "WhatsApp Chat with Fulano.txt"); empty when the name does
+/// not follow that pattern.
+pub fn chat_from_file_name(name: &str) -> String {
+    let stem = name
+        .strip_suffix(".txt")
+        .or_else(|| name.strip_suffix(".TXT"))
+        .unwrap_or(name);
+    for prefix in ["Conversa do WhatsApp com ", "WhatsApp Chat with "] {
+        if let Some(chat) = stem.strip_prefix(prefix) {
+            return clean_chat(chat);
+        }
+    }
+    String::new()
 }
 
 // ---- the record ----
@@ -1003,5 +1059,228 @@ segunda",
             .unwrap()
             .iter()
             .any(|d| d.id == first.document_id && d.whatsapp));
+    }
+
+    // ---- phone exports (Android and iOS) ----
+
+    const ANDROID: &str = "12/11/2026 09:15 - As mensagens e as chamadas são protegidas com a criptografia de ponta a ponta. Somente as pessoas nesta conversa podem ler.\n\
+12/11/2026 09:15 - Ana Souza criou o grupo \"Equipe B\"\n\
+12/11/2026 09:20 - Ana Souza: Bom dia, pessoal!\n\
+12/11/2026 09:21 - Bruno Lima: Bom dia.\n\
+Segue a pauta:\n\
+- item 1\n\
+- item 2\n\
+12/11/2026 14:05 - Bruno Lima: <Mídia oculta>\n\
+12/11/2026 14:06 - Ana Souza: <Arquivo de mídia oculto>\n";
+
+    fn when(d: u32, m: u32, y: i32, h: u32, min: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .and_hms_opt(h, min, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn android_export_is_read_with_system_lines_media_and_multiple_lines() {
+        let c = parse(ANDROID).unwrap();
+        assert_eq!(c.messages.len(), 6);
+        // System lines: no author.
+        assert_eq!(c.messages[0].author, None);
+        assert!(c.messages[0].text.starts_with("As mensagens e as chamadas"));
+        assert_eq!(c.messages[1].author, None);
+        assert_eq!(c.messages[1].text, "Ana Souza criou o grupo \"Equipe B\"");
+        assert_eq!(c.messages[2].author.as_deref(), Some("Ana Souza"));
+        assert_eq!(c.messages[2].when, Some(when(12, 11, 2026, 9, 20)));
+        // The message that goes over several lines.
+        assert_eq!(
+            c.messages[3].text,
+            "Bom dia.\nSegue a pauta:\n- item 1\n- item 2"
+        );
+        // Media placeholders stay as the text of the message.
+        assert_eq!(c.messages[4].text, "<Mídia oculta>");
+        assert_eq!(c.messages[5].text, "<Arquivo de mídia oculto>");
+        assert_eq!(c.participants, vec!["Ana Souza", "Bruno Lima"]);
+        assert_eq!(c.first, Some(when(12, 11, 2026, 9, 15)));
+        assert_eq!(c.last, Some(when(12, 11, 2026, 14, 6)));
+    }
+
+    #[test]
+    fn android_export_accepts_short_years_comma_and_12_hour_times() {
+        let text = "05/03/26 10:30 p.m. - Ana: noite\n\
+05/03/26, 12:05 a. m. - Ana: meia-noite\n\
+05/03/2026, 7:45 - Bruno: com vírgula\n\
+05/03/2026 11:00 a.m. - Bruno: manhã\n\
+05/03/2026 12:00 p.m. - Bruno: meio-dia";
+        let c = parse(text).unwrap();
+        let got: Vec<NaiveDateTime> = c.messages.iter().filter_map(|m| m.when).collect();
+        assert_eq!(
+            got,
+            vec![
+                when(5, 3, 2026, 22, 30),
+                when(5, 3, 2026, 0, 5),
+                when(5, 3, 2026, 7, 45),
+                when(5, 3, 2026, 11, 0),
+                when(5, 3, 2026, 12, 0),
+            ]
+        );
+        // The narrow no-break space newer phones put before "p. m.".
+        let c = parse("05/03/2026 10:30\u{202F}p.\u{202F}m. - Ana: oi").unwrap();
+        assert_eq!(c.messages[0].when, Some(when(5, 3, 2026, 22, 30)));
+        assert_eq!(c.messages[0].text, "oi");
+    }
+
+    #[test]
+    fn ios_export_is_read() {
+        let text = "\u{200E}[12/11/2026, 09:15:03] Ana Souza: \u{200E}Mensagens e chamadas são protegidas.\n\
+\u{200E}[12/11/2026, 09:20:10] Ana Souza: Bom dia!\n\
+\u{200E}[12/11/2026, 09:21:44] Bruno Lima: \u{200E}<anexo: 00000012-PHOTO-2026-11-12-09-21-44.jpg>\n\
+segunda linha\n\
+\u{200E}[12/11/2026, 14:06:00] Ana Souza criou o grupo \"Equipe B\"";
+        let c = parse(text).unwrap();
+        assert_eq!(c.messages.len(), 4);
+        // Seconds are kept in the reading but never in the record.
+        assert_eq!(
+            c.messages[1].when,
+            Some(when(12, 11, 2026, 9, 20) + chrono::Duration::seconds(10))
+        );
+        assert_eq!(c.messages[1].text, "Bom dia!");
+        assert!(c.messages[2].text.ends_with("\nsegunda linha"));
+        assert_eq!(c.messages[3].author, None);
+    }
+
+    #[test]
+    fn bom_and_direction_marks_do_not_hide_the_first_message() {
+        let text =
+            "\u{FEFF}\u{200E}12/11/2026 09:20 - Ana: oi\n\u{200F}12/11/2026 09:21 - Bruno: olá";
+        let c = parse(text).unwrap();
+        assert_eq!(c.messages.len(), 2);
+        assert_eq!(c.messages[0].text, "oi");
+        let c = parse("\u{FEFF}[09:20, 12/11/2026] Ana: oi").unwrap();
+        assert_eq!(c.messages.len(), 1);
+    }
+
+    #[test]
+    fn crlf_exports_read_the_same() {
+        let crlf = ANDROID.replace('\n', "\r\n");
+        assert_eq!(parse(&crlf).unwrap(), parse(ANDROID).unwrap());
+    }
+
+    #[test]
+    fn invalid_android_dates_or_hyphens_do_not_start_a_message() {
+        // Month 13, no spaces around the hyphen, a number in the text.
+        let text = "12/11/2026 09:20 - Ana: oi\n\
+13/13/2026 09:21 - Bruno: não é mensagem\n\
+12/11/2026 09:22-Bruno: sem espaços\n\
+2026 - foi um bom ano";
+        let c = parse(text).unwrap();
+        assert_eq!(c.messages.len(), 1);
+        assert!(c.messages[0].text.contains("não é mensagem"));
+        assert!(c.messages[0].text.contains("foi um bom ano"));
+    }
+
+    #[test]
+    fn the_same_message_has_the_same_record_and_id_in_every_format() {
+        let android = parse("12/11/2026 14:02 - Ana Souza: Bom dia!\nSegunda linha").unwrap();
+        let ios = parse("[12/11/2026, 14:02:55] Ana Souza: Bom dia!\nSegunda linha").unwrap();
+        let web = parse("[14:02, 12/11/2026] Ana Souza: Bom dia!\nSegunda linha").unwrap();
+        let twelve = parse("12/11/2026 2:02 p.m. - Ana Souza: Bom dia!\nSegunda linha").unwrap();
+        let reference = record_text(&web);
+        for other in [&android, &ios, &twelve] {
+            assert_eq!(record_text(other), reference);
+            assert_eq!(
+                request_id("Ana", &record_text(other)),
+                request_id("Ana", &reference)
+            );
+        }
+        // A different message is another id.
+        let changed = parse("12/11/2026 14:02 - Ana Souza: Boa tarde!").unwrap();
+        assert_ne!(
+            request_id("Ana", &record_text(&changed)),
+            request_id("Ana", &reference)
+        );
+    }
+
+    #[test]
+    fn an_android_conversation_crossing_the_message_limit_is_refused() {
+        let line = |i: usize| {
+            format!(
+                "12/11/2026 {:02}:{:02} - Ana: mensagem {i}",
+                i / 60 % 24,
+                i % 60
+            )
+        };
+        let exact: Vec<String> = (0..MAX_MESSAGES).map(line).collect();
+        let c = parse(&exact.join("\n")).unwrap();
+        assert_eq!(c.messages.len(), MAX_MESSAGES);
+        let over: Vec<String> = (0..=MAX_MESSAGES).map(line).collect();
+        let error = parse(&over.join("\n")).unwrap_err().to_string();
+        assert!(error.contains("500 mensagens"));
+    }
+
+    #[test]
+    fn plain_text_is_still_not_a_conversation() {
+        assert!(parse("Olá, tudo bem?\nAmanhã às 10:30 - na sala 2").is_err());
+        assert!(parse("12/11/2026 sem hora - Ana: oi").is_err());
+    }
+
+    #[test]
+    fn export_files_are_decoded_as_utf8_with_or_without_bom() {
+        let plain = "12/11/2026 09:20 - Ana: não, é ação".as_bytes();
+        assert_eq!(
+            decode_export(plain).unwrap(),
+            "12/11/2026 09:20 - Ana: não, é ação"
+        );
+        let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+        with_bom.extend_from_slice(plain);
+        assert_eq!(
+            decode_export(&with_bom).unwrap(),
+            "12/11/2026 09:20 - Ana: não, é ação"
+        );
+        assert!(parse(&decode_export(&with_bom).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn export_files_in_other_encodings_or_zip_are_refused_clearly() {
+        let utf16: Vec<u8> = [0xFF, 0xFE, b'1', 0]
+            .into_iter()
+            .chain("2/11".bytes().flat_map(|b| [b, 0]))
+            .collect();
+        assert!(decode_export(&utf16)
+            .unwrap_err()
+            .to_string()
+            .contains("UTF-16"));
+        assert!(decode_export(&[0xFE, 0xFF, 0, b'1'])
+            .unwrap_err()
+            .to_string()
+            .contains("UTF-16"));
+        // Latin-1: "ação" is not valid UTF-8.
+        let latin1 = [b'a', 0xE7, 0xE3, b'o'];
+        assert!(decode_export(&latin1)
+            .unwrap_err()
+            .to_string()
+            .contains("UTF-8"));
+        // A zip with media.
+        let zip = decode_export(b"PK\x03\x04rest").unwrap_err().to_string();
+        assert!(zip.contains(".zip") && zip.contains(".txt"));
+        // Too big.
+        let big = vec![b'a'; 2 * MAX_CAPTURE_TEXT_BYTES + 1];
+        assert!(decode_export(&big)
+            .unwrap_err()
+            .to_string()
+            .contains("500 KB"));
+    }
+
+    #[test]
+    fn chat_name_comes_from_the_phone_file_name_only() {
+        assert_eq!(
+            chat_from_file_name("Conversa do WhatsApp com Ana Souza.txt"),
+            "Ana Souza"
+        );
+        assert_eq!(
+            chat_from_file_name("WhatsApp Chat with Equipe B.txt"),
+            "Equipe B"
+        );
+        assert_eq!(chat_from_file_name("notas.txt"), "");
+        assert_eq!(chat_from_file_name("Conversa do WhatsApp com .txt"), "");
     }
 }
