@@ -958,3 +958,69 @@ fn f3_0a_higher_local_9_1_revision_does_not_block_the_move_to_9_2() {
         stale.map(|r| r.written_to)
     );
 }
+
+/// Review F3.0a1, finding 4. A task at some version v; two edits queued by
+/// a Ponte of F2b (no proofs) were merged into one entry expecting v, and
+/// the local copy is at v+2. A third edit, made after the update, has
+/// proofs, so it is never merged into the old entry and goes after it. With
+/// nobody else editing, the exchange replays the old entry once (v+1) and
+/// then the new one, which must expect what the old entry leaves: no card,
+/// and the last edit is what the task holds.
+///
+/// Red on 5553b64: the new entry expects the local v+2 and becomes a card
+/// of a concurrent edit that never happened.
+#[test]
+fn f3_0a_old_merged_entry_then_new_edit_of_the_same_task_without_a_card() {
+    let (_dir, mut a, path) = alone();
+    let mut task = crate::tasks::Task::blank(None);
+    task.title = "Tarefa de base".into();
+    let id = a.save_task(&task).unwrap();
+    sync(&mut a);
+    let start = a.item_version("task", id).unwrap().version;
+    let current = |store: &Store| {
+        store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap()
+    };
+    for title in ["Primeira edição antiga", "Segunda edição antiga"] {
+        let mut edit = current(&a);
+        edit.title = title.into();
+        a.save_task(&edit).unwrap();
+    }
+    // As a Ponte of F2b queued them: one merged entry, no proofs.
+    let mut queued = a.list_offline_outbox().unwrap();
+    assert_eq!(queued.len(), 1, "merged");
+    let mut old = queued.pop().unwrap();
+    old.refs = None;
+    a.conn
+        .execute(
+            "UPDATE offline_outbox SET payload=?1 WHERE id=?2",
+            rusqlite::params![
+                crate::protection::seal(&serde_json::to_vec(&old).unwrap()).unwrap(),
+                old.id
+            ],
+        )
+        .unwrap();
+    assert_eq!(a.item_version("task", id).unwrap().version, start + 2);
+    let mut edit = current(&a);
+    edit.title = "Edição depois da atualização".into();
+    a.save_task(&edit).unwrap();
+    assert_eq!(a.list_offline_outbox().unwrap().len(), 2, "kept apart");
+
+    let report = sync(&mut a);
+    assert_eq!(
+        (report.conflicts, a.list_sync_conflicts().unwrap().len()),
+        (0, 0),
+        "{:?} {:?}",
+        report.notes,
+        a.list_sync_conflicts().unwrap()
+    );
+    assert_eq!(current(&a).title, "Edição depois da atualização");
+    let copy = copy_at(&sharedfolder::nine_path(&path));
+    let there = copy.payload.snapshot.tasks.iter().find(|t| t.id == id).unwrap();
+    assert_eq!(there.title, "Edição depois da atualização");
+    assert!(a.list_offline_outbox().unwrap().is_empty());
+}
