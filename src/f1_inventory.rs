@@ -2660,3 +2660,52 @@ fn f0r_a_refused_change_merged_again_does_not_make_a_second_card() {
         "a second card for the same refused change"
     );
 }
+
+/// Review 6: a plan creates its record and stops after its first task; the
+/// person then corrects the record's title in the editor. Resuming the plan
+/// finishes it on that record (the version its request made is the plan's).
+#[cfg(feature = "desktop")]
+#[test]
+fn f0r_a_corrected_plan_record_still_lets_the_plan_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("s.sqlite3")).unwrap();
+    let mut plan: crate::plan_import::Plan =
+        serde_json::from_str(include_str!("../tests/fixtures/import-plan-exemplo.json")).unwrap();
+    plan.request_id = uuid::Uuid::new_v4().to_string();
+    plan.complete_triage = false;
+    assert!(plan.tasks.len() >= 2);
+    let before = store.list_tasks().unwrap().len();
+    store
+        .conn
+        .execute_batch(&format!(
+            "CREATE TRIGGER falha_simulada BEFORE INSERT ON tasks WHEN (SELECT count(*) FROM tasks)>={} BEGIN SELECT RAISE(ABORT,'falha simulada'); END;",
+            before + 2
+        ))
+        .unwrap();
+    assert!(store.import_plan(&plan, false).is_err(), "interrupted");
+    store
+        .conn
+        .execute_batch("DROP TRIGGER falha_simulada")
+        .unwrap();
+    let doc = store.list_documents("").unwrap()[0].id;
+    let mut fields =
+        crate::manual::ManualFields::from_capture(&store.load_document(doc).unwrap().capture);
+    fields.title = format!("{} (corrigido)", fields.title);
+    store.update_manual_document(doc, &fields).unwrap();
+    let resumed = store.import_plan(&plan, false);
+    assert!(
+        resumed.is_ok(),
+        "resume refused: {:?}",
+        resumed.err().map(|e| e.to_string())
+    );
+    let on_doc: Vec<String> = store
+        .list_tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.document_id == Some(doc))
+        .map(|t| t.title)
+        .collect();
+    for task in &plan.tasks {
+        assert!(on_doc.contains(&task.title.trim().to_owned()), "{on_doc:?}");
+    }
+}
