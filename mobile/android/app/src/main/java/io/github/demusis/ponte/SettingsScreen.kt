@@ -41,6 +41,14 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -271,13 +279,7 @@ internal fun SettingsScreen(
                 }
             }
 
-            SectionHeader("Sobre")
-            FlatBlock {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Ponte de bolso", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
-                    if (state.version.isNotEmpty()) Text("Versão ${state.version}", fontSize = 14.sp, color = c.muted)
-                }
-            }
+            AboutSection(state.version)
 
             SectionHeader("Recomeçar o acervo deste aparelho", color = c.error)
             FlatBlock {
@@ -464,6 +466,55 @@ private fun HolidaysCard(
             ) {
                 Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(20.dp))
                 Text("Adicionar um dia", Modifier.padding(start = 8.dp).weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+    }
+}
+
+/** The check is initiated only by the button and belongs to the unlocked settings screen. */
+@Composable
+internal fun AboutSection(version: String) {
+    var result by remember { mutableStateOf<UpdateResult?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    AboutContent(version, result, checking, onCheck = {
+        checking = true
+        result = null
+        scope.launch {
+            result = withContext(Dispatchers.IO) { UpdateCheck.check(version) }
+            checking = false
+        }
+    }, onOpen = { url ->
+        try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (_: android.content.ActivityNotFoundException) { }
+    })
+}
+
+@Composable
+internal fun AboutContent(version: String, result: UpdateResult?, checking: Boolean = false, onCheck: () -> Unit = {}, onOpen: (String) -> Unit = {}) {
+    val c = Ponte.colors
+    SectionHeader("Sobre")
+    FlatBlock {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Ponte de bolso", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
+                if (version.isNotEmpty()) Text("Versão $version", fontSize = 14.sp, color = c.muted)
+            }
+            TextButton(onClick = onCheck, enabled = !checking, modifier = Modifier.heightIn(min = 48.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                colors = ButtonDefaults.textButtonColors(contentColor = c.accent)) {
+                Text(if (checking) "Verificando…" else "Verificar se há versão nova", fontSize = 15.sp)
+            }
+            when (result) {
+                is UpdateResult.Current -> Text("Você está na versão mais recente (${result.version}).", fontSize = 14.sp, color = c.text)
+                is UpdateResult.Newer -> {
+                    Text("Há uma versão nova: ${result.version}.", fontSize = 14.sp, color = c.text)
+                    TextButton(onClick = { onOpen(result.url) }, modifier = Modifier.heightIn(min = 48.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                        colors = ButtonDefaults.textButtonColors(contentColor = c.accent)) { Text("Abrir a página de download", fontSize = 15.sp) }
+                }
+                UpdateResult.Error -> Text("Não foi possível consultar agora. Verifique a conexão e tente novamente.", fontSize = 14.sp, color = c.error)
+                null -> Unit
             }
         }
     }
