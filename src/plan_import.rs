@@ -898,6 +898,8 @@ struct TaskRow {
     id: i64,
     trashed: bool,
     title: String,
+    /// The document the task hangs from.
+    document_id: Option<i64>,
 }
 /// A name or uid of a category or project resolved against the library.
 struct Entry {
@@ -938,6 +940,14 @@ impl Written {
     fn any(&self) -> bool {
         self.document || self.content || !self.tasks.is_empty() || self.triage_concluded
     }
+}
+
+/// Whether a record is the one a plan creates: same title, text and type.
+fn is_record_of_plan(row: &DocRow, doc: &PlanDocument) -> bool {
+    let kind = row.capture.metadata.get("manual_kind").map(String::as_str);
+    row.capture.title == doc.title.trim()
+        && row.capture.text == doc.text.trim_end()
+        && kind == Some(doc.kind.as_str())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1086,6 +1096,7 @@ impl Store {
             id,
             trashed,
             title: task.title,
+            document_id,
         }))
     }
     /// The document a request created, through `requests` (which travels in
@@ -1469,6 +1480,7 @@ impl Store {
         let Some(run) = run else {
             return Ok(());
         };
+        self.guard_resumed_target(plan, state, run)?;
         match state.doc_state {
             ItemState::Trashed => bail!(
                 "O plano ainda tem o que criar, mas o documento dele está na Lixeira. Restaure-o (ou conclua o que falta à mão) e repita o comando; nada é criado numa Lixeira."
@@ -1507,6 +1519,54 @@ impl Store {
         Ok(())
     }
 
+    /// A resumed run writes only on the record the plan created or targeted.
+    /// What the receipt holds (`request:`/`identity:`, or the plan's own
+    /// request id for a record it creates) is not proof enough: after an
+    /// exchange between copies the same request id can name another record
+    /// (two records that came with the same request id, one of them refused).
+    /// So the record found must also be the plan's: the one it created has
+    /// the plan's title, text and type; the one it targeted by number has
+    /// that number, now or before on this computer. A task of the plan that
+    /// was already written must hang from that same record. Otherwise nothing
+    /// is written.
+    fn guard_resumed_target(&self, plan: &Plan, state: &State, run: &PlanRun) -> Result<()> {
+        let Some(doc) = &state.doc else {
+            return Ok(());
+        };
+        let found = format!("{} — {}", doc.capture.document_number, doc.capture.title);
+        if let Some(record) = &plan.document {
+            ensure!(
+                is_record_of_plan(doc, record),
+                "request_id: a retomada deste plano encontrou, pelo identificador do pedido, outro registro ({found}), não o que o plano criou (\"{}\"). Isso acontece quando dois registros chegam à sincronização com o mesmo identificador e um deles é recusado. Nada foi gravado, para não colocar as tarefas no registro errado. Confira os cartões de conflito e crie o que falta à mão.",
+                record.title.trim()
+            );
+        } else if let (Some(number), false) = (&plan.document_number, run.target.is_empty()) {
+            let wanted = crate::storage::identity_hash_for_number(number);
+            let has_number = crate::storage::identity_hash_for_number(&doc.capture.document_number)
+                == wanted
+                || self
+                    .previous_numbers(doc.id)
+                    .iter()
+                    .any(|old| crate::storage::identity_hash_for_number(old) == wanted);
+            ensure!(
+                has_number,
+                "document_number: a retomada deste plano encontrou, pelo recibo guardado, o documento {found}, que não tem nem teve neste computador o número {} do arquivo. O documento original pode ter sido recusado numa sincronização (dois registros com o mesmo identificador de pedido). Nada foi gravado, para não colocar as tarefas no documento errado. Confira os cartões de conflito e crie o que falta à mão.",
+                number.trim()
+            );
+        }
+        for (index, (row, _)) in state.tasks.iter().enumerate() {
+            if let Some(row) = row {
+                ensure!(
+                    row.document_id == Some(doc.id),
+                    "tasks[{}]: a tarefa \"{}\" deste plano já foi gravada em outro documento, não em {found}. Nada foi gravado, para não dividir o plano entre dois documentos. Confira o documento da tarefa e crie o que falta à mão.",
+                    index + 1,
+                    row.title
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// The document of a first run on an existing record, as the app finds it
     /// by number; the two ways it can be missing are told apart.
     fn existing_document_to_use(&self, plan: &Plan) -> Result<i64> {
@@ -1534,11 +1594,8 @@ impl Store {
         if let (Some(doc), Some(id)) = (&plan.document, self.document_of_request(&checked.request)?)
         {
             if let Some(row) = self.doc_row(id)? {
-                let kind = row.capture.metadata.get("manual_kind").map(String::as_str);
                 ensure!(
-                    row.capture.title == doc.title.trim()
-                        && row.capture.text == doc.text.trim_end()
-                        && kind == Some(doc.kind.as_str()),
+                    is_record_of_plan(&row, doc),
                     "request_id: este identificador já foi usado, neste acervo, para outro registro ({}). Use um request_id novo para este plano.",
                     row.capture.document_number
                 );

@@ -1658,7 +1658,6 @@ fn r2_b7_a_refused_foreign_change_reaches_its_origin() {
 /// the remaining tasks onto X, a record the plan never targeted.
 #[cfg(feature = "desktop")]
 #[test]
-#[ignore = "R2-B8: retomada de --import-plan por request: num alvo ambíguo (defeito do código atual)"]
 fn r2_b8_a_resumed_plan_never_writes_on_a_record_it_did_not_target() {
     let mut p = pair();
     let request = uuid::Uuid::new_v4().to_string();
@@ -1701,6 +1700,15 @@ fn r2_b8_a_resumed_plan_never_writes_on_a_record_it_did_not_target() {
     eprintln!(
         "R2-B8 resume: {:?}",
         resumed.as_ref().map(|_| "ok").map_err(|e| e.to_string())
+    );
+    let message = resumed
+        .as_ref()
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        message.contains("Nada foi gravado"),
+        "resume not refused: {message}"
     );
     let x_on_b = doc_by_number(&p.b, &number("a", 1));
     let on_x: Vec<String> =
@@ -2205,4 +2213,65 @@ fn f0_a_team_client_s_older_plain_edit_does_not_overwrite_the_principal_s_newer_
     let cards = t.client.list_sync_conflicts().unwrap();
     assert_eq!(cards.len(), 2, "{cards:?}");
     assert!(t.client.list_offline_outbox().unwrap().is_empty());
+}
+
+/// F0 (R2-B8), a plan that creates its record: B's plan creates record Y
+/// (with the plan's request id) and is interrupted after its first task. A
+/// already published a record X that came with the same request id. When B
+/// exchanges, Y is refused (the request id is taken), and the request id now
+/// names X. Resuming B's plan must not write on X: it is refused, in
+/// Portuguese, before anything is written.
+#[cfg(feature = "desktop")]
+#[test]
+fn f0_a_resumed_plan_that_created_its_record_refuses_another_record_with_its_request_id() {
+    let mut p = pair();
+    let mut plan: crate::plan_import::Plan =
+        serde_json::from_str(include_str!("../tests/fixtures/import-plan-exemplo.json")).unwrap();
+    plan.request_id = uuid::Uuid::new_v4().to_string();
+    plan.complete_triage = false;
+    assert!(plan.document.is_some(), "the example creates a record");
+    let mut x = capture(&number("a", 1), "Registro X de A");
+    x.request_id = plan.request_id.to_lowercase();
+    p.a.import_capture(&x).unwrap();
+    sync(&mut p.a);
+    // B creates Y with the plan; the second task fails.
+    let tasks_before = p.b.list_tasks().unwrap().len();
+    p.b.conn
+        .execute_batch(&format!(
+            "CREATE TRIGGER falha_simulada BEFORE INSERT ON tasks WHEN (SELECT count(*) FROM tasks)>={} BEGIN SELECT RAISE(ABORT,'falha simulada'); END;",
+            tasks_before + 2
+        ))
+        .unwrap();
+    assert!(p.b.import_plan(&plan, false).is_err(), "interrupted");
+    p.b.conn
+        .execute_batch("DROP TRIGGER falha_simulada")
+        .unwrap();
+    sync(&mut p.b);
+    let x_on_b = doc_by_number(&p.b, &number("a", 1));
+    let tasks_on_x = |store: &Store| -> Vec<String> {
+        store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.document_id == Some(x_on_b))
+            .map(|t| t.title)
+            .collect()
+    };
+    let before = tasks_on_x(&p.b);
+    let note_before = p.b.load_document(x_on_b).unwrap().note;
+    let resumed = p.b.import_plan(&plan, false);
+    let message = resumed
+        .as_ref()
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    eprintln!("F0 resume of a created record: {message}");
+    assert!(resumed.is_err(), "the resume wrote on X");
+    assert!(message.contains("Nada foi gravado"), "{message}");
+    assert_eq!(tasks_on_x(&p.b), before, "nothing new on X");
+    assert_eq!(
+        p.b.load_document(x_on_b).unwrap().note,
+        note_before,
+        "note on X"
+    );
 }
