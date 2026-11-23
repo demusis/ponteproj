@@ -508,15 +508,27 @@ fn record(
 /// write, rename, replace or delete it while the handle lives. `delete`: the
 /// handle may also delete it.
 fn open_owned(folder: &Path, name: &str, delete: bool) -> std::io::Result<File> {
-    let refused = |what: &str| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{what}: não é uma cópia desta pasta"),
-        )
-    };
     if !owned_name(name) {
-        return Err(refused("nome"));
+        return Err(refused_open("nome"));
     }
+    open_in_folder(folder, name, delete)
+}
+
+fn refused_open(what: &str) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("{what}: não é uma cópia desta pasta"),
+    )
+}
+
+/// What [`open_owned`] does once the name is accepted: the file is opened only
+/// as itself (never through a link, only a regular file, only when it is in
+/// that very folder), for reading and, with `delete`, for deleting through
+/// the handle ([`delete_through`]). The caller decides which names it may
+/// ask for (`open_owned` for the automatic copies; the shared folder for the
+/// copies it kept aside).
+pub(crate) fn open_in_folder(folder: &Path, name: &str, delete: bool) -> std::io::Result<File> {
+    let refused = refused_open;
     let path = folder.join(name);
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -597,7 +609,7 @@ fn final_path(file: &File) -> std::io::Result<PathBuf> {
 }
 
 /// Size and SHA-256 read through an open handle.
-fn identity_of(file: &mut File) -> std::io::Result<(u64, String)> {
+pub(crate) fn identity_of(file: &mut File) -> std::io::Result<(u64, String)> {
     use sha2::Digest;
     use std::io::Read;
     let size = file.metadata()?.len();
@@ -910,8 +922,20 @@ fn delete_if_recorded(file: &Path, entry: &Entry) -> std::io::Result<bool> {
     if identity_of(&mut handle)? != (entry.bytes, entry.sha256.clone()) {
         return Ok(false);
     }
+    delete_through(handle, file)?;
+    Ok(true)
+}
+
+/// Deletes the file `handle` holds (opened by [`open_in_folder`] or
+/// [`open_owned`] with the right to delete). On Windows the deletion is asked
+/// through the handle (`FileDispositionInfo`): while it is open nobody can
+/// write, rename or replace the file, so what is deleted is what was checked.
+/// Elsewhere the file is removed by `path` after the handle is released (the
+/// residual interval of platforms without delete-by-handle).
+pub(crate) fn delete_through(handle: File, path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
+        let _ = path;
         use std::os::windows::io::AsRawHandle;
         #[repr(C)]
         struct FileDispositionInfo {
@@ -943,13 +967,12 @@ fn delete_if_recorded(file: &Path, entry: &Entry) -> std::io::Result<bool> {
         }
         // Deleted when the handle closes.
         drop(handle);
-        Ok(true)
+        Ok(())
     }
     #[cfg(not(windows))]
     {
         drop(handle);
-        std::fs::remove_file(file)?;
-        Ok(true)
+        std::fs::remove_file(path)
     }
 }
 
