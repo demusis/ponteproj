@@ -168,6 +168,36 @@ class SyncIoTest {
     }
 
     @Test
+    fun aStagedCopyStillWaitingIsNeverReplacedByTheNextOutput() {
+        val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
+        try {
+            val work = File(dir, "sync-work-1.ponte").also { it.writeBytes(bytes(1_000)) }
+            val pending = File(dir, "pendente.ponte").also { it.writeText("trabalho só aqui") }
+            val staged = File(dir, "pendente-novo.ponte").also { it.writeText("saída anterior") }
+            val kept = SyncIo.keepNewOutput(work, pending, false)
+            assertEquals("pendente-novo-2.ponte", kept.name)
+            assertEquals("saída anterior", staged.readText())
+            assertEquals("trabalho só aqui", pending.readText())
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test
+    fun everyPendingCopyIsReadAgainButNotTheArchivesNorTheParts() {
+        val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
+        try {
+            for (n in listOf(
+                "pendente.ponte", "pendente-novo.ponte", "pendente-novo-2.ponte",
+                "pendente-divergente-0a1b2c3d4e5f6071.ponte", "pendente-novo.ponte.parte", "acervo.sqlite3",
+            )) File(dir, n).writeText("x")
+            assertEquals(
+                listOf("pendente-novo-2.ponte", "pendente-novo.ponte", "pendente.ponte"),
+                SyncIo.pendingCopies(dir).map { it.name },
+            )
+            assertTrue(SyncIo.pendingCopies(File(dir, "ausente")).isEmpty())
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test
     fun keepingThePendingCopyReplacesItWholeAndLeavesNoPart() {
         val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
         try {

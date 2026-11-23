@@ -4805,6 +4805,10 @@ impl Store {
         let mut donor_applied: std::collections::BTreeSet<String> = Default::default();
         let base_snapshot = copies.first().map(|c| &c.payload.snapshot);
         let mut plain_edits = PlainEdits::default();
+        // What refused changes created, kept in their conflict cards: here
+        // (this computer's own changes) and by the copy they came from.
+        let mut cards_here = crate::coverage::Removed::default();
+        let mut cards_from: BTreeMap<usize, crate::coverage::Removed> = BTreeMap::new();
         if first_write {
             reporter.step("Preparando a primeira cópia a partir do acervo deste computador…");
             for entry in &outbox {
@@ -5138,6 +5142,10 @@ impl Store {
                         let unresolved = remapped.is_err();
                         let error = outcome.err().unwrap_or_default();
                         resolved.insert(entry.uid.clone(), None);
+                        cards_from
+                            .entry(index)
+                            .or_default()
+                            .kept_in_card(&entry.mutation, &entry.created);
                         let as_entry = OutboxEntry {
                             id: 0,
                             created_at: entry.created_at.clone(),
@@ -5322,6 +5330,7 @@ impl Store {
                     }
                     (remapped, outcome) => {
                         ids.learn(&entry.created, None);
+                        cards_here.kept_in_card(&entry.mutation, &entry.created);
                         if let Some(doc) =
                             crate::renumber::creation_document(&entry.mutation, &entry.created)
                         {
@@ -5362,6 +5371,13 @@ impl Store {
             }
         };
         let revision = final_snapshot.revision;
+        // The removals the result records, read before its journal is
+        // summarized (what is summarized away no longer explains anything).
+        let mut removed = crate::coverage::Removed::default();
+        for entry in &journal {
+            removed.note(&entry.mutation);
+        }
+        let result_keys = crate::coverage::keys(&final_snapshot);
         sharedfolder::trim_journal(&mut journal);
         let payload = Payload {
             snapshot: final_snapshot.clone(),
@@ -5396,17 +5412,82 @@ impl Store {
                 plural(targets.len(), "pasta", "pastas")
             ));
         }
+        // Nothing that a copy about to be rewritten, the guard copy or this
+        // library holds goes without a copy kept aside first, unless the
+        // result has it or a removal the result records explains its
+        // absence. Numbers explain a removal only for a copy that took no
+        // change the result lacks (its numbering is the result's); a uid
+        // always does.
+        let result_applied: std::collections::BTreeSet<&String> = payload.applied.iter().collect();
+        let mut preserve = preserve.to_vec();
+        let mut uncovered: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+        let removed_by_uid = removed.by_uid_only();
+        let no_cards = crate::coverage::Removed::default();
+        for (index, copy) in copies.iter().enumerate() {
+            let is_guard = guard_path == Some(copy.path.as_path());
+            if !is_guard && !targets.contains(&copy.path) {
+                continue;
+            }
+            let same_numbering = copy
+                .payload
+                .applied
+                .iter()
+                .all(|uid| result_applied.contains(uid));
+            let by_journal = if same_numbering {
+                &removed
+            } else {
+                &removed_by_uid
+            };
+            let cards = cards_from.get(&index).unwrap_or(&no_cards);
+            let lost = crate::coverage::dropped(
+                &copy.payload.snapshot,
+                &result_keys,
+                &[by_journal, cards],
+            );
+            if !lost.is_empty() {
+                if !is_guard && !preserve.contains(&copy.path) {
+                    preserve.push(copy.path.clone());
+                }
+                uncovered.insert(copy.path.clone(), lost);
+            }
+        }
+        if temp.is_some() && !joining && !pure {
+            let here = self.export_snapshot()?;
+            let lost = crate::coverage::dropped(&here, &result_keys, &[&removed, &cards_here]);
+            if !lost.is_empty() {
+                let kept = self.backup_before_replacement()?.context(
+                    "Este computador tem itens que não estão no resultado da sincronização, e não há onde guardar uma cópia do acervo antes de substituí-lo. Nada foi gravado nem substituído.",
+                )?;
+                report.notes.push(format!(
+                    "{} deste computador não {} no resultado desta sincronização e nenhuma alteração registrada explica a falta: {}. Uma cópia do acervo daqui, de antes da sincronização, foi guardada em {}; nada foi reinserido.",
+                    plural(lost.len(), "item", "itens"),
+                    if lost.len() == 1 { "está" } else { "estão" },
+                    crate::coverage::describe(&lost),
+                    kept.display()
+                ));
+            }
+        }
         let mut failures = Vec::new();
         for path in &targets {
             // What the rewrite would drop is kept first, beside it; if that
             // cannot be done, the copy is left as it is.
             if preserve.contains(path) {
                 match sharedfolder::keep_aside(path) {
-                    Ok(aside) => report.notes.push(format!(
-                        "A cópia de {} tinha alterações que não puderam ser reaplicadas; ela foi guardada em {}.",
-                        path.display(),
-                        aside.display()
-                    )),
+                    Ok(aside) => report.notes.push(match uncovered.get(path) {
+                        Some(lost) => format!(
+                            "A cópia de {} tinha {} que não {} no resultado desta sincronização: {}. Ela foi guardada em {} antes de ser regravada; nada foi reinserido no acervo.",
+                            path.display(),
+                            plural(lost.len(), "item", "itens"),
+                            if lost.len() == 1 { "está" } else { "estão" },
+                            crate::coverage::describe(lost),
+                            aside.display()
+                        ),
+                        None => format!(
+                            "A cópia de {} tinha alterações que não puderam ser reaplicadas; ela foi guardada em {}.",
+                            path.display(),
+                            aside.display()
+                        ),
+                    }),
                     Err(error) => {
                         failures.push(format!(
                             "{} não foi regravada, para não perder o que só ela tem: {error}",
@@ -5439,7 +5520,26 @@ impl Store {
         report.notes.extend(failures);
         // Only now, with the folders written, does this become this
         // computer's last write.
-        if let Some(path) = guard_path {
+        let mut write_guard = true;
+        if let Some((path, lost)) = guard_path.and_then(|p| uncovered.get(p).map(|l| (p, l))) {
+            match sharedfolder::keep_aside(path) {
+                Ok(aside) => report.notes.push(format!(
+                    "A cópia de segurança deste computador tinha {} que não {} no resultado desta sincronização: {}. Ela foi guardada em {}; nada foi reinserido no acervo.",
+                    plural(lost.len(), "item", "itens"),
+                    if lost.len() == 1 { "está" } else { "estão" },
+                    crate::coverage::describe(lost),
+                    aside.display()
+                )),
+                Err(error) => {
+                    write_guard = false;
+                    report.notes.push(format!(
+                        "A cópia de segurança deste computador não foi regravada, para não perder o que só ela tem ({}): {error}",
+                        crate::coverage::describe(lost)
+                    ));
+                }
+            }
+        }
+        if let Some(path) = guard_path.filter(|_| write_guard) {
             if let Err(error) = sharedfolder::write(path, key, &request, &payload, &blobs) {
                 report.notes.push(format!(
                     "A cópia de segurança deste computador não foi gravada: {error}"

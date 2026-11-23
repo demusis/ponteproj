@@ -97,6 +97,7 @@ pub mod categories;
 /// Categories on the screens: chips, picker, filter and manager.
 #[cfg(feature = "desktop")]
 pub mod category_ui;
+pub(crate) mod coverage;
 /// Projects on the task screens: chip, picker and filter.
 #[cfg(feature = "desktop")]
 pub mod project_ui;

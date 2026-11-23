@@ -215,6 +215,8 @@ internal object SyncRunner {
         for (n in listOf("acervo.sqlite3", "acervo.sqlite3-wal", "acervo.sqlite3-shm", PENDING)) {
             File(ctx.filesDir, n).delete()
         }
+        // Outputs staged beside the pending copy belong to the library that is going away too.
+        SyncIo.pendingCopies(ctx.filesDir).forEach { it.delete() }
         // A share in progress belonged to the data that is going away: its draft and copy are removed too.
         ShareDraftStore(File(ctx.filesDir, ShareDraftStore.DIR)).wipe()
         // The calendar sync remembers events of the old library: forget them and turn it off.
@@ -298,6 +300,9 @@ internal object SyncRunner {
         SyncIo.removeStale(dir)
         val work = File(dir, SyncIo.WORK_PREFIX + System.currentTimeMillis() + SyncIo.WORK_SUFFIX)
         val pending = pendingFile(ctx)
+        // Every pending copy kept by earlier exchanges: the pending one and any output
+        // staged beside it ("pendente-novo…"). All of them are read again.
+        val pendings = SyncIo.pendingCopies(pending.parentFile ?: ctx.filesDir)
         SyncIo.withCleanup(listOf(work)) {
             if (!ready) throw CoreException("O acervo ainda não está pronto. Espere um instante e tente de novo.")
             if (note != null) check(core.saveNote(note.first, note.second))
@@ -306,7 +311,7 @@ internal object SyncRunner {
             val original = readUri(ctx, uri, work)
 
             // b. let the core merge; it may rewrite the working file (atomically)
-            val r = check(core.sync(work.absolutePath, if (pending.exists()) pending.absolutePath else "", pass))
+            val r = check(core.sync(work.absolutePath, pendings.joinToString("\n") { it.absolutePath }, pass))
             // What another device saved as holidays is in force here now.
             if (r.has("holidays")) mirrorHolidays(ctx, r.optString("holidays"))
             val summary = r.optString("summary")
@@ -343,7 +348,11 @@ internal object SyncRunner {
                         if (SyncIo.unchanged(want, readUri(ctx, uri, null, Long.MAX_VALUE))) { ok = true; break }
                     }
                     if (ok) {
-                        if (SyncIo.mayDropPending(pendingSettled)) pending.delete()
+                        if (SyncIo.mayDropPending(pendingSettled)) {
+                            pending.delete()
+                            // What the staged copies held is merged into what is now on Drive.
+                            pendings.forEach { it.delete() }
+                        }
                         // Verified on Drive: the staged output is not needed.
                         if (kept != pending) kept.delete()
                     } else {
@@ -352,11 +361,11 @@ internal object SyncRunner {
                             "As alterações ficaram guardadas neste aparelho e vão na próxima sincronização."
                     }
                 }
-            } else if (pending.exists() && SyncIo.mayDropPending(pendingSettled)) {
-                // f. nothing written although the pending copy was read too:
-                // the Drive copy already holds everything it had (otherwise
-                // the core would have rewritten it), so it is no longer needed.
-                pending.delete()
+            } else if (pendings.isNotEmpty() && SyncIo.mayDropPending(pendingSettled)) {
+                // f. nothing written although the pending copies were read too:
+                // the Drive copy already holds everything they had (otherwise
+                // the core would have rewritten it), so they are no longer needed.
+                pendings.forEach { it.delete() }
             }
 
             // e. conflicts
@@ -538,10 +547,37 @@ internal object SyncIo {
      * and the output is staged beside it under another name. Returns where it is.
      */
     fun keepNewOutput(work: File, pending: File, coreSaysSettled: Boolean): File {
-        val target = if (mayDropPending(coreSaysSettled)) pending else File(pending.parentFile, STAGED)
+        val target = if (mayDropPending(coreSaysSettled)) pending else stagedTarget(pending.parentFile!!)
         keep(work, target)
         return target
     }
+
+    /**
+     * Where a new output is staged: "pendente-novo.ponte", or the first free
+     * "pendente-novo-N.ponte" when an earlier staged copy is still there (the core
+     * did not call it settled, so it may hold the only copy of some work).
+     */
+    fun stagedTarget(dir: File): File {
+        val first = File(dir, STAGED)
+        if (!first.exists()) return first
+        var n = 2
+        while (true) {
+            val next = File(dir, STAGED.removeSuffix(".ponte") + "-" + n + ".ponte")
+            if (!next.exists()) return next
+            n++
+        }
+    }
+
+    /**
+     * The pending copies in [dir], read again by every exchange until the core calls
+     * them settled: "pendente.ponte" and the outputs staged beside it. A copy the core
+     * kept aside ([ARCHIVE_MARK]) and a half-written one (".parte") are not among them.
+     */
+    fun pendingCopies(dir: File): List<File> =
+        (dir.listFiles() ?: emptyArray()).filter {
+            it.isFile && it.name.startsWith("pendente") && it.name.endsWith(".ponte") &&
+                !it.name.contains(ARCHIVE_MARK)
+        }.sortedBy { it.name }
 
     /**
      * Keeps [from] as [to] so that [to] is either the old file or the whole

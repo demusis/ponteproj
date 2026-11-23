@@ -104,20 +104,44 @@ fn folder_config(member: &str, files: Vec<String>) -> IntranetConfig {
     }
 }
 
-fn sync(store: &mut Store) -> crate::intranet::FolderSyncReport {
+/// Since F0 (R2-B4) an exchange names the items it keeps aside because the
+/// result does not cover them. The plain helpers below fail on such a note,
+/// so every scenario here also proves there is no false alarm; the tests
+/// that expect one use the `_raw` helpers.
+fn quiet(report: crate::intranet::FolderSyncReport) -> crate::intranet::FolderSyncReport {
+    assert!(
+        !report
+            .notes
+            .iter()
+            .any(|n| n.contains("no resultado desta sincronização")),
+        "unexpected loss notice: {:?}",
+        report.notes
+    );
+    report
+}
+
+fn sync_raw(store: &mut Store) -> crate::intranet::FolderSyncReport {
     let cfg = store.load_intranet_config().unwrap();
     store
         .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
         .unwrap()
 }
 
-fn sync_in(store: &mut Store, files: Vec<String>) -> crate::intranet::FolderSyncReport {
+fn sync(store: &mut Store) -> crate::intranet::FolderSyncReport {
+    quiet(sync_raw(store))
+}
+
+fn sync_in_raw(store: &mut Store, files: Vec<String>) -> crate::intranet::FolderSyncReport {
     let mut cfg = store.load_intranet_config().unwrap();
     cfg.folder_files = files;
     store.save_intranet_config(&cfg).unwrap();
     store
         .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
         .unwrap()
+}
+
+fn sync_in(store: &mut Store, files: Vec<String>) -> crate::intranet::FolderSyncReport {
+    quiet(sync_in_raw(store, files))
 }
 
 /// Two computers sharing one folder, in sync on a library with one SIGADOC
@@ -1520,7 +1544,6 @@ fn r2_b3_notes_written_on_two_devices() {
 /// nor kept aside. The item must survive somewhere (library or a copy kept
 /// aside).
 #[test]
-#[ignore = "R2-B4: espelho perdedor sobrescrito sem cópia guardada (defeito do código atual)"]
 fn r2_b4_a_losing_mirror_with_an_item_in_no_journal_is_kept_aside() {
     let mut f = Folders::new();
     // B: a forked library (alone, local mode), with Y, that then publishes
@@ -1551,7 +1574,8 @@ fn r2_b4_a_losing_mirror_with_an_item_in_no_journal_is_kept_aside() {
         f.a.save_task(&task).unwrap();
     }
     f.sync_a(Where::Drive);
-    let report = f.sync_a(Where::Both);
+    let files = f.files(Where::Both);
+    let report = sync_in_raw(&mut f.a, files);
     eprintln!("R2-B4 report notes: {:?}", report.notes);
     let in_a =
         f.a.list_documents("")
@@ -2246,7 +2270,18 @@ fn f0_a_resumed_plan_that_created_its_record_refuses_another_record_with_its_req
     p.b.conn
         .execute_batch("DROP TRIGGER falha_simulada")
         .unwrap();
-    sync(&mut p.b);
+    // B's record went into A's (same request id): its automatic triage task
+    // is in no copy any more, so B keeps a copy of its library and says so.
+    let report = sync_raw(&mut p.b);
+    eprintln!(
+        "F0 plan: notes {:?} cards {:?}",
+        report.notes,
+        p.b.list_sync_conflicts()
+            .unwrap()
+            .iter()
+            .map(|c| c.item_label.clone())
+            .collect::<Vec<_>>()
+    );
     let x_on_b = doc_by_number(&p.b, &number("a", 1));
     let tasks_on_x = |store: &Store| -> Vec<String> {
         store
@@ -2273,6 +2308,14 @@ fn f0_a_resumed_plan_that_created_its_record_refuses_another_record_with_its_req
         p.b.load_document(x_on_b).unwrap().note,
         note_before,
         "note on X"
+    );
+    // F0 (R2-B4): B's record went into A's in the replay (same request id),
+    // with no conflict card, so B kept a copy of its library and named it.
+    let title = plan.document.as_ref().unwrap().title.trim().to_owned();
+    assert!(
+        report.notes.iter().any(|n| n.contains(&title)),
+        "B's record is named: {:?}",
+        report.notes
     );
 }
 
@@ -2448,4 +2491,132 @@ fn f0_a_refused_foreign_change_becomes_a_card_of_its_author_once() {
         f.a.load_document(doc).unwrap().note,
         f.b.load_document(doc).unwrap().note
     );
+}
+
+// ------------------------------- F0: nothing dropped unseen (item 4) --
+
+fn aside_files(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| n.contains("-divergente-"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// F0 (R2-B4), the library side: after A rewrote the pen drive without Y
+/// (the case above), the forked library that made Y exchanges again and
+/// would adopt a result without it. Before replacing its library it keeps a
+/// verified copy of it and names Y in the report; Y is not put back.
+#[test]
+fn f0_a_library_that_would_lose_an_item_keeps_a_copy_and_says_which() {
+    let mut f = Folders::new();
+    let lineage = crate::sharedfolder::read_header(&f.drive)
+        .unwrap()
+        .unwrap()
+        .lineage;
+    let dir = f.dir.path().join("forked");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut forked = Store::open(&dir.join("c.sqlite3")).unwrap();
+    forked
+        .import_capture(&capture(
+            &number("c", 1),
+            "Documento Y só do acervo bifurcado",
+        ))
+        .unwrap();
+    std::fs::remove_file(&f.pen).unwrap();
+    let mut cfg = folder_config("Bifurcado", f.files(Where::Pen));
+    cfg.folder_lineage = lineage;
+    forked.save_intranet_config(&cfg).unwrap();
+    sync(&mut forked);
+    let doc = f.a.list_documents("").unwrap()[0].id;
+    for n in 0..8 {
+        let mut task = crate::tasks::Task::new(doc);
+        task.title = format!("enchimento {n}");
+        f.a.save_task(&task).unwrap();
+    }
+    f.sync_a(Where::Drive);
+    let files = f.files(Where::Both);
+    let report_a = sync_in_raw(&mut f.a, files);
+    assert!(
+        report_a.notes.iter().any(|n| n.contains(&number("c", 1))),
+        "A names Y: {:?}",
+        report_a.notes
+    );
+    let report = sync_raw(&mut forked);
+    eprintln!("F0 forked notes: {:?}", report.notes);
+    let note = report
+        .notes
+        .iter()
+        .find(|n| n.contains(&number("c", 1)))
+        .unwrap_or_else(|| panic!("Y not named: {:?}", report.notes));
+    assert!(note.contains("copias-antes-da-substituicao"), "{note}");
+    let backups: Vec<_> = std::fs::read_dir(dir.join("copias-antes-da-substituicao"))
+        .unwrap()
+        .collect();
+    assert!(!backups.is_empty());
+    assert!(
+        !forked
+            .list_documents("")
+            .unwrap()
+            .iter()
+            .any(|d| d.document_number == number("c", 1)),
+        "no automatic re-insertion"
+    );
+}
+
+/// F0 (R2-B4), no false alarm: A sends a document to the Lixeira and purges
+/// it, publishing to the Drive only; B, whose pen drive copy still has it,
+/// exchanges with both. The removal is in the journal of the result, so
+/// nothing is kept aside and no item is named.
+#[test]
+fn f0_a_recorded_removal_keeps_nothing_aside() {
+    let mut f = Folders::new();
+    let backups = f.dir.path().join("copias-antes-da-substituicao");
+    let before: Vec<_> = std::fs::read_dir(&backups)
+        .map(|d| d.map(|e| e.unwrap().file_name()).collect())
+        .unwrap_or_default();
+    let x =
+        f.a.import_capture(&capture(&number("a", 1), "Documento X"))
+            .unwrap()
+            .document_id;
+    let mut task = crate::tasks::Task::standalone();
+    task.title = "Tarefa avulsa que vai embora".into();
+    let task = f.a.save_task(&task).unwrap();
+    f.sync_a(Where::Both);
+    f.sync_b(Where::Both);
+    for (kind, id) in [
+        (crate::trash::Kind::Document, x),
+        (crate::trash::Kind::Task, task),
+    ] {
+        let target = || crate::trash::Target { kind, id };
+        f.a.trash_item(target()).unwrap();
+        f.a.purge_trash_item(target()).unwrap();
+    }
+    f.sync_a(Where::Drive);
+    let report = f.sync_b(Where::Both);
+    let report_a = f.sync_a(Where::Both);
+    eprintln!("F0 notes B: {:?} A: {:?}", report.notes, report_a.notes);
+    for notes in [&report.notes, &report_a.notes] {
+        assert!(
+            !notes.iter().any(
+                |n| n.contains("não estão no resultado") || n.contains("não está no resultado")
+            ),
+            "{notes:?}"
+        );
+    }
+    assert!(aside_files(f.pen.parent().unwrap()).is_empty());
+    assert!(aside_files(f.drive.parent().unwrap()).is_empty());
+    let after: Vec<_> = std::fs::read_dir(&backups)
+        .map(|d| d.map(|e| e.unwrap().file_name()).collect())
+        .unwrap_or_default();
+    assert_eq!(before, after, "a copy of a library was kept");
+    assert!(!f
+        .b
+        .list_documents("")
+        .unwrap()
+        .iter()
+        .any(|d| d.document_number == number("a", 1)));
 }
