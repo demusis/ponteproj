@@ -3046,7 +3046,7 @@ impl PonteApp {
             "Exportando o acervo em pasta aberta…".into(),
             WorkKind::OpenExport,
             move |reporter| {
-                let result = Store::open_service(&db_path).and_then(|store| {
+                let result = Store::open_read_only(&db_path).and_then(|store| {
                     crate::open_export::export_open(
                         &store,
                         &folder,

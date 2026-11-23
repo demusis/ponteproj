@@ -3,7 +3,9 @@
 //! programs), in an EMPTY folder the person chooses.
 //!
 //! Nothing here encrypts: the folder is readable by anyone who holds it. The
-//! library is only read (never changed), nothing is sent anywhere, and the
+//! library is only read: the window opens it with a read-only connection
+//! (`Store::open_read_only`: no migration, no step that writes), so the file
+//! is not changed by the export. Nothing is sent anywhere, and the
 //! work goes document by document, so the library is never held in memory
 //! (one document with its versions and files at a time; the small sets, such
 //! as tasks and resources, are held whole).
@@ -57,13 +59,16 @@ acervo.json (versao_do_formato 1)
       tarefas[ids], anexos[{id,nome,tipo,tamanho,sha256,descricao,adicionado_por,
                adicionado_em,em_lixeira,arquivo,erro}],
       vinculos[{id,origem_id,destino_id,tipo,motivo,ativo,criado_em}]
-  tarefas[]: id, em_lixeira, excluido_em, documento_numero, tarefa (campos do Ponte:
-      uid, document_id, title, status, due_date, project_uid, categories, ...)
+  tarefas[]: id, em_lixeira, excluido_em, documento_numero, subtarefas[ids], tarefa
+      (campos do Ponte: uid, document_id, title, status, due_date, parent_task_id,
+      dependencies[ids], estimate_minutes, project_uid, categories, ...)
   projetos[]: projeto (uid, name, status, ...); atendimentos[]: atendimento (id,
-      document_id, ...); recursos[]: recurso (uid, name, ...); usos_de_recursos[]:
+      document_id, task_ids, events[{when,actor,kind,detail}] = histórico e cobranças, ...); recursos[]: recurso (uid, name, ...); usos_de_recursos[]:
       uso (uid, resource_uid, document_id, task_id, ...); categorias[]: categoria
       (uid, name, ...)
   anexos_avulsos[]: dono_tipo (tarefa|atendimento), dono_id, + os campos de um anexo
+  avisos[]: um texto por item que não pôde ser lido ou gravado (o que era e onde estava);
+      os PDFs e anexos com problema também trazem o motivo em pdfs[].erro / anexos[].erro
   lixeira[]: tipo (documento|versao|tarefa|anexo), id, documento_id, excluido_em
 Referências entre itens: por id (documentos, tarefas, atendimentos, versões, anexos)
 e por uid (projetos, recursos, categorias). Datas em ISO 8601 como o Ponte as guarda.";
@@ -291,6 +296,7 @@ struct TaskJson<'a> {
     em_lixeira: bool,
     excluido_em: Option<String>,
     documento_numero: Option<String>,
+    subtarefas: Vec<i64>,
     tarefa: &'a Task,
 }
 
@@ -323,7 +329,35 @@ struct DocIndex {
     categories: Vec<String>,
 }
 
+/// What a task block needs to name the tasks it points to.
+#[derive(Default)]
+struct TaskRefs {
+    titles: HashMap<i64, String>,
+    children: HashMap<i64, Vec<i64>>,
+}
+
+impl TaskRefs {
+    fn new(tasks: &[(Task, Option<String>)]) -> Self {
+        let mut refs = Self::default();
+        for (task, _) in tasks {
+            refs.titles.insert(task.id, one_line(&task.title));
+            if let Some(parent) = task.parent_task_id {
+                refs.children.entry(parent).or_default().push(task.id);
+            }
+        }
+        refs
+    }
+
+    fn name(&self, id: i64) -> String {
+        match self.titles.get(&id) {
+            Some(title) => format!("tarefa {id} ({title})"),
+            None => format!("tarefa {id} (não exportada)"),
+        }
+    }
+}
+
 struct Run<'a> {
+    refs: TaskRefs,
     store: &'a Store,
     root: PathBuf,
     step: &'a dyn Fn(&str),
@@ -364,6 +398,7 @@ pub fn export_open(
             folder: folder.to_path_buf(),
             ..Default::default()
         },
+        refs: TaskRefs::default(),
         trash: HashMap::new(),
         categories: BTreeMap::new(),
         projects: BTreeMap::new(),
@@ -411,6 +446,50 @@ fn unseal_json<T: DeserializeOwned>(blob: &[u8]) -> Result<T> {
     Ok(serde_json::from_slice(&protection::unseal(blob)?)?)
 }
 
+/// Every row of a query, mapped; a failure of the query itself is the error.
+fn query_all<R>(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+    map: impl FnMut(&rusqlite::Row) -> rusqlite::Result<R>,
+) -> Result<Vec<R>> {
+    let mut statement = conn.prepare(sql)?;
+    let rows = statement
+        .query_map(params, map)?
+        .collect::<rusqlite::Result<Vec<R>>>()?;
+    Ok(rows)
+}
+
+/// Reads a list one record at a time: a record that cannot be read costs
+/// that record only, and the reason goes into `problems` (what it was, where).
+fn tolerant<R, T>(
+    problems: &mut Vec<String>,
+    what: &str,
+    rows: Result<Vec<R>>,
+    decode: impl Fn(R) -> (String, Result<T>),
+) -> Vec<T> {
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(error) => {
+            problems.push(format!(
+                "{what}: não foi possível ler a lista, e nada dela foi exportado: {error:#}"
+            ));
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let (label, result) = decode(row);
+        match result {
+            Ok(item) => out.push(item),
+            Err(error) => problems.push(format!(
+                "{what}: {label} não pôde ser lido e ficou de fora: {error:#}"
+            )),
+        }
+    }
+    out
+}
+
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -448,6 +527,8 @@ struct DocRows {
     analyses: Vec<(i64, i64, String, Analysis)>,
     context: WorkContext,
     links: Vec<LinkJson>,
+    /// What could not be read, each already saying what it was.
+    problems: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -488,7 +569,8 @@ impl Run<'_> {
 
     fn all(&mut self, started: &chrono::DateTime<chrono::Local>) -> Result<()> {
         (self.step)("Lendo o que há no acervo…");
-        let conn = &self.store.conn;
+        let store = self.store;
+        let conn = &store.conn;
         // The Lixeira, as a map.
         {
             let mut statement =
@@ -506,17 +588,18 @@ impl Run<'_> {
                 self.trash.insert((kind, id), (document, at));
             }
         }
-        let categories = self.store.list_categories()?;
+        let categories = self.read_categories();
         self.categories = categories
             .iter()
             .map(|c| (c.uid.clone(), c.name.clone()))
             .collect();
-        let projects = self.store.list_projects()?;
+        let projects = self.read_projects();
         self.projects = projects
             .iter()
             .map(|p| (p.uid.clone(), p.name.clone()))
             .collect();
-        let tasks = self.read_tasks()?;
+        let tasks = self.read_tasks();
+        self.refs = TaskRefs::new(&tasks);
         let mut tasks_by_document: HashMap<i64, Vec<usize>> = HashMap::new();
         for (index, (task, _)) in tasks.iter().enumerate() {
             if let Some(document) = task.document_id {
@@ -610,6 +693,12 @@ impl Run<'_> {
                 em_lixeira: trashed.is_some(),
                 excluido_em: trashed.clone(),
                 documento_numero: task.document_id.and_then(|d| doc_numbers.get(&d).cloned()),
+                subtarefas: self
+                    .refs
+                    .children
+                    .get(&task.id)
+                    .cloned()
+                    .unwrap_or_default(),
                 tarefa: task,
             })
             .collect();
@@ -626,7 +715,7 @@ impl Run<'_> {
         serde_json::to_writer(&mut json, &project_json)?;
         self.report.projects = projects.len();
 
-        let attendances = self.store.list_saiop_attendances()?;
+        let attendances = self.read_attendances();
         json.write_all(b",\n\"atendimentos\": ")?;
         let attendance_json: Vec<_> = attendances
             .iter()
@@ -635,8 +724,8 @@ impl Run<'_> {
         serde_json::to_writer(&mut json, &attendance_json)?;
         self.report.attendances = attendances.len();
 
-        let resources = self.store.list_resources()?;
-        let uses = self.store.list_resource_uses()?;
+        let resources = self.read_resources();
+        let uses = self.read_uses();
         json.write_all(b",\n\"recursos\": ")?;
         let resource_json: Vec<_> = resources
             .iter()
@@ -664,6 +753,9 @@ impl Run<'_> {
         let loose = self.loose_attachments(&tasks, &attendances)?;
         json.write_all(b",\n\"anexos_avulsos\": ")?;
         serde_json::to_writer(&mut json, &loose)?;
+
+        json.write_all(b",\n\"avisos\": ")?;
+        serde_json::to_writer(&mut json, &self.report.warnings)?;
 
         let trash_json: Vec<TrashJson> = self
             .trash
@@ -704,31 +796,191 @@ impl Run<'_> {
         Ok(())
     }
 
-    fn read_tasks(&self) -> Result<Vec<(Task, Option<String>)>> {
-        let conn = &self.store.conn;
-        let mut statement = conn.prepare("SELECT id,document_id,payload FROM tasks ORDER BY id")?;
-        let rows = statement
-            .query_map([], |r| {
+    fn flush(&mut self, problems: Vec<String>) {
+        for problem in problems {
+            self.warn(problem);
+        }
+    }
+
+    fn read_categories(&mut self) -> Vec<crate::categories::Category> {
+        let mut problems = Vec::new();
+        let rows = query_all(
+            &self.store.conn,
+            "SELECT uid,payload FROM categories",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)),
+        );
+        let mut out = tolerant(&mut problems, "Categorias", rows, |(uid, blob)| {
+            let result = unseal_json::<crate::categories::Category>(&blob).map(|mut c| {
+                c.uid = uid.clone();
+                c
+            });
+            (format!("a categoria «{uid}»"), result)
+        });
+        out.sort_by_key(|c| (c.name.to_lowercase(), c.uid.clone()));
+        self.flush(problems);
+        out
+    }
+
+    fn read_projects(&mut self) -> Vec<crate::projects::Project> {
+        let mut problems = Vec::new();
+        let rows = query_all(
+            &self.store.conn,
+            "SELECT uid,payload FROM projects",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)),
+        );
+        let mut out = tolerant(&mut problems, "Projetos", rows, |(uid, blob)| {
+            let result = unseal_json::<crate::projects::Project>(&blob).map(|mut p| {
+                p.uid = uid.clone();
+                p
+            });
+            (format!("o projeto «{uid}»"), result)
+        });
+        out.sort_by_key(|p| (p.name.to_lowercase(), p.uid.clone()));
+        self.flush(problems);
+        out
+    }
+
+    fn read_attendances(&mut self) -> Vec<crate::saiop::SaiopAttendance> {
+        let mut problems = Vec::new();
+        let rows = query_all(
+            &self.store.conn,
+            "SELECT id,batch_id,source_row,document_id,payload FROM saiop_attendances ORDER BY id",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ))
+            },
+        );
+        let out = tolerant(
+            &mut problems,
+            "Atendimentos",
+            rows,
+            |(id, batch, source_row, document, blob)| {
+                let result = unseal_json::<crate::saiop::SaiopAttendance>(&blob).map(|mut a| {
+                    a.id = id;
+                    a.batch_id = batch;
+                    a.source_row = source_row.map(|r| r as usize);
+                    a.document_id = document;
+                    a
+                });
+                (format!("o atendimento {id}"), result)
+            },
+        );
+        self.flush(problems);
+        out
+    }
+
+    fn read_resources(&mut self) -> Vec<crate::resources::Resource> {
+        let mut problems = Vec::new();
+        let rows = query_all(
+            &self.store.conn,
+            "SELECT uid,status,payload FROM resources",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        );
+        let mut out = tolerant(&mut problems, "Recursos", rows, |(uid, status, blob)| {
+            let result = unseal_json::<crate::resources::Resource>(&blob).map(|mut r| {
+                r.uid = uid.clone();
+                if let Ok(status) = crate::resources::ResourceStatus::parse(&status) {
+                    r.status = status;
+                }
+                r
+            });
+            (format!("o recurso «{uid}»"), result)
+        });
+        out.sort_by_key(|r| (r.name.to_lowercase(), r.uid.clone()));
+        self.flush(problems);
+        out
+    }
+
+    fn read_uses(&mut self) -> Vec<crate::resources::ResourceUse> {
+        let mut problems = Vec::new();
+        let rows = query_all(
+            &self.store.conn,
+            "SELECT uid,resource_uid,status,document_id,payload FROM resource_uses",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ))
+            },
+        );
+        let mut out = tolerant(
+            &mut problems,
+            "Usos de recursos",
+            rows,
+            |(uid, resource_uid, status, document, blob)| {
+                let result = unseal_json::<crate::resources::ResourceUse>(&blob).map(|mut u| {
+                    u.uid = uid.clone();
+                    u.resource_uid = resource_uid;
+                    if let Ok(status) = crate::resources::UseStatus::parse(&status) {
+                        u.status = status;
+                    }
+                    u.document_id = document;
+                    u
+                });
+                (format!("o uso «{uid}»"), result)
+            },
+        );
+        out.sort_by_key(|u| (u.start.clone(), u.uid.clone()));
+        self.flush(problems);
+        out
+    }
+
+    fn read_tasks(&mut self) -> Vec<(Task, Option<String>)> {
+        let mut problems = Vec::new();
+        let rows = query_all(
+            &self.store.conn,
+            "SELECT id,document_id,payload FROM tasks ORDER BY id",
+            [],
+            |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, Option<i64>>(1)?,
                     r.get::<_, Vec<u8>>(2)?,
                 ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut out = Vec::new();
-        for (id, document, blob) in rows {
-            let mut task: Task = unseal_json(&blob)?;
-            task.id = id;
-            task.document_id = document;
-            let trashed = self
-                .trash
-                .get(&("task".to_owned(), id))
-                .or_else(|| document.and_then(|d| self.trash.get(&("document".to_owned(), d))))
-                .map(|(_, at)| at.clone());
-            out.push((task, trashed));
-        }
-        Ok(out)
+            },
+        );
+        let tasks = tolerant(&mut problems, "Tarefas", rows, |(id, document, blob)| {
+            let result = unseal_json::<Task>(&blob).map(|mut t| {
+                t.id = id;
+                t.document_id = document;
+                t
+            });
+            (format!("a tarefa {id}"), result)
+        });
+        self.flush(problems);
+        tasks
+            .into_iter()
+            .map(|task| {
+                let trashed = self
+                    .trash
+                    .get(&("task".to_owned(), task.id))
+                    .or_else(|| {
+                        task.document_id
+                            .and_then(|d| self.trash.get(&("document".to_owned(), d)))
+                    })
+                    .map(|(_, at)| at.clone());
+                (task, trashed)
+            })
+            .collect()
     }
 
     fn read_document(&self, id: i64) -> Result<DocRows> {
@@ -738,127 +990,146 @@ impl Run<'_> {
             [id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let mut captures = Vec::new();
-        {
-            let mut statement = conn.prepare(
-                "SELECT id,created_at,payload FROM captures WHERE document_id=?1 ORDER BY id",
-            )?;
-            let rows = statement
-                .query_map([id], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, Vec<u8>>(2)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (capture_id, at, blob) in rows {
-                captures.push((capture_id, at, unseal_json::<Capture>(&blob)?));
-            }
-        }
-        let mut notes = Vec::new();
-        {
-            let mut statement = conn.prepare(
-                "SELECT id,created_at,payload FROM notes WHERE document_id=?1 ORDER BY id",
-            )?;
-            let rows = statement
-                .query_map([id], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, Vec<u8>>(2)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (note_id, at, blob) in rows {
-                notes.push(NoteJson {
+        let mut problems = Vec::new();
+        let rows = query_all(
+            conn,
+            "SELECT id,created_at,payload FROM captures WHERE document_id=?1 ORDER BY id",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        );
+        let captures = tolerant(&mut problems, "Versões", rows, |(capture_id, at, blob)| {
+            (
+                format!("a versão de código {capture_id}"),
+                unseal_json::<Capture>(&blob).map(|c| (capture_id, at, c)),
+            )
+        });
+        let rows = query_all(
+            conn,
+            "SELECT id,created_at,payload FROM notes WHERE document_id=?1 ORDER BY id",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        );
+        let notes = tolerant(&mut problems, "Notas", rows, |(note_id, at, blob)| {
+            (
+                format!("a nota {note_id} de {at}"),
+                unseal_json::<String>(&blob).map(|texto| NoteJson {
                     id: note_id,
                     criada_em: at,
-                    texto: unseal_json::<String>(&blob)?,
-                });
-            }
-        }
-        let mut drafts = Vec::new();
-        {
-            let mut statement = conn.prepare(
-                "SELECT id,capture_id,created_at,payload FROM drafts WHERE document_id=?1 ORDER BY id",
-            )?;
-            let rows = statement
-                .query_map([id], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, Vec<u8>>(3)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (draft_id, capture_id, at, blob) in rows {
-                drafts.push((draft_id, capture_id, at, unseal_json::<DraftRow>(&blob)?));
-            }
-        }
-        let mut analyses = Vec::new();
-        {
-            let mut statement = conn.prepare(
-                "SELECT id,capture_id,created_at,payload FROM analyses WHERE document_id=?1 ORDER BY id",
-            )?;
-            let rows = statement
-                .query_map([id], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, Vec<u8>>(3)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (analysis_id, capture_id, at, blob) in rows {
-                analyses.push((analysis_id, capture_id, at, unseal_json::<Analysis>(&blob)?));
-            }
-        }
-        let context = match conn
-            .query_row(
-                "SELECT payload FROM work_context WHERE document_id=?1",
-                [id],
-                |r| r.get::<_, Vec<u8>>(0),
+                    texto,
+                }),
             )
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })? {
-            Some(blob) => unseal_json::<WorkContext>(&blob)?,
-            None => WorkContext::default(),
-        };
-        let mut links = Vec::new();
-        {
-            let mut statement = conn.prepare(
-                "SELECT id,source_id,target_id,active,payload FROM document_links WHERE source_id=?1 OR target_id=?1 ORDER BY id",
-            )?;
-            let rows = statement
-                .query_map([id], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, bool>(3)?,
-                        r.get::<_, Vec<u8>>(4)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (link_id, source, target, active, blob) in rows {
-                let payload: LinkRow = unseal_json(&blob)?;
-                links.push(LinkJson {
-                    id: link_id,
-                    origem_id: source,
-                    destino_id: target,
-                    tipo: payload.kind,
-                    motivo: payload.reason,
-                    ativo: active,
-                    criado_em: payload.created_at,
-                });
+        });
+        let rows = query_all(
+            conn,
+            "SELECT id,capture_id,created_at,payload FROM drafts WHERE document_id=?1 ORDER BY id",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                ))
+            },
+        );
+        let drafts = tolerant(
+            &mut problems,
+            "Minutas",
+            rows,
+            |(draft_id, capture_id, at, blob)| {
+                (
+                    format!("a minuta {draft_id} de {at}"),
+                    unseal_json::<DraftRow>(&blob).map(|row| (draft_id, capture_id, at, row)),
+                )
+            },
+        );
+        let rows = query_all(
+            conn,
+            "SELECT id,capture_id,created_at,payload FROM analyses WHERE document_id=?1 ORDER BY id",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                ))
+            },
+        );
+        let analyses = tolerant(
+            &mut problems,
+            "Análises",
+            rows,
+            |(analysis_id, capture_id, at, blob)| {
+                (
+                    format!("a análise {analysis_id} de {at}"),
+                    unseal_json::<Analysis>(&blob).map(|a| (analysis_id, capture_id, at, a)),
+                )
+            },
+        );
+        let context = match query_all(
+            conn,
+            "SELECT payload FROM work_context WHERE document_id=?1",
+            [id],
+            |r| r.get::<_, Vec<u8>>(0),
+        )
+        .and_then(|mut rows| match rows.pop() {
+            Some(blob) => unseal_json::<WorkContext>(&blob),
+            None => Ok(WorkContext::default()),
+        }) {
+            Ok(context) => context,
+            Err(error) => {
+                problems.push(format!(
+                    "Dados de trabalho: não puderam ser lidos e ficaram de fora: {error:#}"
+                ));
+                WorkContext::default()
             }
-        }
+        };
+        let rows = query_all(
+            conn,
+            "SELECT id,source_id,target_id,active,payload FROM document_links WHERE source_id=?1 OR target_id=?1 ORDER BY id",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, bool>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ))
+            },
+        );
+        let links = tolerant(
+            &mut problems,
+            "Vínculos",
+            rows,
+            |(link_id, source, target, active, blob)| {
+                (
+                    format!("o vínculo {link_id}"),
+                    unseal_json::<LinkRow>(&blob).map(|payload| LinkJson {
+                        id: link_id,
+                        origem_id: source,
+                        destino_id: target,
+                        tipo: payload.kind,
+                        motivo: payload.reason,
+                        ativo: active,
+                        criado_em: payload.created_at,
+                    }),
+                )
+            },
+        );
         Ok(DocRows {
             latest,
             last_seen,
@@ -868,6 +1139,7 @@ impl Run<'_> {
             analyses,
             context,
             links,
+            problems,
         })
     }
 
@@ -952,20 +1224,40 @@ impl Run<'_> {
         total: usize,
     ) -> Result<Option<String>> {
         let rows = self.read_document(id)?;
-        let Some(latest) = rows
+        let fallback = (
+            0,
+            String::new(),
+            Capture {
+                schema_version: 1,
+                request_id: String::new(),
+                source_url: String::new(),
+                document_number: format!("documento-{id}"),
+                title: "(nenhuma versão legível)".into(),
+                captured_at: String::new(),
+                text: String::new(),
+                metadata: BTreeMap::new(),
+                references: Vec::new(),
+                coverage: Default::default(),
+            },
+        );
+        let latest = rows
             .captures
             .iter()
             .find(|(capture_id, _, _)| *capture_id == rows.latest)
             .or_else(|| rows.captures.last())
-        else {
-            self.warn(format!(
-                "O documento de código interno {id} não tem nenhuma versão importada e ficou de fora."
-            ));
-            return Ok(None);
-        };
+            .unwrap_or(&fallback);
         let latest_id = latest.0;
         let number = latest.2.document_number.clone();
         let title = latest.2.title.clone();
+        let label = format!("Documento {number} — {title}");
+        if rows.captures.is_empty() {
+            self.warn(format!(
+                "{label} (código interno {id}): nenhuma versão pôde ser lida; o que se leu do resto foi exportado."
+            ));
+        }
+        for problem in &rows.problems {
+            self.warn(format!("{label}: {problem}"));
+        }
         (self.step)(&format!(
             "Exportando documento {position} de {total}: {number}"
         ));
@@ -982,8 +1274,35 @@ impl Run<'_> {
         let attachments_dir = format!("{rel_dir}/anexos");
         let mut pdfs: HashMap<i64, Vec<PdfJson>> = HashMap::new();
         for (capture_id, _, _) in &rows.captures {
-            let summaries: Vec<FileSummary> =
-                self.store.list_files(*capture_id).unwrap_or_default();
+            let mut problems = Vec::new();
+            let file_rows = query_all(
+                &self.store.conn,
+                "SELECT id,metadata FROM files WHERE capture_id=?1 ORDER BY id",
+                [*capture_id],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)),
+            );
+            let summaries = tolerant(&mut problems, "PDFs", file_rows, |(file_id, blob)| {
+                (
+                    format!("o PDF {file_id} da versão {capture_id}"),
+                    unseal_json::<FileSummary>(&blob).map(|mut s| {
+                        s.id = file_id;
+                        s
+                    }),
+                )
+            });
+            for problem in problems {
+                self.warn(format!("{label}: {problem}"));
+                pdfs.entry(*capture_id).or_default().push(PdfJson {
+                    id: 0,
+                    rotulo: String::new(),
+                    url: String::new(),
+                    sha256: String::new(),
+                    tamanho: 0,
+                    situacao_do_texto: String::new(),
+                    arquivo: None,
+                    erro: Some(problem),
+                });
+            }
             for summary in summaries {
                 let blob: std::result::Result<Vec<u8>, _> = self.store.conn.query_row(
                     "SELECT payload FROM files WHERE id=?1",
@@ -1017,14 +1336,14 @@ impl Run<'_> {
                     Ok(_) => {
                         record.erro = Some("o conteúdo não confere com o registro".into());
                         self.warn(format!(
-                            "O PDF {} de {number} não confere com o registro e não foi exportado.",
+                            "{label}: o PDF {} não confere com o registro e não foi exportado.",
                             summary.id
                         ));
                     }
                     Err(error) => {
                         record.erro = Some(format!("{error:#}"));
                         self.warn(format!(
-                            "O PDF {} de {number} não pôde ser lido: {error:#}",
+                            "{label}: o PDF {} não pôde ser lido: {error:#}",
                             summary.id
                         ));
                     }
@@ -1032,14 +1351,19 @@ impl Run<'_> {
                 pdfs.entry(*capture_id).or_default().push(record);
             }
         }
-        let attachment_rows: Vec<i64> = {
-            let mut statement = self.store.conn.prepare(
-                "SELECT id FROM attachments WHERE owner_kind='document' AND owner_id=?1 ORDER BY id",
-            )?;
-            let ids = statement
-                .query_map([id], |r| r.get(0))?
-                .collect::<rusqlite::Result<Vec<i64>>>()?;
-            ids
+        let attachment_rows: Vec<i64> = match query_all(
+            &self.store.conn,
+            "SELECT id FROM attachments WHERE owner_kind='document' AND owner_id=?1 ORDER BY id",
+            [id],
+            |r| r.get::<_, i64>(0),
+        ) {
+            Ok(ids) => ids,
+            Err(error) => {
+                self.warn(format!(
+                    "{label}: a lista de anexos não pôde ser lida e nada dela foi exportado: {error:#}"
+                ));
+                Vec::new()
+            }
         };
         let mut attachments = Vec::new();
         let mut aside = Dir::default();
@@ -1162,6 +1486,7 @@ impl Run<'_> {
             links: &rows.links,
             projects: &self.projects,
             category_names: &self.categories,
+            refs: &self.refs,
         }
         .render();
         self.put(&format!("{rel_dir}/documento.md"), md.as_bytes())?;
@@ -1422,6 +1747,7 @@ struct DocumentMarkdown<'a> {
     links: &'a [LinkJson],
     projects: &'a BTreeMap<String, String>,
     category_names: &'a BTreeMap<String, String>,
+    refs: &'a TaskRefs,
 }
 
 impl DocumentMarkdown<'_> {
@@ -1503,8 +1829,8 @@ impl DocumentMarkdown<'_> {
                         let _ = writeln!(
                             s,
                             "  - PDF: [{}](anexos/{})",
-                            one_line(&pdf.rotulo),
-                            relative
+                            md_label(&pdf.rotulo),
+                            md_destination(relative)
                         );
                     }
                     (None, error) => {
@@ -1639,6 +1965,7 @@ impl DocumentMarkdown<'_> {
                 self.projects,
                 self.category_names,
                 None,
+                self.refs,
             ));
         }
 
@@ -1658,8 +1985,8 @@ impl DocumentMarkdown<'_> {
                     let _ = writeln!(
                         s,
                         "- [{}](anexos/{}) — {}{}",
-                        one_line(&attachment.nome),
-                        relative,
+                        md_label(&attachment.nome),
+                        md_destination(relative),
                         attachment.tipo,
                         if attachment.descricao.trim().is_empty() {
                             String::new()
@@ -1705,12 +2032,49 @@ impl DocumentMarkdown<'_> {
     }
 }
 
+/// A file path as a Markdown link destination: space, parentheses, `#`, `%`,
+/// `?`, brackets and angle brackets are percent-encoded, accents are kept.
+fn md_destination(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            ' ' | '(' | ')' | '#' | '%' | '?' | '[' | ']' | '<' | '>' | '\\' | '"' | '\'' => {
+                let mut buffer = [0u8; 4];
+                for byte in c.encode_utf8(&mut buffer).bytes() {
+                    let _ = write!(out, "%{byte:02X}");
+                }
+            }
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Text of a link: brackets and backslashes escaped.
+fn md_label(text: &str) -> String {
+    one_line(text)
+        .replace('\\', "\\\\")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+}
+
+/// The word for an atendimento event; the follow-ups ("cobrança") named.
+fn event_kind_label(kind: &str) -> String {
+    match kind {
+        k if k == crate::saiop::FOLLOW_UP_CONTACT_KIND => "Cobrança (contato feito)".to_owned(),
+        k if k == crate::saiop::FOLLOW_UP_NEXT_KIND => "Próxima cobrança marcada".to_owned(),
+        other => one_line(other),
+    }
+}
+
 fn task_block(
     task: &Task,
     trashed: Option<&str>,
     projects: &BTreeMap<String, String>,
     categories: &BTreeMap<String, String>,
     document: Option<&str>,
+    refs: &TaskRefs,
 ) -> String {
     let mut s = String::new();
     let done = task.status == "concluida";
@@ -1752,6 +2116,28 @@ fn task_block(
         .collect();
     if !names.is_empty() {
         let _ = writeln!(s, "  - Categorias: {}", names.join(", "));
+    }
+    if let Some(parent) = task.parent_task_id {
+        let _ = writeln!(s, "  - Subtarefa de: {}", refs.name(parent));
+    }
+    if let Some(children) = refs.children.get(&task.id) {
+        let names: Vec<String> = children.iter().map(|c| refs.name(*c)).collect();
+        let _ = writeln!(s, "  - Subtarefas: {}", names.join("; "));
+    }
+    if !task.dependencies.is_empty() {
+        let names: Vec<String> = task.dependencies.iter().map(|d| refs.name(*d)).collect();
+        let _ = writeln!(s, "  - Depende de: {}", names.join("; "));
+    }
+    if task.estimate_minutes > 0 {
+        let _ = writeln!(s, "  - Estimativa: {} min", task.estimate_minutes);
+    }
+    if !task.reminder_offsets_minutes.is_empty() {
+        let offsets: Vec<String> = task
+            .reminder_offsets_minutes
+            .iter()
+            .map(u32::to_string)
+            .collect();
+        let _ = writeln!(s, "  - Lembretes: {} min antes", offsets.join(", "));
     }
     if !task.scheduled_start.is_empty() {
         let _ = writeln!(
@@ -1866,6 +2252,7 @@ impl Run<'_> {
                         &self.projects,
                         &self.categories,
                         document,
+                        &self.refs,
                     ));
                 }
                 s.push('\n');
@@ -1963,6 +2350,27 @@ impl Run<'_> {
             }
             if !a.outcome.trim().is_empty() {
                 let _ = writeln!(s, "- Resultado: {}", one_line(&a.outcome));
+            }
+            if !a.task_ids.is_empty() {
+                let names: Vec<String> = a.task_ids.iter().map(|t| self.refs.name(*t)).collect();
+                let _ = writeln!(s, "- Tarefas vinculadas: {}", names.join("; "));
+            }
+            if !a.events.is_empty() {
+                s.push_str("\nHistórico (inclui as cobranças):\n\n");
+                for event in &a.events {
+                    let _ = writeln!(
+                        s,
+                        "- {} — {} — {}{}",
+                        event.when,
+                        one_line(nonempty(&event.actor, "sem autor")),
+                        event_kind_label(&event.kind),
+                        if event.detail.trim().is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {}", one_line(&event.detail))
+                        }
+                    );
+                }
             }
             s.push('\n');
         }
@@ -2593,5 +3001,307 @@ mod tests {
         assert_eq!(names.take("x.pdf", true), "x (3).pdf");
         assert_eq!(percent_decode("oficio%20n%C2%BA1.pdf"), "oficio nº1.pdf");
         assert_eq!(percent_decode("100%"), "100%");
+    }
+
+    fn corrupt(store: &Store, table: &str, column: &str, value: &str) {
+        let changed = store
+            .conn
+            .execute(
+                &format!("UPDATE {table} SET payload=X'0102' WHERE {column}=?1"),
+                [value],
+            )
+            .or_else(|_| {
+                store.conn.execute(
+                    &format!("UPDATE {table} SET metadata=X'0102' WHERE {column}=?1"),
+                    [value],
+                )
+            })
+            .unwrap();
+        assert_eq!(changed, 1, "{table}");
+    }
+
+    #[test]
+    fn an_unreadable_item_costs_that_item_only_and_is_listed_in_the_warnings() {
+        let mut f = fixture();
+        // A second item of each kind, so that a neighbour is left.
+        let other_category = f
+            .store
+            .save_category(&crate::categories::Category::new("Outra", 1))
+            .unwrap();
+        let other_project = f
+            .store
+            .save_project(&crate::projects::Project {
+                name: "Segundo projeto".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let spare = crate::resources::Resource {
+            name: "Cadeira".into(),
+            ..Default::default()
+        };
+        f.store.save_resource(&spare, None).unwrap();
+        f.store
+            .add_attachment(
+                Owner::Document(f.main_id),
+                "segundo.txt",
+                "",
+                "segundo anexo".as_bytes(),
+            )
+            .unwrap();
+        let first_category = f
+            .store
+            .list_categories()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.uid != other_category.uid)
+            .unwrap();
+        let first_project = f
+            .store
+            .list_projects()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.uid != other_project.uid)
+            .unwrap();
+        let projector = f
+            .store
+            .list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.name == "Projetor")
+            .unwrap();
+        let loose = f
+            .store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Tarefa sem documento")
+            .unwrap();
+        let attendance = f
+            .store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.document_id == Some(f.main_id))
+            .unwrap();
+        let first_note: i64 = f
+            .store
+            .conn
+            .query_row(
+                "SELECT min(id) FROM notes WHERE document_id=?1",
+                [f.main_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let first_attachment: i64 = f
+            .store
+            .conn
+            .query_row(
+                "SELECT min(id) FROM attachments WHERE owner_kind='document' AND owner_id=?1",
+                [f.main_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        corrupt(&f.store, "categories", "uid", &first_category.uid);
+        corrupt(&f.store, "projects", "uid", &first_project.uid);
+        corrupt(&f.store, "resources", "uid", &projector.uid);
+        corrupt(&f.store, "tasks", "id", &loose.id.to_string());
+        corrupt(
+            &f.store,
+            "saiop_attendances",
+            "id",
+            &attendance.id.to_string(),
+        );
+        corrupt(&f.store, "notes", "id", &first_note.to_string());
+        corrupt(&f.store, "attachments", "id", &first_attachment.to_string());
+        f.store
+            .conn
+            .execute("UPDATE files SET metadata=X'0102'", [])
+            .unwrap();
+
+        let report = export_open(&f.store, &f.out, &silent, &never).unwrap();
+        // The neighbours are all there.
+        assert_eq!((report.documents, report.trashed_documents), (1, 1));
+        assert_eq!(report.categories, 1);
+        assert_eq!(report.projects, 1);
+        assert_eq!(report.resources, 1);
+        assert_eq!(report.attendances, 1);
+        assert_eq!(report.tasks, 1);
+        assert!(!f.out.join(MARKER).exists());
+        let text = report.warnings.join("\n");
+        for expected in [
+            "Categorias:",
+            "Projetos:",
+            "Recursos:",
+            "Tarefas:",
+            "Atendimentos:",
+            "Notas:",
+            "PDFs:",
+            "Documento SEFAZ-PRO-2026/00001 — Solicitação de material",
+            &format!("a tarefa {}", loose.id),
+            &format!("o atendimento {}", attendance.id),
+            &format!("a nota {first_note}"),
+        ] {
+            assert!(
+                text.contains(expected),
+                "no warning with {expected}: {text}"
+            );
+        }
+        let json: serde_json::Value =
+            serde_json::from_slice(&fs::read(f.out.join("acervo.json")).unwrap()).unwrap();
+        assert_eq!(
+            json["avisos"].as_array().unwrap().len(),
+            report.warnings.len()
+        );
+        assert_eq!(json["categorias"][0]["categoria"]["name"], "Outra");
+        assert_eq!(json["projetos"][0]["projeto"]["name"], "Segundo projeto");
+        let doc = json["documentos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == f.main_id)
+            .unwrap();
+        assert_eq!(doc["notas"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["notas"][0]["texto"], "Nota refeita com acentuação.");
+        assert_eq!(doc["versoes"].as_array().unwrap().len(), 3);
+        let pdf = &doc["versoes"][2]["pdfs"][0];
+        assert!(pdf["erro"].is_string(), "{pdf}");
+        let attachments = doc["anexos"].as_array().unwrap();
+        assert_eq!(attachments.len(), 2);
+        assert!(attachments.iter().any(|a| a["erro"].is_string()));
+        assert!(attachments
+            .iter()
+            .any(|a| a["arquivo"].is_string() && a["erro"].is_null()));
+        let leia = fs::read_to_string(f.out.join("LEIA-ME.txt")).unwrap();
+        assert!(leia.contains("AVISOS") && leia.contains("Notas:"));
+    }
+
+    #[test]
+    fn links_to_files_are_percent_encoded_so_names_with_spaces_and_symbols_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let id = store
+            .import_capture(&capture("SEFAZ-PRO-2026/00031", "Links", "texto"))
+            .unwrap()
+            .document_id;
+        let name = "Ata (rev) #2 100% açaí.txt";
+        store
+            .add_attachment(Owner::Document(id), name, "", "ata".as_bytes())
+            .unwrap();
+        let out = dir.path().join("saida");
+        fs::create_dir_all(&out).unwrap();
+        export_open(&store, &out, &silent, &never).unwrap();
+        let folder = out.join("documentos/SEFAZ-PRO-2026-00031 - Links");
+        assert!(folder.join("anexos").join(name).is_file());
+        let md = fs::read_to_string(folder.join("documento.md")).unwrap();
+        assert!(
+            md.contains(
+                "[Ata (rev) #2 100% açaí.txt](anexos/Ata%20%28rev%29%20%232%20100%25%20açaí.txt)"
+            ),
+            "{md}"
+        );
+        assert_eq!(
+            md_destination("a b/c(d)#e%f?g"),
+            "a%20b/c%28d%29%23e%25f%3Fg"
+        );
+        assert_eq!(md_label("a [b] \\ c"), "a \\[b\\] \\\\ c");
+    }
+
+    #[test]
+    fn tasks_and_attendances_show_dependencies_subtasks_and_follow_ups() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let id = store
+            .import_capture(&capture("SEFAZ-PRO-2026/00041", "Cobranças", "texto"))
+            .unwrap()
+            .document_id;
+        let mut parent = store.list_tasks().unwrap().remove(0);
+        parent.title = "Tarefa mãe".into();
+        let parent_id = store.save_task(&parent).unwrap();
+        let mut prior = crate::tasks::Task::standalone();
+        prior.title = "Etapa anterior".into();
+        let prior_id = store.save_task(&prior).unwrap();
+        let mut child = crate::tasks::Task::standalone();
+        child.title = "Tarefa filha".into();
+        child.parent_task_id = Some(parent_id);
+        child.dependencies = vec![prior_id];
+        child.estimate_minutes = 90;
+        let child_id = store.save_task(&child).unwrap();
+        let attendance = store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.document_id == Some(id))
+            .unwrap();
+        store
+            .register_follow_up_contact(
+                attendance.id,
+                "Cobrado por telefone",
+                chrono::NaiveDate::from_ymd_opt(2026, 12, 15),
+            )
+            .unwrap();
+        let out = dir.path().join("saida");
+        fs::create_dir_all(&out).unwrap();
+        export_open(&store, &out, &silent, &never).unwrap();
+        let tasks = fs::read_to_string(out.join("tarefas.md")).unwrap();
+        assert!(tasks.contains(&format!("Subtarefa de: tarefa {parent_id} (Tarefa mãe)")));
+        assert!(tasks.contains(&format!("Subtarefas: tarefa {child_id} (Tarefa filha)")));
+        assert!(tasks.contains(&format!("Depende de: tarefa {prior_id} (Etapa anterior)")));
+        assert!(tasks.contains("Estimativa: 90 min"));
+        let attendances = fs::read_to_string(out.join("atendimentos.md")).unwrap();
+        assert!(attendances.contains("Histórico (inclui as cobranças)"));
+        assert!(attendances.contains("Cobrança (contato feito): Cobrado por telefone"));
+        assert!(attendances.contains("Próxima cobrança marcada"));
+        let json: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("acervo.json")).unwrap()).unwrap();
+        let mother = json["tarefas"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == parent_id)
+            .unwrap();
+        assert_eq!(mother["subtarefas"], serde_json::json!([child_id]));
+        let kid = json["tarefas"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == child_id)
+            .unwrap();
+        assert_eq!(kid["tarefa"]["parent_task_id"], parent_id);
+        assert_eq!(kid["tarefa"]["dependencies"], serde_json::json!([prior_id]));
+        let events = json["atendimentos"][0]["atendimento"]["events"]
+            .as_array()
+            .unwrap();
+        assert!(events.iter().any(|e| e["kind"] == "cobranca"));
+    }
+
+    fn file_hash(path: &Path) -> Option<String> {
+        fs::read(path)
+            .ok()
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    #[test]
+    fn the_export_opens_the_library_read_only_and_changes_nothing() {
+        let f = fixture();
+        let db = f._dir.path().join("acervo.sqlite3");
+        let wal = f._dir.path().join("acervo.sqlite3-wal");
+        let before = (file_hash(&db), file_hash(&wal));
+        let read_only = Store::open_read_only(&db).unwrap();
+        // A write is refused by the connection itself.
+        assert!(read_only
+            .conn
+            .execute("CREATE TABLE sem_escrita(a)", [])
+            .unwrap_err()
+            .to_string()
+            .to_lowercase()
+            .contains("readonly"));
+        let report = export_open(&read_only, &f.out, &silent, &never).unwrap();
+        assert_eq!(report.documents, 1);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        drop(read_only);
+        assert_eq!(before, (file_hash(&db), file_hash(&wal)));
+        // A file that is not there is not created.
+        assert!(Store::open_read_only(&f._dir.path().join("outro.sqlite3")).is_err());
+        assert!(!f._dir.path().join("outro.sqlite3").exists());
     }
 }
