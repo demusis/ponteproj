@@ -5687,6 +5687,61 @@ mod tests {
         );
     }
 
+    /// Review 9: when the exchange keeps a pending copy aside, the answer
+    /// to the app carries the note that says so and names the copy kept.
+    #[test]
+    fn the_notes_of_an_exchange_reach_the_phone() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        // The phone makes work that only reaches the pending copy (the upload
+        // to Drive never happened), whose history was then summarized.
+        create_task(&mut phone, &json!({"title": "Só no celular"})).unwrap();
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        let pending = dir.0.join("pendente.ponte");
+        let copy = ponteproj::sharedfolder::read(&work, KEY).unwrap().unwrap();
+        let mut payload = copy.payload;
+        payload.journal.clear();
+        ponteproj::sharedfolder::write(
+            &pending,
+            KEY,
+            &ponteproj::sharedfolder::WriteRequest {
+                lineage: &copy.header.lineage,
+                revision: copy.header.revision,
+                writer: &copy.header.writer,
+                writer_name: &copy.header.writer_name,
+                schema_version: copy.header.schema_version,
+            },
+            &payload,
+            &copy.blobs,
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(dir.0.join("celular.sqlite3-guarda.ponte"));
+        // Meanwhile the computer moves the Drive copy two revisions ahead.
+        let cfg = computer.load_intranet_config().unwrap();
+        let reporter = ponteproj::ai::Reporter::silent();
+        for title in ["Do computador", "Outra do computador"] {
+            let mut task = ponteproj::tasks::Task::blank(None);
+            task.title = title.into();
+            computer.save_task(&task).unwrap();
+            computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        }
+        std::fs::copy(&drive, &work).unwrap();
+        // The archive is named after what the pending copy holds now.
+        let aside = ponteproj::sharedfolder::aside_path(&pending).unwrap();
+
+        let answer = sync_paths(&mut phone, &work_s, &pending.display().to_string(), KEY).unwrap();
+        assert!(aside.is_file(), "{answer}");
+        let name = aside.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(answer["notes"].to_string().contains(&name), "{answer}");
+    }
+
     #[test]
     fn the_projects_of_the_computer_reach_the_phone_and_the_phone_changes_reach_back() {
         let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
