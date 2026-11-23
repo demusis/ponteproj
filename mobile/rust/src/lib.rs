@@ -4307,6 +4307,13 @@ mod tests {
                         capture.remove(key);
                     }
                 }
+                // The identities of the rows are random: the same kinds and
+                // slots are carried, not the same values.
+                if let Some(idents) = value.get_mut("idents").and_then(|v| v.as_array_mut()) {
+                    for slot in idents {
+                        slot["ident"] = Value::from("…");
+                    }
+                }
                 value
             })
             .collect()
@@ -5886,7 +5893,10 @@ mod tests {
             phone.save_note(id, "Nota de antes da atualização").unwrap();
         }
         ponteproj::idents::test_support::downgrade_to_21(&path).unwrap();
-        assert_eq!(ponteproj::idents::test_support::user_version(&path).unwrap(), 21);
+        assert_eq!(
+            ponteproj::idents::test_support::user_version(&path).unwrap(),
+            21
+        );
 
         let mut phone = Store::open(&path).unwrap();
         let (version, problems, idents) =
@@ -5904,7 +5914,9 @@ mod tests {
         // The queued note still goes, in the same file format.
         let answer = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
         assert_eq!(answer["written"], json!(true));
-        let header = ponteproj::sharedfolder::read_header(&work).unwrap().unwrap();
+        let header = ponteproj::sharedfolder::read_header(&work)
+            .unwrap()
+            .unwrap();
         assert_eq!((header.format, header.schema_version), (8, 21));
         std::fs::copy(&work, &drive).unwrap();
         let cfg = computer.load_intranet_config().unwrap();

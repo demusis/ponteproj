@@ -1262,29 +1262,80 @@ fn f2a_the_installer_copy_works_on_a_21_and_a_22_library() {
     assert_eq!(migration_copies(&path).len(), 1, "{names:?}");
 }
 
-/// Time of the 21→22 step on a library of 5,000 documents (each with a
-/// note): run with `--ignored --nocapture`.
+/// Time of the 21→22 step on a library of 5,000 documents: run with
+/// `--ignored --nocapture` (`F2A_DOCUMENTOS` changes the number). Fifty
+/// documents are made through the product (two versions each, two notes, an
+/// analysis, the triage task and the atendimento of the import), then
+/// copied by SQL, every child row with its document, up to the number
+/// asked (making each one through the product costs about 0,1 s).
 #[test]
 #[ignore]
 fn f2a_migration_time_on_a_large_library() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("PonteProj").join("acervo.sqlite3");
-    let documents: u32 = std::env::var("F2A_DOCUMENTOS")
+    let documents: i64 = std::env::var("F2A_DOCUMENTOS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5000);
+    const BASE: i64 = 50;
     let started = std::time::Instant::now();
     {
         let mut store = Store::open(&path).unwrap();
-        for n in 0..documents {
+        for n in 0..BASE {
+            let number = format!("SEFAZ-PRO-2025/{:05}", n + 1);
             let receipt = store
-                .import_capture(&capture(
-                    &format!("SEFAZ-PRO-2025/{:05}", n + 1),
-                    &format!("Texto do documento {n}."),
-                ))
+                .import_capture(&capture(&number, &format!("Texto do documento {n}.")))
+                .unwrap();
+            store
+                .import_capture(&capture(&number, &format!("Texto novo do documento {n}.")))
                 .unwrap();
             store.save_note(receipt.document_id, "nota").unwrap();
+            store.save_note(receipt.document_id, "nota 2").unwrap();
+            store
+                .save_analysis(
+                    receipt.document_id,
+                    &crate::model::Analysis {
+                        capture_id: receipt.capture_id,
+                        summary: "análise".into(),
+                        reason: "r".into(),
+                        model: "modelo-de-teste".into(),
+                        created_at: "2026-11-10T10:00:00.000Z".into(),
+                        priority: "normal".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
         }
+    }
+    {
+        // Round r: document d becomes d + r·OFFSET, with its children.
+        const OFFSET: i64 = 1_000_000;
+        let conn = raw_as(&path, 99);
+        conn.execute_batch("PRAGMA foreign_keys=ON; BEGIN").unwrap();
+        for round in 1..(documents / BASE) {
+            let o = round * OFFSET;
+            conn.execute_batch(&format!(
+                "INSERT INTO documents(id,identity_hash,latest_capture_id,last_seen_at)
+                   SELECT id+{o},randomblob(32),NULL,last_seen_at FROM documents WHERE id<={BASE};
+                 INSERT INTO captures(id,document_id,content_hash,payload,created_at)
+                   SELECT id+{o},document_id+{o},content_hash,payload,created_at FROM captures WHERE document_id<={BASE};
+                 UPDATE documents SET latest_capture_id=(SELECT latest_capture_id+{o} FROM documents b WHERE b.id=documents.id-{o})
+                   WHERE id>{o} AND id<={o}+{BASE};
+                 INSERT INTO requests(request_id,document_id,capture_id)
+                   SELECT request_id||'-{round}',document_id+{o},capture_id+{o} FROM requests WHERE document_id<={BASE};
+                 INSERT INTO notes(id,document_id,payload,created_at)
+                   SELECT id+{o},document_id+{o},payload,created_at FROM notes WHERE document_id<={BASE};
+                 INSERT INTO analyses(id,document_id,capture_id,payload,created_at)
+                   SELECT id+{o},document_id+{o},capture_id+{o},payload,created_at FROM analyses WHERE document_id<={BASE};
+                 INSERT INTO tasks(id,document_id,payload,uid)
+                   SELECT id+{o},document_id+{o},payload,lower(hex(randomblob(16))) FROM tasks WHERE document_id<={BASE};
+                 INSERT INTO saiop_attendances(id,batch_id,source_row,document_id,reference_norm,payload,raw_import,updated_at)
+                   SELECT id+{o},NULL,source_row,document_id+{o},reference_norm,payload,raw_import,updated_at
+                   FROM saiop_attendances WHERE document_id<={BASE};"
+            ))
+            .unwrap();
+        }
+        conn.execute_batch("COMMIT").unwrap();
     }
     eprintln!("gerar {documents} documentos: {:?}", started.elapsed());
     test_support::downgrade_to_21(&path).unwrap();
