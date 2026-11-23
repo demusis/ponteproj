@@ -43,6 +43,39 @@ pub fn pick_file(title: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Standard Windows dialog to choose a folder (with the button to make a
+/// new one). `None` when the person cancels.
+pub fn pick_folder(title: &str) -> Option<PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{
+        SHBrowseForFolderW, SHGetPathFromIDListW, BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS,
+        BROWSEINFOW,
+    };
+    let title = wide(title);
+    let mut buffer = [0u16; 260];
+    let info = BROWSEINFOW {
+        lpszTitle: PCWSTR(title.as_ptr()),
+        ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
+        ..Default::default()
+    };
+    // SAFETY: `info` and the buffers outlive the calls; the item list the
+    // dialog returns is released once the path is read.
+    unsafe {
+        let item = SHBrowseForFolderW(&info);
+        if item.is_null() {
+            return None;
+        }
+        let ok = SHGetPathFromIDListW(item, &mut buffer).as_bool();
+        CoTaskMemFree(Some(item as *const std::ffi::c_void));
+        if !ok {
+            return None;
+        }
+    }
+    let length = buffer.iter().position(|c| *c == 0).unwrap_or(0);
+    let path = PathBuf::from(String::from_utf16_lossy(&buffer[..length]));
+    path.is_dir().then_some(path)
+}
+
 /// Standard Windows dialog to choose where to save a file. `suggested` is
 /// the initial file name; the person may change it. Asks before overwriting.
 pub fn save_file(title: &str, suggested: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
