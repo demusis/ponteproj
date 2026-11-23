@@ -693,7 +693,9 @@ mod tests {
         let error = write(&path, "senha-forte-123", &request, &payload, &blobs)
             .unwrap_err()
             .to_string();
-        assert!(error.starts_with("O acervo passa de 512 MB e não cabe no arquivo de sincronização"));
+        assert!(
+            error.starts_with("O acervo passa de 512 MB e não cabe no arquivo de sincronização")
+        );
         assert!(error.contains("Nada foi gravado") && error.contains("esvazie a Lixeira"));
         assert!(error.contains("anexos grandes"));
         assert_eq!(dir.path().read_dir().unwrap().count(), 0);

@@ -481,7 +481,9 @@ mod tests {
     #[test]
     fn the_failure_carries_the_same_advice() {
         let message = too_big_message(Some(600 * 1024 * 1024));
-        assert!(message.starts_with("O acervo passa de 512 MB e não cabe no arquivo de sincronização"));
+        assert!(
+            message.starts_with("O acervo passa de 512 MB e não cabe no arquivo de sincronização")
+        );
         assert!(message.contains("daria 600 MB") && message.contains("Nada foi gravado"));
         assert!(message.contains("esvazie a Lixeira") && message.contains("anexos grandes"));
         assert!(!too_big_message(None).contains("daria"));
@@ -590,7 +592,10 @@ mod tests {
         // The name matches, the content is not a Ponte file.
         std::fs::write(dir.path().join("ponte-sync (2).ponte"), b"outra coisa").unwrap();
         // New divergent copy: not offered yet.
-        sync_file(&dir.path().join("ponte-sync-divergente-a1b2c3d4e5f60789.ponte"));
+        sync_file(
+            &dir.path()
+                .join("ponte-sync-divergente-a1b2c3d4e5f60789.ponte"),
+        );
         std::fs::write(dir.path().join("ponte-sync-guarda.ponte"), b"x").unwrap();
         let found = scan(&real, SystemTime::now());
         assert_eq!(found.size, Some(SYNC_MAGIC.len() as u64 + 8));
@@ -617,7 +622,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let real = dir.path().join(REAL);
         sync_file(&real);
-        let old = dir.path().join("ponte-sync-divergente-a1b2c3d4e5f60789.ponte");
+        let old = dir
+            .path()
+            .join("ponte-sync-divergente-a1b2c3d4e5f60789.ponte");
         sync_file(&old);
         // Seen 91 days later it is old; seen now it is not.
         let later = SystemTime::now() + Duration::from_secs(91 * 24 * 60 * 60);
@@ -636,12 +643,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let real = dir.path().join(REAL);
         sync_file(&real);
-        let old = dir.path().join("ponte-sync-divergente-a1b2c3d4e5f60789.ponte");
+        let old = dir
+            .path()
+            .join("ponte-sync-divergente-a1b2c3d4e5f60789.ponte");
         sync_file(&old);
         let copy = dir.path().join("ponte-sync (1).ponte");
         sync_file(&copy);
         let other = tempfile::tempdir().unwrap();
-        let elsewhere = other.path().join("ponte-sync-divergente-0123456789abcdef.ponte");
+        let elsewhere = other
+            .path()
+            .join("ponte-sync-divergente-0123456789abcdef.ponte");
         sync_file(&elsewhere);
         let later = SystemTime::now() + Duration::from_secs(91 * 24 * 60 * 60);
         // The real file, a conflict copy and a file of another folder are not

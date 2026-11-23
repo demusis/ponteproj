@@ -10332,6 +10332,13 @@ pub struct IntranetPanel {
     connection_test: Option<(String, bool, String)>,
     /// This window opened a library only to be looked at: nothing starts.
     transport_off: bool,
+    /// What is beside each shared file (size, copies of the cloud, old
+    /// `-divergente-` copies), listed at most every few seconds; the paths it
+    /// was listed for tell when it is out of date.
+    folder_scans: Option<(Instant, Vec<String>, Vec<crate::folder_health::FolderScan>)>,
+    /// Old `-divergente-` copies the person was asked about (the shared file
+    /// they belong to, and them), waiting for the answer.
+    archive_question: Option<(PathBuf, Vec<crate::folder_health::Found>)>,
 }
 
 #[cfg(feature = "desktop")]
@@ -10341,6 +10348,10 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(4);
 /// that long to carry a file anyway. Opening the Ponte and "Sincronizar
 /// agora" do not wait.
 const FOLDER_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+#[cfg(feature = "desktop")]
+/// What is beside the shared files is listed again after this long (the
+/// window draws many times a second).
+const FOLDER_SCAN_INTERVAL: Duration = Duration::from_secs(20);
 #[cfg(feature = "desktop")]
 /// A change made here goes to the folders without waiting for the five
 /// minutes: once nothing has changed for this long (changes made in a row
@@ -10468,6 +10479,136 @@ impl IntranetPanel {
         }
     }
 
+    /// What is beside each folder of the draft, listed again only when it is
+    /// old, when the folders changed or after an exchange.
+    fn folder_scans(&mut self) -> Vec<crate::folder_health::FolderScan> {
+        if self.transport_off {
+            return Vec::new();
+        }
+        let paths = self.draft.folder_files.clone();
+        let fresh = self
+            .folder_scans
+            .as_ref()
+            .is_some_and(|(at, listed, _)| at.elapsed() < FOLDER_SCAN_INTERVAL && *listed == paths);
+        if !fresh {
+            let now = std::time::SystemTime::now();
+            let scans = paths
+                .iter()
+                .map(|path| crate::folder_health::scan(std::path::Path::new(path), now))
+                .collect();
+            self.folder_scans = Some((Instant::now(), paths, scans));
+        }
+        self.folder_scans
+            .as_ref()
+            .map(|(_, _, scans)| scans.clone())
+            .unwrap_or_default()
+    }
+
+    /// The notes under the folders: how full the file is, copies the cloud
+    /// made of it and old copies kept aside. Nothing is deleted here without
+    /// the question being answered.
+    fn folder_health_notes(
+        &mut self,
+        ui: &mut egui::Ui,
+        scans: &[crate::folder_health::FolderScan],
+    ) {
+        use crate::theme::{self, icon};
+        use crate::widgets::{self, Tone};
+        let several = scans.len() > 1;
+        let named = |scan: &crate::folder_health::FolderScan, text: String| {
+            if several {
+                format!("{}: {text}", scan.path.display())
+            } else {
+                text
+            }
+        };
+        for scan in scans {
+            let warnings = [
+                scan.size.and_then(crate::folder_health::size_warning),
+                crate::folder_health::conflict_warning(scan),
+            ];
+            for text in warnings.into_iter().flatten() {
+                ui.add_space(theme::S2);
+                soft_note(ui, Tone::Warn, icon::WARNING, &named(scan, text));
+            }
+            for copy in &scan.conflict_copies {
+                if let Some(description) = &copy.description {
+                    widgets::small_muted(ui, format!("{}: {description}.", copy.name));
+                }
+            }
+            if scan.old_archives.is_empty() {
+                continue;
+            }
+            let asking = self
+                .archive_question
+                .as_ref()
+                .is_some_and(|(real, _)| *real == scan.path);
+            ui.add_space(theme::S2);
+            if asking {
+                let found = self
+                    .archive_question
+                    .as_ref()
+                    .map(|(_, found)| found.clone())
+                    .unwrap_or_default();
+                soft_note(
+                    ui,
+                    Tone::Danger,
+                    icon::WARNING,
+                    &crate::folder_health::archives_question(&found),
+                );
+                ui.horizontal(|ui| {
+                    if ui.add(widgets::danger("Apagar")).clicked() {
+                        let chosen: Vec<PathBuf> = found.iter().map(|f| f.path.clone()).collect();
+                        let (deleted, failed) = crate::folder_health::delete_old_archives(
+                            &scan.path,
+                            &chosen,
+                            std::time::SystemTime::now(),
+                        );
+                        let count = plural(
+                            deleted.len(),
+                            "cópia antiga apagada",
+                            "cópias antigas apagadas",
+                        );
+                        self.error = !failed.is_empty();
+                        self.message = if failed.is_empty() {
+                            format!("{count}.")
+                        } else {
+                            format!("{count}; não foi possível apagar: {}.", failed.join("; "))
+                        };
+                        self.archive_question = None;
+                        self.folder_scans = None;
+                    }
+                    if ui.add(widgets::secondary("Cancelar")).clicked() {
+                        self.archive_question = None;
+                    }
+                });
+            } else {
+                let names: Vec<&str> = scan.old_archives.iter().map(|f| f.name.as_str()).collect();
+                widgets::small_muted(
+                    ui,
+                    named(
+                        scan,
+                        format!(
+                            "{} com mais de {} dias, guardadas pelo Ponte quando o arquivo divergiu: {}. O Ponte não as apaga sozinho.",
+                            plural(names.len(), "cópia", "cópias"),
+                            crate::folder_health::OLD_ARCHIVE_DAYS,
+                            names.join(", ")
+                        ),
+                    ),
+                );
+                if ui
+                    .add(widgets::secondary("Apagar estas cópias antigas…"))
+                    .on_hover_text(
+                        "Pede confirmação e mostra o nome de cada cópia antes de apagar.",
+                    )
+                    .clicked()
+                {
+                    self.archive_question = Some((scan.path.clone(), scan.old_archives.clone()));
+                }
+            }
+        }
+    }
+
     /// The "Pasta compartilhada" part of the window: folders, password and
     /// the main row.
     fn shared_folder_section(
@@ -10485,6 +10626,7 @@ impl IntranetPanel {
             .unwrap_or(0);
         let first_time = saved_revision == 0;
         let dirty = self.has_unsaved_draft(store);
+        let scans = self.folder_scans();
 
         widgets::card(ui, |ui| {
             ui.horizontal(|ui| {
@@ -10565,6 +10707,13 @@ impl IntranetPanel {
                             .wrap(),
                         );
                         widgets::small_muted(ui, line);
+                        if let Some(size) = scans
+                            .iter()
+                            .find(|scan| scan.path.as_os_str() == path.as_str())
+                            .and_then(|scan| scan.size)
+                        {
+                            widgets::small_muted(ui, crate::folder_health::size_line(size));
+                        }
                         if let Some(hint) = what_to_do {
                             widgets::small_muted(ui, hint);
                         }
@@ -10583,6 +10732,7 @@ impl IntranetPanel {
             if self.draft.folder_files.is_empty() {
                 widgets::muted(ui, "Nenhuma pasta escolhida ainda.");
             }
+            self.folder_health_notes(ui, &scans);
             if self.draft.folder_files.len() < 8 {
                 ui.add_space(theme::S2);
                 if ui
@@ -10824,6 +10974,9 @@ impl IntranetPanel {
             if let Some(last) = &last {
                 widgets::small_muted(ui, last);
             }
+            if saved.mode.queues_changes() {
+                widgets::small_muted(ui, crate::folder_health::NOT_SYNCED);
+            }
             let can_sync = match saved.mode {
                 IntranetMode::SharedFolder => {
                     !self.sync_in_flight && !saved.folder_files.is_empty()
@@ -11063,6 +11216,8 @@ impl IntranetPanel {
         let conflicts = store.list_sync_conflicts().map(|v| v.len()).unwrap_or(0);
         let outbox = store.list_offline_outbox().map(|v| v.len()).unwrap_or(0);
         self.sync_step.clear();
+        // The file changed (or could not): what is beside it is listed again.
+        self.folder_scans = None;
         self.refresh_draft_bookkeeping(store);
         if cfg.mode == IntranetMode::SharedFolder {
             match outcome.result {
@@ -18665,7 +18820,10 @@ mod size_limit_tests {
             "{error}"
         );
         assert!(error.contains("Nada foi gravado") && error.contains("esvazie a Lixeira"));
-        assert!(error.contains("anexos grandes") && !error.contains(".."), "{error}");
+        assert!(
+            error.contains("anexos grandes") && !error.contains(".."),
+            "{error}"
+        );
         assert!(error.contains("As alterações continuam guardadas neste computador."));
         // The file in the folder is exactly what it was, with no copy kept
         // aside and no leftover; the change is still here and still queued.
