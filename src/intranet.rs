@@ -20483,9 +20483,10 @@ mod host_history_tests {
         edited.notes = "Edição ao vivo".into();
         let error = rig.client.save_task(&edited).unwrap_err().to_string();
         // F3.0a2: the task's identity is not on the restored main computer,
-        // so the change is refused there before anything is written.
+        // so the change is refused there before anything is written (and
+        // kept here as a card, review F3.0a2 finding 7).
         assert!(
-            error.contains("mais antiga") || error == crate::idrefs::UNPROVEN,
+            error.contains("mais antiga") || error.starts_with(crate::idrefs::UNPROVEN),
             "{error}"
         );
         // Nothing of the main computer's answer was taken in.
