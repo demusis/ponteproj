@@ -888,3 +888,59 @@ mod tests {
         assert_eq!(parse(&orphan).len(), 2);
     }
 }
+
+/// Produz um componente de caminho válido no Windows, preservando acentos.
+/// O limite em unidades UTF-16 deixa espaço para sufixos de desambiguação.
+pub fn open_export_file_name(name: &str) -> String {
+    let mut result = String::new();
+    let mut units = 0;
+    for ch in name.chars() {
+        if ch.is_control() || "<>:\"/\\|?*".contains(ch) {
+            continue;
+        }
+        let width = ch.len_utf16();
+        if units + width > 120 {
+            break;
+        }
+        result.push(ch);
+        units += width;
+    }
+    let trimmed = result.trim_end_matches([' ', '.']);
+    let mut result = trimmed.to_owned();
+    if result.is_empty() {
+        result.push_str("Sem nome");
+    }
+    // Windows reserva estes nomes mesmo quando seguidos de uma extensão.
+    let stem = result.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && matches!(upper.as_bytes()[3], b'1'..=b'9'));
+    if reserved {
+        result.insert(0, '_');
+    }
+    result
+}
+
+#[cfg(test)]
+mod open_export_name_tests {
+    use super::open_export_file_name;
+
+    #[test]
+    fn preserves_accents_and_removes_windows_unsafe_characters() {
+        assert_eq!(
+            open_export_file_name("Ação: órgão/2026? "),
+            "Ação órgão2026"
+        );
+        assert_eq!(open_export_file_name("CON.txt"), "_CON.txt");
+        assert_eq!(open_export_file_name("lpt9."), "_lpt9");
+        assert_eq!(open_export_file_name("..."), "Sem nome");
+        assert!(
+            open_export_file_name(&"😀".repeat(100))
+                .encode_utf16()
+                .count()
+                <= 120
+        );
+    }
+}
