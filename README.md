@@ -403,6 +403,15 @@ Uma conversa do WhatsApp pode ficar guardada no Ponte, junto dos documentos, com
 4. Se quiser, ajuste **Conversa com** (nome da pessoa ou do grupo) e o **Título** (sugerido como "Conversa com <nome> — data da última mensagem"; pelo menos 3 caracteres).
 5. **Criar registro**.
 
+**Pelo arquivo da conversa (.txt).** Na mesma janela, **Colar conversa do WhatsApp**, o botão **Importar arquivo de conversa (.txt)…** lê o arquivo gerado pelo WhatsApp em **Exportar conversa ▸ Sem mídia**, no Android ou no iPhone. Leve o arquivo ao computador, clique no botão e escolha o `.txt`; o resto segue como na colagem (prévia, **Conversa com**, **Título**, **Criar registro**).
+
+- Se o WhatsApp entregar um **`.zip`**, extraia-o antes e escolha o `.txt` de dentro; o Ponte diz *Este arquivo é um .zip. Extraia-o e escolha o arquivo .txt que está dentro dele.*
+- O arquivo precisa estar em **UTF-8**. Se não estiver, o Ponte avisa (*O arquivo não está em UTF-8…*): abra-o no Bloco de Notas, salve como UTF-8 e escolha-o de novo.
+- Valem os mesmos limites do texto colado: até 500 mensagens e 500 KB. Se passar, o Ponte diz *O arquivo passa do limite de um registro (500 KB). Exporte a conversa em partes menores.*
+- A mesma conversa não é importada duas vezes (veja **Repetição**, abaixo).
+- Um arquivo exportado com as datas em **mês/dia** (celular com o WhatsApp em inglês) é **recusado**, com a instrução: *Esta conversa parece ter sido exportada com datas no formato mês/dia (celular em inglês). Mude o idioma do WhatsApp para português e exporte de novo, ou cole pelo WhatsApp Web.*
+- **Limite conhecido:** um iPhone em inglês não é detectado, e as datas podem sair trocadas. Confira a prévia.
+
 **Segunda forma: pela extensão (0.4.0), no WhatsApp Web.** O recurso vem desligado. Para ligar, uma única vez: clique no ícone da extensão ▸ **Usar no WhatsApp Web**, aceite a pergunta do Chrome (acesso a web.whatsapp.com). Com a extensão 0.4.1 o painel abre sozinho na página já aberta; com a 0.4.0, recarregue a página do WhatsApp Web. A página ganha o botão **Guardar no Ponte** (na 0.4.0, menor, escrito **Ponte**), no canto inferior esquerdo, que abre o painel **Guardar no Ponte**. Então:
 
 1. Arraste o mouse sobre as mensagens e clique em **Trecho selecionado**; ou clique em **Mensagens visíveis na tela**.
@@ -422,7 +431,7 @@ Se a página não for reconhecida (*O Ponte não reconheceu esta página do What
 | Arquivos | até 8 MB cada, 10 por envio pelo painel, 16 MB juntos; o registro aceita até 20 anexos ([5.6](#56-anexos)) |
 | Sem legenda | fotos e arquivos sem legenda entram sem o nome do autor; se a data não puder ser conhecida com certeza, entram como `[sem data]`, e o painel avisa |
 | Arquivos da página | PDF, Word etc. não são lidos da página: baixe-os no WhatsApp e solte-os no painel, ou junte-os depois em **Anexos**. As fotos das mensagens escolhidas são lidas |
-| Repetição | a mesma seleção enviada duas vezes pelo painel, ou o mesmo texto colado duas vezes, com o mesmo **Conversa com**, não duplica (os arquivos de uma conversa que já existia não são juntados de novo). Uma conversa guardada pelo painel e depois colada da cópia do WhatsApp pode ficar duas vezes, porque os dois textos não são idênticos |
+| Repetição | a mesma seleção enviada duas vezes pelo painel, ou o mesmo texto colado duas vezes (ou o mesmo arquivo importado duas vezes), com o mesmo **Conversa com**, não duplica (os arquivos de uma conversa que já existia não são juntados de novo). Uma conversa guardada pelo painel e depois colada da cópia do WhatsApp pode ficar duas vezes, porque os dois textos não são idênticos |
 | Lixeira | se a mesma conversa foi guardada antes e está na Lixeira, o Ponte avisa; restaure-a em **Ajustes ▸ Lixeira** |
 
 **O que a extensão não faz.** Lê só as mensagens escolhidas, só quando você clica (nada em segundo plano, ao abrir a página ou ao rolar). Não lê outras conversas nem contatos, não envia, altera nem apaga nada no WhatsApp e fica desligada até você ligar. O que você escolheu só sai da página em **Enviar ao Ponte** e vai somente ao Ponte deste computador ([10.6](#106-o-que-sai-do-computador)).
@@ -800,6 +809,8 @@ Um conflito acontece só quando o **mesmo item** foi alterado nos dois lados enq
 
 Todas pedem confirmação.
 
+**Alteração sua recusada ao juntar as cópias da pasta.** Se, ao juntar as cópias das pastas, uma alteração sua for recusada (o item mudou em outro computador depois da versão sobre a qual você a fez), ela chega a você como um **cartão de conflito** na sincronização seguinte, e não some. Um cartão que você já resolveu não volta de uma cópia antiga da pasta.
+
 Um caso especial: se o computador principal recusou a criação de um item feito sem conexão (por exemplo, a tarefa de um documento que um colega mandou para a lixeira), as alterações seguintes desse item não têm onde cair. Elas aparecem como aviso (no cartão *Alterações a enviar*, da mesma seção), sem as opções acima, só com **Dispensar o aviso**: refaça a alteração à mão, se ainda for necessária.
 
 ### 8.4 O indicador na barra inferior
@@ -879,6 +890,17 @@ Três avisos do modo pasta compartilhada, que aparecem em **Ajustes ▸ Equipe e
 - **No celular** (Ajustes ▸ Sincronização): *as contas de e-mail, os avisos de prazos e os lembretes deste aparelho, a ligação com a agenda do celular, o bloqueio do aplicativo, o seu nome nas tarefas e os filtros guardados.*
 
 Configure essas coisas em cada aparelho que for usá-las.
+
+### 8.8 Quando a sincronização guarda uma cópia à parte, ou para
+
+Nada some em silêncio. O que a pessoa vê:
+
+- **Um item que só uma das cópias tinha.** Se a sincronização fizesse desaparecer um item que apenas uma das cópias guardava, o Ponte guarda antes uma **cópia conferida** à parte e diz quais são os itens e onde está a cópia: *A cópia de segurança deste computador tinha … que não estão no resultado desta sincronização: …. Ela foi guardada em …; nada foi reinserido no acervo.* (para uma pasta: *A cópia de … tinha … Ela foi guardada em … antes de ser regravada…*; para o acervo daqui: *Uma cópia do acervo daqui, de antes da sincronização, foi guardada em …*). Nada é reinserido sozinho: confira, e só então apague a cópia.
+- **A sincronização para quando a cópia de segurança não pode ser guardada.** Sem espaço, a mensagem diz a causa e o que fazer, por exemplo *Falta espaço no disco: libere espaço e sincronize de novo.*; em outros casos, pede para conferir as permissões da pasta. *Nada foi gravado nem substituído; a próxima sincronização tenta de novo.*
+- **Versão e análise de um documento.** A versão e a análise mostradas são as capturadas ou feitas por último, e não as que chegaram por último à sincronização.
+- **Descrição de anexo alterada sem conexão.** Se outro computador mudou a descrição depois, a sua alteração não sobrescreve a mudança mais nova: vira um cartão de conflito (*Este item foi alterado em outro computador depois da versão sobre a qual esta alteração foi feita; ela não foi aplicada para não desfazer a outra. Confira o item e refaça a alteração, se ainda for o caso.*). **Limite conhecido:** ligar e desligar o vínculo de um anexo continua como antes, sem esse cartão.
+- **No celular**, as cópias pendentes a mais são lidas de novo na sincronização seguinte, e cada uma só é apagada quando o conteúdo dela está seguro. O que foi guardado à parte aparece na mensagem da sincronização, sob *Atenção (nada foi apagado):* ([`mobile/README.md`](mobile/README.md)).
+- **`--import-plan` retomado.** Ao retomar um plano interrompido ([13](#13-para-desenvolvedores)), o Ponte confere o registro antes: se o identificador do pedido, o recibo guardado ou uma tarefa apontarem para outro documento, **nada é gravado** e a mensagem diz o que conferir.
 
 ---
 
