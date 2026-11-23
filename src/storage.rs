@@ -203,7 +203,7 @@ impl Store {
     /// `ensure_*` step and no write of any kind. The library must already be
     /// in the schema of this version (the window opened it); otherwise it is
     /// refused rather than read with tables that may be missing.
-    pub(crate) fn open_read_only(path: &Path) -> Result<Self> {
+    pub fn open_read_only(path: &Path) -> Result<Self> {
         ensure!(path.is_file(), "O acervo não foi encontrado.");
         let conn = Connection::open_with_flags(
             path,
