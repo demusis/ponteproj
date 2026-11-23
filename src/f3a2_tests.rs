@@ -1212,3 +1212,63 @@ fn f3_0a2r_legacy_entry_from_a_divergent_journal_is_replayed() {
     fsync(&mut a);
     assert_eq!(note_of(&a, doc), "Nota legada divergente");
 }
+
+// ------------------------------------- F3.0b, conserto trazido do F3.0a2 --
+
+/// The completion after a fall has the same hazard as the late receipt
+/// (review F3.0a2, finding 3): between the effect and the completion, a
+/// `Sync` may already have published the identity H the insert gave X.
+/// The completion keeps H and binds C (the sender's) to it, first binding
+/// wins: B's edit proving H lands after the completion, and A's note,
+/// proving C, resolves through the binding.
+///
+/// Red on `3611b80`: `complete_carry` replaces H by C on the main
+/// computer, and B's edit proving H is refused by the proof (a card).
+#[test]
+fn f3_0b_completion_after_a_fall_keeps_the_published_identity() {
+    let mut t = Team::new();
+    t.offline();
+    let number = "SEFAZ-PRO-2026/00902";
+    let x = t
+        .client
+        .import_capture(&capture(number, "Criado sem conexão."))
+        .unwrap()
+        .document_id;
+    t.client.save_note(x, "Nota em X").unwrap();
+    let c = ident(&t.client, "document", x);
+    t.online();
+    hooks::CRASH_BEFORE_REKEY.arm(&t.db);
+    assert!(t.client.sync_from_host(false).is_err());
+    assert!(!hooks::CRASH_BEFORE_REKEY.disarm(&t.db), "fell at the rekey");
+    t.online();
+    let mut b = t.join("SERVIDOR-B");
+    let on_host = t
+        .host
+        .list_documents("")
+        .unwrap()
+        .into_iter()
+        .find(|d| d.document_number == number)
+        .unwrap()
+        .id;
+    let h = ident(&t.host, "document", on_host);
+    assert_ne!(h, c);
+    assert_eq!(ident(&b, "document", on_host), h, "B took H");
+    // A completes its change and sends its note.
+    t.client.sync_from_host(false).unwrap();
+    assert_eq!(ident(&t.host, "document", on_host), h, "H kept");
+    assert_eq!(t.host.load_document(on_host).unwrap().note, "Nota em X");
+    assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
+    assert_eq!(count(&t.host, "SELECT count(*) FROM carry_log"), 0);
+    // B, still at H, edits X.
+    b.sync_from_host(false).unwrap();
+    b.save_task(&crate::tasks::Task {
+        title: "Tarefa de B em X".into(),
+        ..crate::tasks::Task::new(on_host)
+    })
+    .unwrap();
+    assert!(b.list_sync_conflicts().unwrap().is_empty());
+    assert_eq!(
+        host_task_titled(&t.host, "Tarefa de B em X").document_id,
+        Some(on_host)
+    );
+}
