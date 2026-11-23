@@ -422,6 +422,30 @@ fn rename_source(
     }
 }
 
+/// The name of a source made of an attachment (`A{attachment}H{hex}`, built
+/// by `evidence::attachment_source_id`) after the attachment got a new
+/// number: `Ok(None)` when it is not such a name or the number stays.
+fn rename_attachment_source(
+    name: &str,
+    translate: impl Fn(i64) -> Result<i64, String>,
+) -> Result<Option<String>, String> {
+    let Some((digits, hash)) = name.strip_prefix('A').and_then(|r| r.split_once('H')) else {
+        return Ok(None);
+    };
+    if digits.is_empty()
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || hash.is_empty()
+        || !hash.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Ok(None);
+    }
+    let Ok(id) = digits.parse::<i64>() else {
+        return Ok(None);
+    };
+    let new = translate(id)?;
+    Ok((new != id).then(|| format!("A{new}H{hash}")))
+}
+
 /// Why a change cannot be translated.
 pub const UNRESOLVED: &str = "A alteração se refere a um item criado sem conexão que não chegou ao acervo da equipe (ele foi recusado ou não pôde ser identificado). Refaça a alteração manualmente.";
 
@@ -578,9 +602,17 @@ impl IdMap {
                 if let Some(file) = source.file_id {
                     source.file_id = Some(t(K::File, file)?);
                 }
-                if let Some(name) =
-                    rename_source(&source.id, capture, file, source.capture_id, source.file_id)
-                {
+                let name = match rename_source(
+                    &source.id,
+                    capture,
+                    file,
+                    source.capture_id,
+                    source.file_id,
+                ) {
+                    Some(name) => Some(name),
+                    None => rename_attachment_source(&source.id, |id| t(K::Attachment, id))?,
+                };
+                if let Some(name) = name {
                     renamed.insert(std::mem::replace(&mut source.id, name.clone()), name);
                 }
             }
@@ -612,6 +644,11 @@ impl IdMap {
                 for citation in &mut analysis.citations {
                     if let Some(name) = renamed.get(&citation.source_id) {
                         citation.source_id = name.clone();
+                    }
+                }
+                for fact in &mut analysis.facts {
+                    if let Some(name) = renamed.get(&fact.source_id) {
+                        fact.source_id = name.clone();
                     }
                 }
             }
@@ -751,9 +788,17 @@ impl IdMap {
                     if let Some(file) = source.file_id {
                         source.file_id = Some(t(K::File, file)?);
                     }
-                    if let Some(name) =
-                        rename_source(&source.id, capture, file, source.capture_id, source.file_id)
-                    {
+                    let name = match rename_source(
+                        &source.id,
+                        capture,
+                        file,
+                        source.capture_id,
+                        source.file_id,
+                    ) {
+                        Some(name) => Some(name),
+                        None => rename_attachment_source(&source.id, |id| t(K::Attachment, id))?,
+                    };
+                    if let Some(name) = name {
                         source.id = name;
                     }
                 }

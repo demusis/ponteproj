@@ -1205,7 +1205,6 @@ fn c4_a_task_without_uid_gets_a_different_uid_on_each_device() {
 /// An attachment source `A{attachment}H{hash}` keeps the old attachment id,
 /// and a fact's `source_id` keeps the old source name.
 #[test]
-#[ignore = "R2-B2/inventário: IdMap não traduz A{id}H nem Fact.source_id (defeito do código atual)"]
 fn idmap_translates_attachment_source_names_and_fact_sources() {
     use crate::idmap::{CreatedId, IdKind, IdMap};
     let mut map = IdMap::default();
@@ -1895,4 +1894,122 @@ fn f0_an_orphan_version_row_from_an_older_release_does_not_travel() {
         .item_versions
         .iter()
         .any(|(k, i, _)| k == "task" && *i == 99));
+}
+
+/// F0 (IdMap): the numbers swap places between the frames (attachment 7 here
+/// is 9 there and 9 here is 7 there; capture 5 is 6 and 6 is 5), so every old
+/// number is also a valid number on the other side. Each name is translated
+/// once, from its own number: sources, citations, facts and the sources of a
+/// generation record.
+#[test]
+fn f0_idmap_translates_attachment_and_fact_sources_when_the_numbers_swap() {
+    use crate::idmap::{CreatedId, IdKind, IdMap};
+    let mut map = IdMap::default();
+    map.learn(
+        &[
+            CreatedId::new(IdKind::Capture, "", 5),
+            CreatedId::new(IdKind::Capture, "b", 6),
+            CreatedId::new(IdKind::Attachment, "", 7),
+            CreatedId::new(IdKind::Attachment, "b", 9),
+        ],
+        Some(&[
+            CreatedId::new(IdKind::Capture, "", 6),
+            CreatedId::new(IdKind::Capture, "b", 5),
+            CreatedId::new(IdKind::Attachment, "", 9),
+            CreatedId::new(IdKind::Attachment, "b", 7),
+        ]),
+    );
+    let source = |id: &str, capture: i64| crate::evidence::Source {
+        id: id.into(),
+        document_id: 1,
+        capture_id: capture,
+        label: "x".into(),
+        file_id: None,
+        page: None,
+        method: "captura".into(),
+        text: "texto".into(),
+    };
+    let names = ["C5", "C6", "A7Hdeadbeef", "A9H0123abcd"];
+    let analysis = crate::model::Analysis {
+        capture_id: 5,
+        materials: vec![
+            source(names[0], 5),
+            source(names[1], 6),
+            source(names[2], 5),
+            source(names[3], 6),
+        ],
+        citations: names
+            .iter()
+            .map(|n| crate::evidence::Citation {
+                source_id: (*n).into(),
+                quote: "texto".into(),
+                claim: "c".into(),
+            })
+            .collect(),
+        facts: names
+            .iter()
+            .map(|n| crate::model::Fact {
+                source_id: (*n).into(),
+                ..Default::default()
+            })
+            .chain([crate::model::Fact::default()])
+            .collect(),
+        ..Default::default()
+    };
+    let frame = crate::intranet::CabinetSnapshot::default();
+    let out = map
+        .remap(
+            &crate::intranet::IntranetMutation::SaveAnalysis {
+                document_id: 1,
+                analysis,
+            },
+            &frame,
+            None,
+        )
+        .unwrap();
+    let crate::intranet::IntranetMutation::SaveAnalysis { analysis, .. } = out else {
+        unreachable!()
+    };
+    let want = ["C6", "C5", "A9Hdeadbeef", "A7H0123abcd"];
+    let got: Vec<&str> = analysis.materials.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(got, want);
+    let cited: Vec<&str> = analysis
+        .citations
+        .iter()
+        .map(|c| c.source_id.as_str())
+        .collect();
+    assert_eq!(cited, want);
+    let facts: Vec<&str> = analysis
+        .facts
+        .iter()
+        .map(|f| f.source_id.as_str())
+        .collect();
+    assert_eq!(facts, ["C6", "C5", "A9Hdeadbeef", "A7H0123abcd", ""]);
+    // The sources a generation used follow the same way.
+    let used = |id: &str, capture: i64| crate::work_templates::UsedSource {
+        id: id.into(),
+        label: "anexo".into(),
+        document_id: 1,
+        capture_id: capture,
+        file_id: None,
+    };
+    let record = crate::work_templates::GenerationRecord {
+        uid: "g".into(),
+        document_id: 1,
+        capture_id: 5,
+        sources: vec![used("A7Hdeadbeef", 5), used("A9H0123abcd", 6)],
+        ..Default::default()
+    };
+    let out = map
+        .remap(
+            &crate::intranet::IntranetMutation::RecordGeneration { record },
+            &frame,
+            None,
+        )
+        .unwrap();
+    let crate::intranet::IntranetMutation::RecordGeneration { record } = out else {
+        unreachable!()
+    };
+    let used: Vec<&str> = record.sources.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(used, ["A9Hdeadbeef", "A7H0123abcd"]);
 }
