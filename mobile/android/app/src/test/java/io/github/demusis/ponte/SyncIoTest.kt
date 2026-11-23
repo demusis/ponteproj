@@ -182,6 +182,36 @@ class SyncIoTest {
     }
 
     @Test
+    fun eachPendingCopyIsSettledOnItsOwn() {
+        val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
+        try {
+            val a = File(dir, "pendente.ponte").also { it.writeText("a") }
+            val b = File(dir, "pendente-novo.ponte").also { it.writeText("b") }
+            val work = File(dir, "work.ponte").absolutePath
+            // One blocked copy does not pin the other.
+            assertEquals(listOf(b), SyncIo.settledPendings(listOf(a, b), work, listOf(a.absolutePath), false))
+            // The working copy unsettled: nothing reached Drive, none goes.
+            assertEquals(emptyList<File>(), SyncIo.settledPendings(listOf(a, b), work, listOf(work), true))
+            // An older core: all or none.
+            assertEquals(listOf(a, b), SyncIo.settledPendings(listOf(a, b), work, null, true))
+            assertEquals(emptyList<File>(), SyncIo.settledPendings(listOf(a, b), work, null, false))
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test
+    fun anOutputAlreadyStagedIsReusedNotStagedAgain() {
+        val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
+        try {
+            val work = File(dir, "sync-work-1.ponte").also { it.writeBytes(bytes(1_000)) }
+            val pending = File(dir, "pendente.ponte").also { it.writeText("trabalho só aqui") }
+            val first = SyncIo.keepNewOutput(work, pending, false)
+            val again = SyncIo.keepNewOutput(work, pending, false)
+            assertEquals(first, again)
+            assertEquals(listOf("pendente-novo.ponte", "pendente.ponte", "sync-work-1.ponte"), dir.list()!!.sorted())
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test
     fun everyPendingCopyIsReadAgainButNotTheArchivesNorTheParts() {
         val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
         try {

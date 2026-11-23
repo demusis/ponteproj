@@ -81,6 +81,12 @@ internal object PhoneWords {
     private val OS_ERROR = Regex("""\s*:\s*[^:]*?\(os error \d+\)""")
     private val ANY_PATH = Regex(PATH)
 
+    /** src/intranet.rs (`archive_advice`): the guard copy could not be kept aside for lack of space. */
+    private val GUARD_NO_SPACE = Regex(
+        """A cópia de segurança deste computador tem (.+?) que não (está|estão) no resultado desta sincronização """ +
+            """\((.*)\), e não foi possível guardá-la à parte \(.*\)\. Falta espaço no disco"""
+    )
+
     /**
      * Messages of the core (sharedfolder.rs, intranet.rs, mobile/rust/src/lib.rs), most specific
      * first. Each one is matched whole, so nothing else is touched.
@@ -166,10 +172,23 @@ internal object PhoneWords {
     }
 
     /**
+     * A failure after the core already kept copies aside (the upload to Drive, its check):
+     * the failure ([explain], told as a Drive failure) and then [notesText] ([syncNotes]), so
+     * what was kept and where is never lost behind the error.
+     */
+    fun failureWithNotes(e: Throwable, fallback: String, notesText: String): String =
+        explain(e, fallback, driveFile = true) + if (notesText.isEmpty()) "" else "\n" + notesText
+
+    /**
      * Rewrites a text that came from the core (a status, a summary or an error, never document
      * data) for the phone; text it does not know is returned as it was.
      */
     fun adapt(text: String): String {
+        GUARD_NO_SPACE.find(text)?.let { m ->
+            return "A cópia de segurança deste aparelho tem ${m.groupValues[1]} que não ${m.groupValues[2]} no " +
+                "resultado desta sincronização (${m.groupValues[3]}) e não pôde ser guardada à parte: falta espaço. " +
+                "Libere espaço no celular; a próxima sincronização tenta de novo. Nada foi gravado nem substituído."
+        }
         if (text.contains("No space left on device")) return NO_SPACE
         var t = OS_ERROR.replace(text, "")
         for ((re, to) in sentences) t = re.replace(t, to)
