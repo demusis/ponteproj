@@ -1619,7 +1619,6 @@ fn r2_b7_a_purge_leaves_no_version_row_for_the_purged_id() {
 /// card on A only, and its uid is recorded as applied. B never learns: its
 /// queue was emptied when it wrote the pen drive, and the card lives on A.
 #[test]
-#[ignore = "R2-B7: recusa vira cartão só em quem juntou e é marcada aplicada; a origem nunca sabe (defeito do código atual)"]
 fn r2_b7_a_refused_foreign_change_reaches_its_origin() {
     let mut f = Folders::new();
     let doc = f.a.list_documents("").unwrap()[0].id;
@@ -2404,4 +2403,49 @@ fn f0_the_current_analysis_follows_the_time_it_was_made() {
         let current = store.load_document(doc).unwrap().analysis.unwrap();
         assert_eq!(current.summary, "Análise de A (dia 10)", "{who}");
     }
+}
+
+/// F0 (R2-B7b): the refusal reaches the author once. After the merge on A
+/// refuses B's note, B's next exchange turns it into a card on B, with B's
+/// text; later exchanges on both computers do not repeat it (B's guard copy
+/// is rewritten without it), and the change is in no copy's `applied` list
+/// as if it had been incorporated.
+#[test]
+fn f0_a_refused_foreign_change_becomes_a_card_of_its_author_once() {
+    let mut f = Folders::new();
+    let doc = f.a.list_documents("").unwrap()[0].id;
+    f.b.save_note(doc, "Nota de B, só no pendrive").unwrap();
+    let uid = f.b.list_offline_outbox().unwrap()[0].uid.clone();
+    f.sync_b(Where::Pen);
+    f.a.save_note(doc, "Nota de A, no Drive").unwrap();
+    for n in 0..5 {
+        let mut task = crate::tasks::Task::new(doc);
+        task.title = format!("enchimento {n}");
+        f.a.save_task(&task).unwrap();
+    }
+    f.sync_a(Where::Drive);
+    f.sync_a(Where::Both);
+    for path in [&f.drive, &f.pen] {
+        let copy = crate::sharedfolder::read(path, KEY).unwrap().unwrap();
+        assert!(
+            !copy.payload.applied.contains(&uid),
+            "{}: refused change marked as incorporated",
+            path.display()
+        );
+    }
+    f.sync_b(Where::Both);
+    let cards_b = f.b.list_sync_conflicts().unwrap();
+    assert_eq!(cards_b.len(), 1, "{cards_b:?}");
+    let text = serde_json::to_string(&cards_b[0].mutation).unwrap();
+    assert!(text.contains("Nota de B, só no pendrive"), "{text}");
+    for _ in 0..2 {
+        f.sync_a(Where::Both);
+        f.sync_b(Where::Both);
+    }
+    assert_eq!(f.b.list_sync_conflicts().unwrap().len(), 1, "repeated on B");
+    assert_eq!(f.a.list_sync_conflicts().unwrap().len(), 1, "repeated on A");
+    assert_eq!(
+        f.a.load_document(doc).unwrap().note,
+        f.b.load_document(doc).unwrap().note
+    );
 }

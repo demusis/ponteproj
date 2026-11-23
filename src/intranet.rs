@@ -5160,7 +5160,14 @@ impl Store {
                         );
                         conflict.identity = identity;
                         conflicts.push(conflict);
-                        applied.insert(entry.uid.clone());
+                        // Refused here: NOT marked as incorporated. The
+                        // computer that made the change keeps, in its guard
+                        // copy, the copy it last wrote; seeing that the change
+                        // is not incorporated, it replays it at its next
+                        // exchange, and there the refusal becomes a conflict
+                        // card of its own author (once: its guard is then
+                        // rewritten without it). Marked as applied, the author
+                        // would skip it and never learn it was refused.
                         report.conflicts += 1;
                     }
                 }
