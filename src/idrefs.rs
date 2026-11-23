@@ -495,9 +495,18 @@ impl Refs {
             }
             None => (None, Vec::new()),
         };
-        // The item a change and its base are about is their first site.
+        // The item a change and its base are about: a resource use by its
+        // uid (its sites are only its links, which the change may move or
+        // drop: review F3.0a2, finding 5), any other by its first site.
         let item = |refs: &[Ref]| refs.first().map(|r| (r.kind, r.row));
-        if !base_proved.is_empty() && item(&base_proved) != item(&proved) {
+        let same = match (&mutation, &base) {
+            (
+                IntranetMutation::SaveResourceUse { item: now, .. },
+                Some(IntranetMutation::SaveResourceUse { item: then, .. }),
+            ) => !now.uid.is_empty() && now.uid == then.uid,
+            _ => base_proved.is_empty() || item(&base_proved) == item(&proved),
+        };
+        if !same {
             return Err(UNPROVEN.into());
         }
         Ok((
