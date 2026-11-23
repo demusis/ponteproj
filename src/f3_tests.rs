@@ -1024,3 +1024,111 @@ fn f3_0a_old_merged_entry_then_new_edit_of_the_same_task_without_a_card() {
     assert_eq!(there.title, "Edição depois da atualização");
     assert!(a.list_offline_outbox().unwrap().is_empty());
 }
+
+/// Review F3.0a1, finding 5 (first link). A computer joins (no lineage in
+/// its configuration yet): the first configured path is authenticated at
+/// 9/2 and then a later path cannot be read. What was read is recorded at
+/// once, as for a computer that already knows the lineage.
+///
+/// Red on 5553b64: the level is recorded only for the lineage of the
+/// configuration, empty at the first link, and the error comes first.
+#[test]
+fn f3_0a_first_link_records_the_level_read_before_a_later_path_fails() {
+    let t = mirrors();
+    let damaged = t.dir.path().join("Outra").join("ponte-sync.ponte");
+    std::fs::create_dir_all(damaged.parent().unwrap()).unwrap();
+    std::fs::write(&damaged, b"PONTE-SYNC isto nao e uma copia").unwrap();
+    let mut c = Store::open(&t.dir.path().join("c.sqlite3")).unwrap();
+    c.save_intranet_config(&folder_config(
+        "Terceiro",
+        vec![
+            t.paths[0].display().to_string(),
+            damaged.display().to_string(),
+        ],
+    ))
+    .unwrap();
+    assert!(try_sync(&mut c).is_err(), "the damaged path stops it");
+    assert_eq!(t.floor("c"), (9, F3_LEVEL), "the 9/2 read is recorded");
+}
+
+/// Review F3.0a1, finding 5 (no 9/2 confirmed). An exchange with nothing
+/// new on 9/1 mirrors whose every rewrite fails with an ordinary error:
+/// no 9/2 of the folder is confirmed, so the guard is not written at 9/2
+/// either (the floor stays (9, 1), and a guard above it would say a level
+/// no mirror has). Then a Ponte of F2b moves a mirror ahead: it is the
+/// base, as any newer 9/1 is while the floor is (9, 1).
+///
+/// Red on 5553b64: the guard is rewritten at 9/2.
+#[test]
+// Windows files: read-only is only ever set back to writable here.
+#[allow(clippy::permissions_set_readonly_false)]
+fn f3_0a_guard_stays_9_1_while_no_9_2_mirror_is_confirmed() {
+    let mut t = mirrors();
+    t.as_f2b();
+    let nines = t.nines();
+    let guard = guard_of(&t, "a");
+    assert_eq!(level(&guard), 1);
+    let set_readonly = |on: bool| {
+        for path in &nines {
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_readonly(on);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+    };
+    set_readonly(true);
+    let failed = try_sync(&mut t.a);
+    set_readonly(false);
+    let failed = failed.unwrap_or_else(|e| panic!("nothing new: not an error ({e})"));
+    assert_eq!(failed.unwritten.len(), 2, "{:?}", failed.notes);
+    assert_eq!((level(&nines[0]), level(&nines[1])), (1, 1));
+    assert_eq!(t.floor("a"), (9, 1));
+    assert_eq!(level(&guard), 1, "no 9/2 confirmed: the guard stays 9/1");
+    // A Ponte of F2b moves a mirror ahead.
+    sharedfolder::reseal_for_test(&nines[0], KEY, 1, |header, payload| {
+        header.revision += 1;
+        payload.snapshot.revision += 1;
+        for capture in &mut payload.snapshot.captures {
+            capture.capture.title = "Título gravado pela F2b".into();
+        }
+    })
+    .unwrap();
+    sync(&mut t.a);
+    assert_eq!(
+        t.a.list_documents("").unwrap()[0].title,
+        "Título gravado pela F2b"
+    );
+    assert_eq!((level(&nines[0]), level(&nines[1])), (F3_LEVEL, F3_LEVEL));
+    assert_eq!(t.floor("a"), (9, F3_LEVEL));
+}
+
+/// Review F3.0a1, finding 5 (the guard read authenticated). The floor says
+/// (9, 1), the mirrors are 9/1 and one of them is newer, but this
+/// computer's guard is a 9/2 of the lineage: read authenticated before the
+/// base is chosen, its level raises the floor, so no 9/1 is the base.
+///
+/// Red on 5553b64: only the mirrors and stubs count; the newer 9/1 becomes
+/// the base.
+#[test]
+fn f3_0a_authenticated_9_2_guard_raises_the_floor_before_the_base_is_chosen() {
+    let mut t = mirrors();
+    t.as_f2b();
+    let guard = guard_of(&t, "a");
+    sharedfolder::reseal_for_test(&guard, KEY, F3_LEVEL, |_, _| {}).unwrap();
+    let [n1, _] = t.nines();
+    let title = t.a.list_documents("").unwrap()[0].title.clone();
+    sharedfolder::reseal_for_test(&n1, KEY, 1, |header, payload| {
+        header.revision += 1;
+        payload.snapshot.revision += 1;
+        for capture in &mut payload.snapshot.captures {
+            capture.capture.title = "Título de uma cópia antiga".into();
+        }
+    })
+    .unwrap();
+    let _ = try_sync(&mut t.a);
+    assert_eq!(t.floor("a"), (9, F3_LEVEL), "the guard's level");
+    assert_eq!(
+        t.a.list_documents("").unwrap()[0].title,
+        title,
+        "no 9/1 is the base"
+    );
+}
