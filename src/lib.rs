@@ -72,6 +72,10 @@ pub mod work_context;
 pub mod work_templates;
 pub mod workload;
 
+/// F1 of Frente F: characterization tests of row ids (tests only).
+#[cfg(test)]
+mod f1_inventory;
+
 pub mod dossier;
 
 pub mod pdf_reader;
