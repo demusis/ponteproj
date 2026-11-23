@@ -818,6 +818,8 @@ pub(crate) fn rekey(
     if hooks::FAIL_REKEY.with(|h| h.replace(false)) {
         anyhow::bail!("falha injetada na troca de identidades (teste)");
     }
+    #[cfg(any(test, feature = "test-support"))]
+    hooks::crash_before_rekey(conn);
     let rows = slot_rows(conn, mutation, reply, inserted)?;
     for slot in carried {
         let Some((kind, _, row, _)) = rows
@@ -991,6 +993,26 @@ pub mod hooks {
     /// another thread).
     pub static CORRUPT_MUTATED: std::sync::Mutex<Option<std::path::PathBuf>> =
         std::sync::Mutex::new(None);
+
+    /// The library file of a main computer that falls (its connection
+    /// thread panics, as a crash would: no answer) at its next rekey of a
+    /// carried change, after the change's own effect was committed.
+    pub static CRASH_BEFORE_REKEY: std::sync::Mutex<Option<std::path::PathBuf>> =
+        std::sync::Mutex::new(None);
+
+    pub(crate) fn crash_before_rekey(conn: &rusqlite::Connection) {
+        let mut target = CRASH_BEFORE_REKEY
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let ours = conn
+            .path()
+            .is_some_and(|p| target.as_deref() == Some(std::path::Path::new(p)));
+        if ours {
+            *target = None;
+            drop(target);
+            panic!("queda injetada antes da troca de identidades (teste)");
+        }
+    }
 }
 
 /// Helpers for tests of this crate and of the phone core.

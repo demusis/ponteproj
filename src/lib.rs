@@ -101,6 +101,10 @@ mod f2b_tests;
 /// observed and the refs of every producer (tests only).
 #[cfg(test)]
 mod f3_tests;
+/// F3.0a2 of Frente F: acceptance tests of the resolution of the refs, the
+/// host's durable insertion log and the receipt asked first (tests only).
+#[cfg(test)]
+mod f3a2_tests;
 /// The minimum format of each shared folder this device has seen (F2b).
 pub mod formatfloor;
 /// Identities of the items (library schema 22).
