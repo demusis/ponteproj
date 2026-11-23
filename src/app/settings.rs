@@ -699,6 +699,7 @@ impl PonteApp {
         let summary = self.auto_copy_summary();
         let mut backup = false;
         let mut export = false;
+        let mut export_open = false;
         let mut copy_backup = false;
         let mut automatic = summary.state.ativa;
         // Beside the library file; nothing is created or looked up on disk here.
@@ -850,11 +851,40 @@ impl PonteApp {
                     .clicked();
             },
         );
+        ui.add_space(S3);
+        widgets::section(ui, "Exportação aberta do acervo");
+        widgets::card(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "Grava o acervo inteiro numa pasta VAZIA que você escolhe: um arquivo Markdown por documento (texto atual, versões, nota e seu histórico, minutas, análise e tarefas), os PDFs e anexos com o nome original, as tarefas, projetos, atendimentos, recursos e categorias, e um acervo.json completo para programas. O que está na Lixeira vai numa seção separada, «lixeira». Se você cancelar, a pasta fica marcada com EXPORTACAO-INCOMPLETA.txt. O LEIA-ME.txt da pasta diz o que não vai (senhas, chaves, ajustes) e por quê.",
+                    )
+                    .color(theme::c().muted),
+                )
+                .wrap(),
+            );
+            ui.add_space(S1);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(crate::open_export::NOT_ENCRYPTED)
+                        .color(ui.visuals().warn_fg_color)
+                        .strong(),
+                )
+                .wrap(),
+            );
+            ui.add_space(S1);
+            export_open = ui
+                .add_enabled(idle, widgets::secondary("Exportar tudo em pasta aberta…"))
+                .clicked();
+        });
         if backup {
             self.backup(ctx);
         }
         if export {
             self.export_csv(ctx);
+        }
+        if export_open {
+            self.export_open(ctx);
         }
         ui.add_space(S3);
         self.calendar_exchange(ui);

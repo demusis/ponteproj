@@ -541,7 +541,7 @@ impl Run<'_> {
             "aviso": NOT_ENCRYPTED,
         });
         let header = serde_json::to_string(&header)?;
-        json.write_all(header[..header.len() - 1].as_bytes())?;
+        json.write_all(&header.as_bytes()[..header.len() - 1])?;
         json.write_all(b",\n\"documentos\": [")?;
 
         let ids: Vec<i64> = {
