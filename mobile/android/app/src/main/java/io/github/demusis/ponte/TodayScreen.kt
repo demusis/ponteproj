@@ -140,7 +140,7 @@ internal fun TodayScreen(
         }
         if (risks.isNotEmpty()) item(key = "risks") { RiskCard(risks, onOpenTask) }
         if (week.isNotEmpty()) {
-            item(key = "week") { WeekModule(week, weekStart, onMoveWeek, onOpenWeekEntry) }
+            item(key = "week") { WeekModule(week, weekStart, onMoveWeek, onOpenWeekEntry, (state.late + state.today + state.upcoming).map { it.id }.toSet()) }
         }
         section("late", "Atrasadas", state.late, onToggle, onOpen, late = true)
         section("today", "Para hoje", state.today, onToggle, onOpen)
@@ -250,13 +250,17 @@ internal fun WeekModule(
     week: List<WeekDay>,
     weekStart: java.time.LocalDate?,
     onMove: (Int) -> Unit,
-    onOpen: (WeekEntry) -> Unit
+    onOpen: (WeekEntry) -> Unit,
+    /** Tasks that Hoje lists below ("Atrasadas", "Para hoje", "Próximos dias"): today's list does not repeat their deadlines. */
+    shownTaskIds: Set<Long> = emptySet()
 ) {
     val c = Ponte.colors
     val today = java.time.LocalDate.now()
     val first = week.first().date
     var selectedText by rememberSaveable(first.toString()) { mutableStateOf(WeekPlan.defaultSelected(first, today).toString()) }
-    val selected = week.firstOrNull { it.date.toString() == selectedText } ?: week.first()
+    val picked = week.firstOrNull { it.date.toString() == selectedText } ?: week.first()
+    val view = WeekPlan.dayView(picked, today, shownTaskIds)
+    val selected = view.day
     val current = weekStart != null && weekStart == WeekPlan.mondayOf(today)
     val threshold = with(LocalDensity.current) { 48.dp.toPx() }
     Column(Modifier.padding(horizontal = ROW_MARGIN), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -304,7 +308,8 @@ internal fun WeekModule(
             color = if (selected.date == today) c.accent else c.text
         )
         if (selected.isEmpty) {
-            Text("Dia livre.", Modifier.padding(start = 4.dp), fontSize = 14.sp, color = c.muted)
+            val text = if (view.hiddenDeadlines > 0) WeekPlan.BELOW_NOTICE else "Dia livre."
+            Text(text, Modifier.padding(start = 4.dp), fontSize = 14.sp, color = c.muted)
         } else {
             run {
                 Column {
@@ -327,6 +332,9 @@ internal fun WeekModule(
                         }
                         if (++n < rows) HorizontalDivider(color = c.divider)
                     }
+                }
+                if (view.hiddenDeadlines > 0) {
+                    Text(WeekPlan.BELOW_NOTICE, Modifier.padding(start = 4.dp), fontSize = 14.sp, color = c.muted)
                 }
             }
         }
