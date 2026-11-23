@@ -53,7 +53,11 @@ fn nine_content(path: &Path) -> (Value, usize, String) {
         panic!("{} is not a copy", path.display())
     };
     assert_eq!(
-        (copy.header.format, copy.header.schema_version, copy.header.level),
+        (
+            copy.header.format,
+            copy.header.schema_version,
+            copy.header.level
+        ),
         (9, 22, 1)
     );
     let triples = copy.payload.snapshot.idents.len();
@@ -96,7 +100,10 @@ fn f2b_a_0_51_file_promoted_here_is_refused_by_a_0_51_reader() {
     let golden = crate::f2a_parity::content_of(&file);
     let mut store = Store::open(&dir.path().join("novo.sqlite3")).unwrap();
     store
-        .save_intranet_config(&folder_config("Acervo 22", vec![file.display().to_string()]))
+        .save_intranet_config(&folder_config(
+            "Acervo 22",
+            vec![file.display().to_string()],
+        ))
         .unwrap();
     assert!(!sync(&mut store).promoted, "joining first");
     let report = sync(&mut store);
@@ -137,6 +144,37 @@ fn f2b_a_0_51_file_promoted_here_is_refused_by_a_0_51_reader() {
     }
 }
 
+/// The cards of a library, as (item, reason), sorted.
+fn cards(store: &Store) -> Vec<(String, String)> {
+    let mut cards: Vec<(String, String)> = store
+        .list_sync_conflicts()
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.item_label, c.reason))
+        .collect();
+    cards.sort();
+    cards
+}
+
+/// The cards B gets in the scenario below when the folder stays at format
+/// 8 (the promotion off): what the exchange in format 9 must give too.
+fn cards_in_format_8() -> Vec<(String, String)> {
+    let promotion = crate::idents::hooks::PROMOTION.with(|c| c.replace(false));
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("Drive").join("ponte-sync.ponte");
+    let mut a = crate::f2a_parity::scripted_file(dir.path(), &file);
+    sync(&mut a);
+    let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+    b.save_intranet_config(&folder_config("Outro", vec![file.display().to_string()]))
+        .unwrap();
+    sync(&mut b);
+    every_variant(&mut b, "b");
+    sync(&mut b);
+    crate::idents::hooks::PROMOTION.with(|c| c.set(promotion));
+    assert_eq!(sharedfolder::read_header(&file).unwrap().unwrap().format, 8);
+    cards(&b)
+}
+
 /// Two F2b devices exchange every variant of change in format 9: the
 /// first publishes and promotes, the second takes the 9 and makes every
 /// variant again, the first takes them back. Both end with the same
@@ -155,14 +193,23 @@ fn f2b_a_library_migrated_through_f2b_exchanges_every_variant_with_another() {
         .unwrap();
     sync(&mut b);
     every_variant(&mut b, "b");
+    // Every variant again on B (the holidays may already be the ones the
+    // script saves, and an unchanged setting is not queued).
     let queued = b.list_offline_outbox().unwrap();
     let variants: std::collections::BTreeSet<&str> = queued
         .iter()
         .map(|e| crate::f2a_parity::variant_name(&e.mutation))
         .collect();
-    assert_eq!(variants.len(), crate::f2a_parity::enum_variant_count());
-    let report = sync(&mut b);
-    assert_eq!(report.conflicts, 0, "{:?}", report.notes);
+    assert!(
+        variants.len() + 1 >= crate::f2a_parity::enum_variant_count(),
+        "{variants:?}"
+    );
+    sync(&mut b);
+    assert_eq!(
+        cards(&b),
+        cards_in_format_8(),
+        "the same cards as the exchange in format 8"
+    );
     assert!(b.list_offline_outbox().unwrap().is_empty());
     sync(&mut a);
     sync(&mut b);
@@ -170,6 +217,21 @@ fn f2b_a_library_migrated_through_f2b_exchanges_every_variant_with_another() {
     assert!(
         content.to_string().contains("T-b-doc"),
         "B's work is in the 9"
+    );
+    // Both scripts, every variant, are in the journal of the 9.
+    let Some(Found::Copy(copy)) = sharedfolder::read_any(&nine, KEY).unwrap() else {
+        panic!()
+    };
+    let journaled: std::collections::BTreeSet<&str> = copy
+        .payload
+        .journal
+        .iter()
+        .map(|e| crate::f2a_parity::variant_name(&e.mutation))
+        .collect();
+    assert_eq!(
+        journaled.len(),
+        crate::f2a_parity::enum_variant_count(),
+        "{journaled:?}"
     );
     let ids = |s: &Store| crate::idents::test_support::all_idents(s);
     assert_eq!(ids(&a), ids(&b), "the same identities on both");

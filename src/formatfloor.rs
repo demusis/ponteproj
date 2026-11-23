@@ -70,10 +70,7 @@ pub fn raise(path: &Path, lineage: &str, floor: Floor) -> Result<()> {
         .parent()
         .context("Caminho inválido para o formato mínimo das pastas.")?;
     std::fs::create_dir_all(parent)?;
-    let temp = parent.join(format!(
-        ".{FILE}.tmp-{}",
-        uuid::Uuid::new_v4().simple()
-    ));
+    let temp = parent.join(format!(".{FILE}.tmp-{}", uuid::Uuid::new_v4().simple()));
     let fail = || format!("Não foi possível gravar {}.", path.display());
     let written = (|| -> std::io::Result<()> {
         let mut file = std::fs::File::create(&temp)?;

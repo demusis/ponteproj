@@ -68,6 +68,15 @@ internal object PhoneWords {
     const val TASK_DELETED = "Tarefa excluída."
     const val TASK_RESTORED = "Tarefa restaurada."
 
+    /**
+     * The Drive file became the stub of the shared file's new format (F2b): the person picks the
+     * new file, [name], once, in the existing "Trocar arquivo" of Ajustes. Nothing changed here.
+     */
+    fun movedFile(name: String) =
+        "O arquivo de sincronização do computador foi atualizado para o formato novo do Ponte. " +
+            "Em Ajustes, toque em Trocar arquivo e escolha $name, na mesma pasta do Drive. " +
+            "Isso só precisa ser feito uma vez; nada foi alterado neste aparelho."
+
     /** "1 tarefa" or "3 tarefas". */
     fun plural(n: Int, one: String, many: String) = if (n == 1) "1 $one" else "$n $many"
 
@@ -92,6 +101,9 @@ internal object PhoneWords {
      * first. Each one is matched whole, so nothing else is touched.
      */
     private val sentences: List<Pair<Regex, String>> = listOf(
+        // src/intranet.rs (F2b): the Drive file is the stub of the new format
+        Regex("""O arquivo da pasta foi atualizado\. Escolha em Ajustes o arquivo ([^\s,]+), na mesma pasta do Drive\.""") to
+            movedFile("$1"),
         // mobile/rust/src/lib.rs:44
         Regex("""Falha interna no núcleo do Ponte\.""") to INTERNAL,
         // mobile/rust/src/lib.rs:139

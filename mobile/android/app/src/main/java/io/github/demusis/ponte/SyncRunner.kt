@@ -350,18 +350,26 @@ internal object SyncRunner {
                         throw CoreException("O arquivo de sincronização não ficou completo. Tente sincronizar de novo.")
                     }
                     val want = SyncIo.hashFile(work)
-                    if (!SyncIo.unchanged(original, readUri(ctx, uri, null))) {
+                    // d. write, then verify by reading back; one retry. Before EVERY attempt the
+                    // Drive file must still be the one read, or what our own failed attempt left:
+                    // anything else is another writer (an older Ponte over the stub), and nothing
+                    // is written over it.
+                    var ok = false
+                    var moved = false
+                    var ours: SyncIo.Digest? = null
+                    for (attempt in 1..2) {
+                        if (!SyncIo.mayWrite(original, ours, readUri(ctx, uri, null, Long.MAX_VALUE))) { moved = true; break }
+                        writeUri(ctx, uri, work)
+                        // read back whatever was written, however long
+                        val back = readUri(ctx, uri, null, Long.MAX_VALUE)
+                        if (SyncIo.unchanged(want, back)) { ok = true; break }
+                        ours = back
+                    }
+                    if (moved) {
                         isError = true
                         message = "O arquivo mudou no Drive durante a sincronização. " +
                             "As alterações ficaram guardadas neste aparelho e vão na próxima sincronização."
                     } else {
-                        // d. write, then verify by reading back; one retry
-                        var ok = false
-                        for (attempt in 1..2) {
-                            writeUri(ctx, uri, work)
-                            // read back whatever was written, however long
-                            if (SyncIo.unchanged(want, readUri(ctx, uri, null, Long.MAX_VALUE))) { ok = true; break }
-                        }
                         if (ok) {
                             // Each settled pending copy goes; one the core did not settle stays.
                             settled.forEach { it.delete() }
@@ -517,6 +525,13 @@ internal object SyncIo {
     /** The Drive copy is the one that was read when both the hash and the length match. */
     fun unchanged(before: Digest, now: Digest): Boolean =
         before.sha256 == now.sha256 && before.length == now.length
+
+    /**
+     * Whether the Drive file may be written now: it is still the one that was read ([original]),
+     * or what this phone's own earlier attempt left there ([ours], null before the first).
+     */
+    fun mayWrite(original: Digest, ours: Digest?, now: Digest): Boolean =
+        unchanged(original, now) || (ours != null && unchanged(ours, now))
 
     /** Runs [block] and deletes [files] afterwards, whatever happens (success, error, cancellation). */
     fun <T> withCleanup(files: List<File>, block: () -> T): T {

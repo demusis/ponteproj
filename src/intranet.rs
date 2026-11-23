@@ -260,6 +260,16 @@ impl IntranetConfig {
                         "O arquivo de sincronização precisa terminar em .ponte (ex.: ponte-sync.ponte)."
                     );
                 }
+                // One file twice (another case, or one entry the other's file
+                // of format 9): a copy would be read twice, or a 9 taken for
+                // an 8.
+                if let Some((first, second)) = crate::sharedfolder::aliases(&paths) {
+                    bail!(
+                        "Dois arquivos da lista são o mesmo arquivo ({} e {}); retire um deles da lista.",
+                        first.display(),
+                        second.display()
+                    );
+                }
                 ensure!(
                     self.folder_key.len() <= 256 && !self.folder_key.chars().any(char::is_control),
                     "Senha de sincronização inválida."
@@ -650,6 +660,10 @@ pub(crate) const SCHEDULE_SCHEMA: i64 = 18;
 pub(crate) const SETTINGS_SCHEMA: i64 = 20;
 /// The first library schema that stores the projects.
 pub(crate) const PROJECTS_SCHEMA: i64 = 21;
+
+fn is_zero_level(level: &u32) -> bool {
+    *level == 0
+}
 
 /// What a person is told when the main computer does not store projects.
 pub(crate) const HOST_WITHOUT_PROJECTS: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda projetos. Atualize o Ponte no computador principal e tente de novo.";
@@ -1225,7 +1239,7 @@ pub enum RpcResponse {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         epoch: String,
         /// The level of format 9 the main computer speaks (V2).
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "is_zero_level")]
         level: u32,
     },
     Snapshot(Box<CabinetSnapshot>),
@@ -1443,6 +1457,10 @@ pub(crate) const SNAPSHOT_BOOKKEEPING: &[&str] = &[
     "team_events",
     "schema_version",
     "generation",
+    // The identities of the items above and their epoch (format 9, team
+    // V2): never items of their own.
+    "idents",
+    "ident_epoch",
 ];
 
 /// Exchanges dispatched and not finished in this process: synchronizations
@@ -1586,6 +1604,9 @@ struct StoredReceipt {
     reply: MutationReply,
     #[serde(default)]
     created: Option<Vec<crate::idmap::CreatedId>>,
+    /// The identities the change's rows were given (V2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    idents: Vec<crate::idents::SlotIdent>,
 }
 
 /// How long, and how many, answers to applied changes the main computer keeps.
@@ -1621,6 +1642,14 @@ fn valid_mutation_uid(uid: &str) -> bool {
 const HISTORY_CHANGED: &str = "O acervo do computador principal mudou de história (uma cópia de segurança foi restaurada, por exemplo). A alteração não foi aplicada; ela fica guardada neste computador até você decidir na próxima sincronização.";
 
 const HOST_TOO_OLD: &str = "Formato de mensagem incompatível com o anfitrião.";
+
+/// What a client of this build is told by a main computer of an older
+/// Ponte, which cannot read the team protocol V2: it waits, its queue kept.
+pub(crate) const HOST_WITHOUT_IDENTS: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda a identidade dos itens. Atualize o Ponte no computador principal; as alterações continuam guardadas aqui.";
+
+/// What a main computer of this build answers (503, before opening its
+/// library) to a request of an older Ponte, sent without the protocol V2.
+pub(crate) const LEGACY_REFUSED: &str = "O computador principal foi atualizado para uma versão nova do Ponte. Atualize o Ponte neste computador para voltar a sincronizar; as alterações continuam guardadas aqui.";
 
 const HOST_CANNOT_READ_START: &str = "O computador principal não entendeu esta mensagem";
 
@@ -1918,6 +1947,15 @@ fn ensure_queue_settled(conn: &Connection, sent: &[(i64, String)]) -> Result<()>
         ensure!(sent.contains(&queued), "{QUEUE_GREW}");
     }
     Ok(())
+}
+
+/// Inside the adoption of a snapshot of the main computer (V2): the
+/// identities of this library are now the main computer's, of `epoch`.
+fn adopted_from_host(tx: &Connection, epoch: &str) -> Result<()> {
+    if epoch.is_empty() {
+        return Ok(());
+    }
+    crate::idents::set_origin(tx, "adopted", Some("principal"), Some(epoch))
 }
 
 /// Number and uid of every queued change. A change merged into a queued row
@@ -2572,6 +2610,7 @@ impl Store {
                     Err(_) => Ok(Some(StoredReceipt {
                         reply: serde_json::from_slice(&plain)?,
                         created: None,
+                        idents: Vec::new(),
                     })),
                 }
             }
@@ -3664,6 +3703,8 @@ impl Store {
             &tx,
             &format!("{}\n{}", snapshot.revision, snapshot.generation),
         );
+        // The identities the copy carries (format 9, team V2) go with its rows.
+        crate::idents::adopt_triples(&tx, snapshot)?;
         finish(&tx)?;
         tx.commit()?;
         Ok(())
@@ -4272,7 +4313,11 @@ impl Store {
                     known_epoch: String::new(),
                 },
             ) {
-                Ok(RpcResponse::Snapshot(snap)) => Some(snap),
+                Ok(RpcResponse::Snapshot(snap)) => {
+                    // Checked before anything is translated against it.
+                    crate::idents::check(&snap, None)?;
+                    Some(snap)
+                }
                 Ok(RpcResponse::Error { message }) => bail!("{message}"),
                 Ok(_) => None,
                 Err(RpcError::Unreachable(msg)) => {
@@ -4405,6 +4450,14 @@ impl Store {
                         created,
                         ..
                     }) => {
+                        // The answer is used only once its snapshot checks:
+                        // otherwise nothing is learned, no frame is kept and
+                        // the entry stays queued (it may be applied there:
+                        // it keeps its identity for the next send).
+                        if let Err(error) = crate::idents::check(&snapshot, None) {
+                            self.mark_outbox_attempted(entry.id)?;
+                            return Err(error);
+                        }
                         let there = match created {
                             Some(there) => there,
                             None => crate::idmap::created_ids(&*snapshot, &sent.mutation, &reply)?,
@@ -4478,11 +4531,12 @@ impl Store {
         } else {
             Some(cfg.synced_revision)
         };
+        let known_epoch = self.known_host_epoch();
         let ask = |store: &mut Store, since_revision: Option<i64>| match send_rpc_classified(
             &cfg,
             &RpcRequest::Sync {
                 since_revision,
-                known_epoch: String::new(),
+                known_epoch: known_epoch.clone(),
             },
         ) {
             Ok(response) => {
@@ -4496,6 +4550,9 @@ impl Store {
             Err(RpcError::Rejected(msg)) => bail!("{msg}"),
         };
         let mut response = ask(&mut *self, since)?;
+        if let RpcResponse::Snapshot(snapshot) = &response {
+            crate::idents::check(snapshot, None)?;
+        }
         let broken = match &response {
             RpcResponse::UpToDate {
                 revision,
@@ -4513,6 +4570,9 @@ impl Store {
             replacing = true;
             if matches!(response, RpcResponse::UpToDate { .. }) {
                 response = ask(&mut *self, None)?;
+                if let RpcResponse::Snapshot(snapshot) = &response {
+                    crate::idents::check(snapshot, None)?;
+                }
             }
         }
         match response {
@@ -4528,13 +4588,29 @@ impl Store {
                 if projects_only && snapshot.revision == cfg.synced_revision {
                     return self.take_projects_from(&snapshot);
                 }
+                // At the revision this copy already holds, the main computer
+                // answers with its snapshot only because this library never
+                // took its identities (V2): before F2b the answer was "up to
+                // date" and this library stayed as it is (work kept here at
+                // that revision included). Only the identities are taken,
+                // and only when the content is the same.
+                if !replacing
+                    && since == Some(cfg.synced_revision)
+                    && snapshot.revision == cfg.synced_revision
+                {
+                    return self.take_identities_from(&snapshot);
+                }
                 let cfg_clone = cfg.clone();
+                let epoch = snapshot.ident_epoch.clone();
                 if !replacing {
                     self.apply_snapshot_and(
                         &snapshot,
                         |file_id, capture_id| fetch_remote_pdf(&cfg_clone, file_id, capture_id),
                         |id| fetch_remote_attachment(&cfg_clone, id),
-                        |tx| ensure_queue_settled(tx, &[]),
+                        |tx| {
+                            ensure_queue_settled(tx, &[])?;
+                            adopted_from_host(tx, &epoch)
+                        },
                     )?;
                     return Ok(true);
                 }
@@ -4577,6 +4653,7 @@ impl Store {
                             format!("O computador principal voltou a uma história anterior; esta alteração não foi enviada. Uma cópia do acervo anterior a esta substituição ficou em {kept}.")
                         };
                         ensure_queue_settled(tx, &moved)?;
+                        adopted_from_host(tx, &epoch)?;
                         // What kind of copy this library really holds.
                         record_cache_schema(tx, original_schema)?;
                         for entry in &replaced_queue {
@@ -4592,6 +4669,35 @@ impl Store {
             RpcResponse::Error { message } => bail!("{message}"),
             _ => bail!("Resposta inesperada do computador principal durante a sincronização."),
         }
+    }
+
+    /// The snapshot of the main computer at the revision this library
+    /// already holds (see `sync_from_host_inner`): when its content is this
+    /// library's, row for row, this library takes its identities and its
+    /// epoch; otherwise nothing changes. Answers whether anything visible
+    /// changed (never).
+    fn take_identities_from(&mut self, snapshot: &CabinetSnapshot) -> Result<bool> {
+        let content = |snapshot: &CabinetSnapshot| -> Result<serde_json::Value> {
+            let mut plain = snapshot.clone();
+            plain.idents.clear();
+            plain.ident_epoch.clear();
+            plain.generation.clear();
+            Ok(serde_json::to_value(plain)?)
+        };
+        // One state of this library: read and, when equal, rekeyed in the
+        // same transaction.
+        let tx = self.conn.unchecked_transaction()?;
+        let here = {
+            let mut mine = self.export_snapshot()?;
+            mine.revision = snapshot.revision;
+            content(&mine)?
+        };
+        if here == content(snapshot)? && crate::idents::has_idents(&tx)? {
+            crate::idents::adopt_triples(&tx, snapshot)?;
+            adopted_from_host(&tx, &snapshot.ident_epoch)?;
+            tx.commit()?;
+        }
+        Ok(false)
     }
 
     /// The copy this library holds is at the revision of the main computer
@@ -4708,7 +4814,7 @@ impl Store {
         allow_replace: bool,
         reporter: &crate::ai::Reporter,
     ) -> Result<FolderSyncReport> {
-        use crate::sharedfolder::{self, JournalEntry};
+        use crate::sharedfolder::{self, Found, JournalEntry};
         ensure!(!self.transport_off, TRANSPORT_OFF);
         ensure!(
             cfg.mode == IntranetMode::SharedFolder,
@@ -4719,25 +4825,78 @@ impl Store {
             !key.is_empty(),
             "Informe a senha de sincronização em Ajustes ▸ Equipe e sincronização."
         );
+        let phone = self.folder_role == crate::formatfloor::FolderRole::Phone;
         let paths = cfg.folder_paths();
         let mut report = FolderSyncReport::default();
         reporter.step("Lendo as pastas…");
+        // What each file read starts with (magic and header, salt and nonce
+        // included): a writer compares it, byte for byte, right before it
+        // replaces the file (design F2b §3.2).
+        let mut expected: BTreeMap<PathBuf, Option<Vec<u8>>> = BTreeMap::new();
+        // Copies of format 8 at a configured path, files of format 9 (at a
+        // configured path or beside one), stubs and paths with nothing.
         let mut copies = Vec::new();
+        let mut nines: Vec<sharedfolder::Copy> = Vec::new();
+        let mut stubs: Vec<(PathBuf, sharedfolder::Header, String)> = Vec::new();
         let mut absent = Vec::new();
+        // On a computer, for each configured path that is not itself a file
+        // of format 9: (the path, its file of format 9, whether that one is
+        // a 9 of this folder).
+        let mut entries: Vec<(PathBuf, PathBuf, bool)> = Vec::new();
+        // A name of format 9 already taken by something that is not one.
+        let mut nine_blocked: Vec<String> = Vec::new();
         for path in &paths {
             let folder = path.parent().context("Caminho de pasta inválido.")?;
             if !folder.is_dir() {
                 report.unreachable.push(path.display().to_string());
                 continue;
             }
-            match sharedfolder::read(path, key) {
-                Ok(Some(copy)) => copies.push(copy),
+            expected.insert(path.clone(), sharedfolder::header_line(path)?);
+            let mut is_nine = false;
+            match sharedfolder::read_any(path, key) {
+                Ok(Some(Found::Copy(copy))) if copy.header.format >= sharedfolder::FORMAT_9 => {
+                    is_nine = true;
+                    nines.push(copy);
+                }
+                Ok(Some(Found::Copy(copy))) => copies.push(copy),
+                Ok(Some(Found::Moved { header, moved_to })) => {
+                    stubs.push((path.clone(), header, moved_to))
+                }
                 Ok(None) => absent.push(path.clone()),
                 Err(error) => bail!("{}: {error}", path.display()),
             }
+            if phone || is_nine {
+                continue;
+            }
+            // Classified by what the file says, never by its name: the file
+            // of format 9 of this path is the one beside it.
+            let nine = sharedfolder::nine_path(path);
+            let line = sharedfolder::header_line(&nine).unwrap_or(None);
+            let read = if nine.exists() {
+                sharedfolder::read_any(&nine, key)
+            } else {
+                Ok(None)
+            };
+            expected.insert(nine.clone(), line);
+            let name = nine
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let mut good = false;
+            match read {
+                Ok(Some(Found::Copy(copy))) if copy.header.format >= sharedfolder::FORMAT_9 => {
+                    good = true;
+                    nines.push(copy);
+                }
+                Ok(None) => {}
+                _ => nine_blocked.push(format!(
+                    "Já existe {name} nesta pasta e não é do formato novo; renomeie-o ou retire-o para continuar a atualização"
+                )),
+            }
+            entries.push((path.clone(), nine, good));
         }
         ensure!(
-            !(copies.is_empty() && absent.is_empty()),
+            !(copies.is_empty() && nines.is_empty() && stubs.is_empty() && absent.is_empty()),
             "Nenhuma pasta está acessível agora ({}). Conecte o pendrive ou espere a nuvem ficar disponível.",
             report.unreachable.join("; ")
         );
@@ -4746,40 +4905,135 @@ impl Store {
         // (a phone whose Drive app served a cached file, two computers
         // writing at once), what this computer wrote comes back from here.
         let guard_path = self.guard_copy_path();
-        let guard_header = guard_path
+        let mut guard_header = guard_path
             .as_ref()
             .and_then(|path| sharedfolder::read_header(path).ok().flatten());
         let lineage = if !cfg.folder_lineage.trim().is_empty() {
             cfg.folder_lineage.clone()
         } else {
-            copies
-                .first()
+            nines
+                .iter()
                 .map(|c| c.header.lineage.clone())
+                .chain(copies.iter().map(|c| c.header.lineage.clone()))
+                .chain(stubs.iter().map(|(_, h, _)| h.lineage.clone()))
+                .next()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string())
         };
-        for copy in &copies {
+        for (path, header) in nines
+            .iter()
+            .chain(copies.iter())
+            .map(|c| (&c.path, &c.header))
+            .chain(stubs.iter().map(|(p, h, _)| (p, h)))
+        {
             ensure!(
-                copy.header.lineage == lineage,
+                header.lineage == lineage,
                 "A pasta {} contém outro acervo, não o deste computador. Retire-a da lista ou escolha outro arquivo.",
-                copy.path.display()
+                path.display()
             );
             ensure!(
-                copy.header.schema_version <= crate::storage::SCHEMA_VERSION,
+                sharedfolder::schema_readable(header),
                 "A cópia em {} foi gravada por um Ponte mais novo; atualize o Ponte neste computador.",
-                copy.path.display()
+                path.display()
             );
+        }
+        // Every file of format 9 is checked before it is chosen or used.
+        for copy in &nines {
+            crate::idents::check(&copy.payload.snapshot, Some(&copy.header))
+                .with_context(|| copy.path.display().to_string())?;
+        }
+        // The minimum format this device has seen of this folder: a 9 or a
+        // stub read now raises it (it never goes down).
+        let guard_is_nine = guard_header
+            .as_ref()
+            .is_some_and(|h| h.lineage == lineage && h.format >= sharedfolder::FORMAT_9);
+        if !nines.is_empty() || !stubs.is_empty() || guard_is_nine {
+            self.raise_floor_to_nine(&lineage)?;
+        }
+        let nine_mode = self.format_floor(&lineage)? >= sharedfolder::FORMAT_9;
+        if phone && (!stubs.is_empty() || (nine_mode && nines.is_empty())) {
+            // The phone never follows a stub by itself: the person picks
+            // the new file once (its Drive permission is per file).
+            let name = stubs
+                .first()
+                .map(|(_, _, to)| to.clone())
+                .unwrap_or_else(|| format!("ponte-sync{}.ponte", sharedfolder::NINE_SUFFIX));
+            bail!("O arquivo da pasta foi atualizado. Escolha em Ajustes o arquivo {name}, na mesma pasta do Drive.");
+        }
+        // The copies this exchange works with, and the old ones it only
+        // takes changes from (design §3.5).
+        let mut donors: Vec<sharedfolder::Copy> = Vec::new();
+        // Paths that get the stub back, pointing to their file of format 9.
+        let mut stub_targets: Vec<(PathBuf, String)> = Vec::new();
+        if nine_mode {
+            if let Some((path, nine, _)) = entries
+                .iter()
+                .find(|(_, _, good)| !good)
+                .filter(|_| nines.is_empty())
+            {
+                let _ = path;
+                bail!(
+                    "A pasta foi atualizada, mas {} ainda não chegou a este computador. Espere a nuvem sincronizar e tente de novo.",
+                    nine.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                );
+            }
+            ensure!(
+                !nines.is_empty(),
+                "A pasta foi atualizada, mas o arquivo do formato novo ainda não chegou a este computador. Espere a nuvem sincronizar e tente de novo."
+            );
+            if let Some(blocked) = nine_blocked.first() {
+                bail!("{blocked}.");
+            }
+            // Every copy of format 8 read now is an old one: a donor.
+            donors = std::mem::take(&mut copies);
+            // The paths with nothing get their file of format 9 beside them
+            // (and the stub); on the phone, a pending path with nothing is
+            // simply not there.
+            absent.retain(|_| false);
+            for (path, nine, good) in &entries {
+                let name = nine
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if !good {
+                    absent.push(nine.clone());
+                }
+                let stub_ok = stubs
+                    .iter()
+                    .any(|(p, _, to)| p == path && to.eq_ignore_ascii_case(&name));
+                if !stub_ok {
+                    stub_targets.push((path.clone(), name));
+                }
+            }
+            // The guard is this computer's last write; one of format 8 is
+            // an old copy now.
+            if let (Some(path), Some(header)) = (&guard_path, &guard_header) {
+                if header.lineage == lineage && header.format < sharedfolder::FORMAT_9 {
+                    if let Ok(Some(copy)) = sharedfolder::read(path, key) {
+                        donors.push(copy);
+                    }
+                    guard_header = None;
+                }
+            }
+            copies = std::mem::take(&mut nines);
         }
         // The guard copy counts only as this computer's last write: same
         // library, written by this computer, not older than the last
         // exchange (a guard whose write failed is stale and would roll
         // changes back). Anything else is removed and written again.
+        let guard_donor = nine_mode
+            && guard_path
+                .as_ref()
+                .is_some_and(|g| donors.iter().any(|d| &d.path == g));
         let guard_trusted = guard_header.as_ref().is_some_and(|h| {
             h.lineage == lineage
                 && h.writer == cfg.folder_writer
                 && h.revision >= cfg.synced_revision
-                && h.schema_version <= crate::storage::SCHEMA_VERSION
+                && sharedfolder::schema_readable(h)
+                && (h.format >= sharedfolder::FORMAT_9) == nine_mode
         });
-        if guard_header.is_some() && !guard_trusted {
+        if guard_header.is_some() && !guard_trusted && !guard_donor {
             if let Some(path) = &guard_path {
                 let _ = std::fs::remove_file(path);
             }
@@ -4862,10 +5116,41 @@ impl Store {
                 pure = restored;
             }
         }
+        // The promotion of the folder to the shared file of format 9 (design
+        // §3.4): attempted by a computer of this build whose identities are
+        // still provisional, on a folder still at format 8. Conditions P2-P4
+        // and P6 are read here; P5 after the queue was replayed.
+        let mut promote: Option<Vec<(PathBuf, PathBuf)>> = None;
+        let p1 = !phone
+            && !nine_mode
+            && promotion_on()
+            && crate::idents::has_idents(&self.conn)?
+            && crate::idents::origin(&self.conn)?.0 == "provisional";
+        if p1 && !first_write && !joining && !pure {
+            let reason = self.promotion_obstacle(
+                key,
+                &report,
+                &nine_blocked,
+                &copies,
+                guard_header.as_ref(),
+                &entries,
+            )?;
+            match reason {
+                Some(reason) => report.promotion_wait = Some(promotion_wait_line(&reason)),
+                None => {
+                    promote = Some(
+                        entries
+                            .iter()
+                            .map(|(path, nine, _)| (path.clone(), nine.clone()))
+                            .collect(),
+                    )
+                }
+            }
+        }
         // The guard copy joins the copies read (never as a folder, never in
         // place of an empty folder): its changes missing from the newest
         // copy are merged like any other.
-        let guard_missing = guard_path.is_some() && !guard_trusted;
+        let guard_missing = guard_path.is_some() && !guard_trusted && !guard_donor;
         if let Some(copy) = guard {
             copies.push(copy);
             sharedfolder::sort_newest_first(&mut copies);
@@ -4946,6 +5231,9 @@ impl Store {
             || !absent.is_empty()
             || guard_missing;
         if !first_write
+            && promote.is_none()
+            && donors.is_empty()
+            && stub_targets.is_empty()
             && outbox.is_empty()
             && foreign.is_empty()
             && copies[0].header.revision == cfg.synced_revision
@@ -4977,6 +5265,14 @@ impl Store {
         let temp_dir = crate::paths::data_dir()?.join("temp");
         std::fs::create_dir_all(&temp_dir)?;
         let temp_path = temp_dir.join(format!("sync-{}.sqlite3", uuid::Uuid::new_v4().simple()));
+        let plan = FolderPlan {
+            nine: nine_mode,
+            donors,
+            guard_donor,
+            stub_targets,
+            promote,
+            expected,
+        };
         let result = self.reconcile_with_folders(
             cfg,
             key,
@@ -4993,11 +5289,91 @@ impl Store {
             &temp_path,
             reporter,
             report,
+            plan,
         );
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", temp_path.display()));
         }
         result
+    }
+
+    /// Why the folder cannot be promoted to the shared file of format 9 in
+    /// this exchange (conditions P2-P4 and P6 of design §3.4), in words for
+    /// the person; `None` when nothing stands in the way.
+    fn promotion_obstacle(
+        &self,
+        key: &str,
+        report: &FolderSyncReport,
+        nine_blocked: &[String],
+        copies: &[crate::sharedfolder::Copy],
+        guard: Option<&crate::sharedfolder::Header>,
+        entries: &[(PathBuf, PathBuf, bool)],
+    ) -> Result<Option<String>> {
+        if !report.unreachable.is_empty() {
+            return Ok(Some(format!(
+                "{} não {} acessível agora; conecte ou retire da lista",
+                report.unreachable.join(", "),
+                if report.unreachable.len() == 1 {
+                    "está"
+                } else {
+                    "estão"
+                }
+            )));
+        }
+        if let Some(blocked) = nine_blocked.first() {
+            return Ok(Some(blocked.clone()));
+        }
+        if let Some(best) = copies.first() {
+            // No divergence: every copy at the same revision with the same
+            // content (a mirror rewritten by a later exchange carries
+            // another moment, never other content).
+            let identity = best.content_identity();
+            if !copies.iter().skip(1).all(|c| {
+                c.header.revision == best.header.revision && c.content_identity() == identity
+            }) {
+                return Ok(Some(
+                    "as cópias das pastas ainda não estão iguais; a próxima sincronização as iguala"
+                        .into(),
+                ));
+            }
+            if let Some(guard) = guard {
+                // The same write, or this computer's own copy of the very
+                // same content (written when it joined).
+                let same_content = || {
+                    self.guard_copy_path()
+                        .and_then(|path| crate::sharedfolder::read(&path, key).ok().flatten())
+                        .is_some_and(|copy| copy.content_identity() == identity)
+                };
+                if guard.lineage != best.header.lineage
+                    || guard.revision != best.header.revision
+                    || (guard.writer != best.header.writer && !same_content())
+                {
+                    return Ok(Some(
+                        "a cópia de segurança deste computador não é a mesma da pasta; a próxima sincronização as iguala"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        if crate::idmap::has_pending(&self.conn)? {
+            return Ok(Some(
+                "há itens criados neste computador que ainda não receberam o número da pasta"
+                    .into(),
+            ));
+        }
+        for (path, nine, _) in entries {
+            let found: Vec<String> = crate::sharedfolder::conflict_copies_of(path)
+                .into_iter()
+                .chain(crate::sharedfolder::conflict_copies_of(nine))
+                .collect();
+            if !found.is_empty() {
+                return Ok(Some(format!(
+                    "a pasta tem cópias em conflito da nuvem ({}); junte o que for preciso e apague-as",
+                    found.join(", ")
+                )));
+            }
+        }
+        Ok(None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5018,8 +5394,28 @@ impl Store {
         temp_path: &std::path::Path,
         reporter: &crate::ai::Reporter,
         mut report: FolderSyncReport,
+        plan: FolderPlan,
     ) -> Result<FolderSyncReport> {
         use crate::sharedfolder::{self, JournalEntry, Payload, WriteRequest};
+        let FolderPlan {
+            nine: nine_mode,
+            donors,
+            guard_donor,
+            stub_targets,
+            mut promote,
+            expected,
+        } = plan;
+        // Where this device keeps the floor of the folders: read again
+        // right before an 8 is written and inside the adoption of an 8.
+        let floor_file = self.floor_file();
+        let floor_is_nine = || -> Result<bool> {
+            Ok(match &floor_file {
+                Some(file) => {
+                    crate::formatfloor::read(file, lineage)?.format >= sharedfolder::FORMAT_9
+                }
+                None => false,
+            })
+        };
         let mut applied: std::collections::BTreeSet<String> = Default::default();
         let mut journal: Vec<JournalEntry> = Vec::new();
         let mut processed_outbox: Vec<(i64, String)> = Vec::new();
@@ -5351,15 +5747,36 @@ impl Store {
                             Some(&store),
                         )
                     });
+                // The rows it inserts take the identities it carries (a
+                // copy of format 9); a failure of the identities after the
+                // change may have been applied stops the whole exchange.
+                let mut broken: Option<anyhow::Error> = None;
                 let outcome = match &remapped {
                     Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &store)
                         .and_then(|_| {
-                            store
-                                .execute_mutation(&entry.actor, mutation.clone())
-                                .map_err(|error| error.to_string())
+                            match store.execute_carrying(
+                                &entry.actor,
+                                mutation.clone(),
+                                &entry.idents,
+                            ) {
+                                Ok(crate::idents::Carried::Applied(reply, _)) => Ok(reply),
+                                Ok(crate::idents::Carried::Refused(error)) => {
+                                    Err(error.to_string())
+                                }
+                                Err(error) => {
+                                    broken = Some(error);
+                                    Err(String::new())
+                                }
+                            }
                         }),
                     Err(reason) => Err(reason.clone()),
                 };
+                if let Some(error) = broken {
+                    return Err(error.context(format!(
+                        "A sincronização parou antes de gravar qualquer coisa: a alteração «{}» foi reaplicada, mas as identidades dos itens dela não puderam ser registradas. Nada foi enviado nem adotado; tente de novo.",
+                        entry.label
+                    )));
+                }
                 match (remapped, outcome) {
                     (Ok(mutation), Ok(reply)) => {
                         let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
@@ -5433,6 +5850,23 @@ impl Store {
                         // would skip it and never learn it was refused.
                         report.conflicts += 1;
                     }
+                }
+            }
+            // Old copies (format 8) read after the folder moved to format 9
+            // (design §3.5): their changes are taken only when every row
+            // they name was created by the same copy's earlier changes.
+            if !donors.is_empty() {
+                let carded = carded_uids(&self.conn)?;
+                for donor in &donors {
+                    self.take_from_old_copy(
+                        &mut store,
+                        donor,
+                        &mut applied,
+                        &mut journal,
+                        &carded,
+                        &mut conflicts,
+                        &mut report,
+                    )?;
                 }
             }
             if !outbox.is_empty() {
@@ -5638,6 +6072,14 @@ impl Store {
             }
             temp = Some(store);
         }
+        // P5: every change of the queue replayed without a refusal.
+        if promote.is_some() && report.conflicts > 0 {
+            promote = None;
+            report.promotion_wait = Some(promotion_wait_line(
+                "uma alteração deste computador não pôde ser aplicada; resolva o aviso dela",
+            ));
+        }
+        let nine_out = nine_mode || promote.is_some();
 
         reporter.step("Reunindo PDFs e anexos…");
         let (final_snapshot, blobs) = match &temp {
@@ -5648,7 +6090,24 @@ impl Store {
                         peek(store);
                     }
                 });
-                let snapshot = store.export_snapshot()?;
+                let mut snapshot = store.export_snapshot()?;
+                if nine_out {
+                    // The cut (design §3.4): the epoch is what the result
+                    // holds, and every row of it gets the identity derived
+                    // from it, in the temporary library alone. Otherwise the
+                    // epoch of the file of format 9 the result was built on.
+                    let epoch = if promote.is_some() {
+                        let epoch = sharedfolder::snapshot_identity(&snapshot);
+                        crate::idents::stamp(&store.conn, lineage, &epoch)?;
+                        epoch
+                    } else {
+                        copies
+                            .first()
+                            .map(|c| c.payload.snapshot.ident_epoch.clone())
+                            .unwrap_or_default()
+                    };
+                    crate::idents::attach(&store.conn, &mut snapshot, &epoch)?;
+                }
                 let blobs = collect_blobs(store, &snapshot)?;
                 (snapshot, blobs)
             }
@@ -5673,18 +6132,54 @@ impl Store {
             .map(|c| (c.path.clone(), c.content_identity()))
             .collect();
         sharedfolder::trim_journal(&mut journal);
+        if !nine_out {
+            // A file of format 8 carries no identity.
+            for entry in journal.iter_mut() {
+                entry.idents.clear();
+            }
+        }
         let payload = Payload {
             snapshot: final_snapshot.clone(),
             applied: applied.into_iter().collect(),
             journal,
+        };
+        // One moment for every file this exchange writes: copies written
+        // together say so (the same revision, writer and moment).
+        let written_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let format = if nine_out {
+            sharedfolder::FORMAT_9
+        } else {
+            sharedfolder::FORMAT
         };
         let request = WriteRequest {
             lineage,
             revision,
             writer: &cfg.folder_writer,
             writer_name: cfg.member_name.trim(),
-            schema_version: crate::storage::SCHEMA_VERSION,
+            schema_version: if nine_out {
+                crate::storage::LIBRARY_SCHEMA
+            } else {
+                crate::storage::SCHEMA_VERSION
+            },
         };
+        // The very object about to be published is checked before any
+        // destination is touched.
+        if nine_out {
+            let shape = sharedfolder::Header {
+                format,
+                schema_version: request.schema_version,
+                lineage: lineage.to_owned(),
+                revision,
+                writer: String::new(),
+                writer_name: String::new(),
+                written_at: String::new(),
+                salt: String::new(),
+                nonce: String::new(),
+                level: sharedfolder::LEVEL,
+                points_to: String::new(),
+            };
+            crate::idents::check(&payload.snapshot, Some(&shape))?;
+        }
         let changed_content = first_write
             || carried_old_fields
             || report.pushed > 0
@@ -5692,7 +6187,9 @@ impl Store {
             || report.conflicts > 0;
         let mut targets: Vec<PathBuf> = absent.to_vec();
         for copy in copies {
-            if guard_path == Some(copy.path.as_path()) {
+            if guard_path == Some(copy.path.as_path()) || promote.is_some() {
+                // A promotion leaves the copies of format 8 where they are
+                // (each is kept aside before its stub replaces it).
                 continue;
             }
             // A copy already at this exact state is left alone; one at the
@@ -5705,6 +6202,9 @@ impl Store {
             {
                 targets.push(copy.path.clone());
             }
+        }
+        if let Some(entries) = &promote {
+            targets = entries.iter().map(|(_, nine)| nine.clone()).collect();
         }
         if !targets.is_empty() {
             reporter.step(format!(
@@ -5816,7 +6316,51 @@ impl Store {
         }
         let mut failures = Vec::new();
         let mut archived: Vec<PathBuf> = Vec::new();
+        // Every old copy is kept aside, verified, before its path gets the
+        // stub back or the guard is rewritten; one that cannot be kept stops
+        // the exchange. A pending copy of the phone is never rewritten: it
+        // stays unsettled, and the phone keeps it.
+        for donor in &donors {
+            let at_folder = stub_targets.iter().any(|(p, _)| *p == donor.path);
+            let is_guard = guard_donor && guard_path == Some(donor.path.as_path());
+            if !at_folder && !is_guard {
+                report.unsettled.push(donor.path.display().to_string());
+                continue;
+            }
+            let aside = sharedfolder::keep_aside(&donor.path).with_context(|| {
+                format!(
+                    "A cópia antiga em {} não pôde ser guardada à parte; nada foi gravado nem substituído.",
+                    donor.path.display()
+                )
+            })?;
+            archived.push(donor.path.clone());
+            report.notes.push(if is_guard {
+                format!(
+                    "A cópia de segurança deste computador ainda era do formato anterior do Ponte; ela foi guardada em {} e agora é gravada no formato novo.",
+                    aside.display()
+                )
+            } else {
+                format!(
+                    "A cópia de {} foi gravada por uma versão anterior do Ponte depois que a pasta foi atualizada. Ela foi guardada em {}; o que dela pôde ser reaplicado está no acervo, e o resto ficou em avisos.",
+                    donor.path.display(),
+                    aside.display()
+                )
+            });
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) =
+            crate::idents::hooks::BEFORE_FOLDER_WRITE.with(|h| h.borrow_mut().take())
+        {
+            hook();
+        }
         for path in &targets {
+            // An 8 is never written once this device has seen a 9 of the
+            // folder (another window or process may have raised the floor
+            // since the folders were read): read again before each one.
+            ensure!(
+                nine_out || !floor_is_nine()?,
+                "Esta pasta já foi atualizada para o formato novo do Ponte; a cópia no formato anterior não foi gravada. Sincronize de novo."
+            );
             // What the rewrite would drop is kept first, beside it; if that
             // cannot be done, the copy is left as it is.
             if preserve.contains(path) {
@@ -5849,8 +6393,22 @@ impl Store {
                     }
                 }
             }
-            match sharedfolder::write(path, key, &request, &payload, &blobs) {
+            match sharedfolder::write_checked(
+                path,
+                key,
+                &request,
+                &payload,
+                &blobs,
+                format,
+                expected.get(path),
+                Some(&written_at),
+            ) {
                 Ok(_) => report.written_to.push(path.display().to_string()),
+                Err(error) if error.is::<sharedfolder::ChangedMeanwhile>() => {
+                    // Another writer in between: stop here, adopt nothing.
+                    self.keep_conflicts(&conflicts)?;
+                    return Err(error);
+                }
                 Err(error) => {
                     if preserve.contains(path) {
                         report.preserve_failed.push(path.display().to_string());
@@ -5868,6 +6426,86 @@ impl Store {
             );
         }
         report.notes.extend(failures);
+        if nine_out && !report.written_to.is_empty() {
+            // A 9 of this folder is out: this device never writes an 8 of it
+            // again.
+            self.raise_floor_to_nine(lineage)?;
+        }
+        if promote.is_some() {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                if let Some(hook) =
+                    crate::idents::hooks::AFTER_NINE_WRITTEN.with(|h| h.borrow_mut().take())
+                {
+                    hook();
+                }
+                if crate::idents::hooks::CRASH_AFTER_NINE.with(|c| c.replace(false)) {
+                    bail!("Sincronização interrompida depois de gravar o arquivo novo (teste).");
+                }
+            }
+        }
+        // The old names: a stub that points to the file of format 9 beside
+        // them, where that file is now. A promotion keeps the copy of format
+        // 8 aside first; a copy changed meanwhile (an older writer in
+        // flight) is left as it is and taken in as an old copy next time.
+        let mut stub_plan: Vec<(PathBuf, String)> = stub_targets.clone();
+        if let Some(entries) = &promote {
+            stub_plan = entries
+                .iter()
+                .map(|(path, nine)| {
+                    (
+                        path.clone(),
+                        nine.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect();
+        }
+        for (path, name) in &stub_plan {
+            let nine = path.with_file_name(name);
+            let nine_there = sharedfolder::read_header(&nine)
+                .ok()
+                .flatten()
+                .is_some_and(|h| h.format >= sharedfolder::FORMAT_9 && h.lineage == lineage);
+            if !nine_there {
+                continue;
+            }
+            let start = expected.get(path).cloned().unwrap_or(None);
+            if sharedfolder::header_line(path).ok() != Some(start.clone()) {
+                continue;
+            }
+            if promote.is_some() && start.is_some() {
+                match sharedfolder::keep_aside(path) {
+                    Ok(aside) => {
+                        archived.push(path.clone());
+                        report.notes.push(format!(
+                            "A pasta passou para o arquivo {name}, no formato novo do Ponte. A cópia anterior foi guardada em {}, e {} agora só avisa as versões anteriores de que é preciso atualizar.",
+                            aside.display(),
+                            path.display()
+                        ));
+                    }
+                    Err(error) => {
+                        report.notes.push(format!(
+                            "{} não foi substituída pelo aviso do formato novo: {error}",
+                            path.display()
+                        ));
+                        continue;
+                    }
+                }
+            }
+            match sharedfolder::write_stub(path, key, &request, name, Some(&start)) {
+                Ok(_) => {
+                    if !report.written_to.contains(&path.display().to_string()) {
+                        report.written_to.push(path.display().to_string());
+                    }
+                }
+                Err(error) => report.notes.push(format!(
+                    "{} não recebeu o aviso do formato novo: {error}",
+                    path.display()
+                )),
+            }
+        }
         // What each copy read is proved to be in the result: rewritten with
         // it, equal to it, or kept aside (for the phone: only such a pending
         // copy may be deleted).
@@ -5887,7 +6525,16 @@ impl Store {
         // Only now, with the folders written, does this become this
         // computer's last write.
         if let Some(path) = guard_path {
-            if let Err(error) = sharedfolder::write(path, key, &request, &payload, &blobs) {
+            if let Err(error) = sharedfolder::write_checked(
+                path,
+                key,
+                &request,
+                &payload,
+                &blobs,
+                format,
+                None,
+                Some(&written_at),
+            ) {
                 report.notes.push(format!(
                     "A cópia de segurança deste computador não foi gravada: {error}"
                 ));
@@ -5910,7 +6557,22 @@ impl Store {
         let before = conflicts.len();
         conflicts.retain(|c| c.mutation_uid.is_empty() || !carded.contains(&c.mutation_uid));
         report.conflicts -= before - conflicts.len();
+        let promoted = promote.is_some();
+        let epoch = final_snapshot.ident_epoch.clone();
         let finish = |tx: &rusqlite::Transaction| -> Result<()> {
+            // An 8 result is never adopted once the floor is 9.
+            ensure!(
+                nine_out || !floor_is_nine()?,
+                "Esta pasta já foi atualizada para o formato novo do Ponte; o resultado no formato anterior não foi adotado. Sincronize de novo."
+            );
+            if nine_out {
+                crate::idents::set_origin(
+                    tx,
+                    if promoted { "stamped" } else { "adopted" },
+                    Some(lineage),
+                    Some(&epoch),
+                )?;
+            }
             for conflict in &conflicts {
                 insert_conflict(tx, conflict)?;
             }
@@ -5927,6 +6589,10 @@ impl Store {
             }
             crate::idmap::save_frame_journal(tx, &payload.journal)
         };
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = crate::idents::hooks::BEFORE_ADOPTION.with(|h| h.borrow_mut().take()) {
+            hook();
+        }
         if let Some(store) = &temp {
             reporter.step("Atualizando o acervo deste computador…");
             let before = self.version_map()?;
@@ -5964,7 +6630,139 @@ impl Store {
             tx.commit()?;
         }
         report.revision = revision;
+        report.promoted = promoted;
+        if promoted {
+            report.promotion_wait = None;
+        }
         Ok(report)
+    }
+
+    /// Takes in the changes of an old copy (format 8) read after the folder
+    /// moved to format 9 (design §3.5): each change that the result has not
+    /// applied is replayed only when every row it names was created by an
+    /// earlier change of the same copy (never a number of the base, which
+    /// may be another item there now) and the manual record it edits is not
+    /// one the base already has. Anything else becomes a card with its
+    /// content, and is not marked applied.
+    #[allow(clippy::too_many_arguments)]
+    fn take_from_old_copy(
+        &self,
+        store: &mut Store,
+        donor: &crate::sharedfolder::Copy,
+        applied: &mut std::collections::BTreeSet<String>,
+        journal: &mut Vec<crate::sharedfolder::JournalEntry>,
+        carded: &std::collections::BTreeSet<String>,
+        conflicts: &mut Vec<SyncConflict>,
+        report: &mut FolderSyncReport,
+    ) -> Result<()> {
+        let mut entries: Vec<&crate::sharedfolder::JournalEntry> = donor
+            .payload
+            .journal
+            .iter()
+            .filter(|e| !applied.contains(&e.uid))
+            .collect();
+        if entries.is_empty() {
+            return Ok(());
+        }
+        entries.sort_by(|a, b| (a.revision, &a.created_at).cmp(&(b.revision, &b.created_at)));
+        // The manual records of the base, by number.
+        let base_numbers: std::collections::BTreeSet<String> = store
+            .list_documents("")?
+            .into_iter()
+            .map(|d| d.document_number.trim().to_uppercase())
+            .collect();
+        let device = if donor.header.writer_name.trim().is_empty() {
+            "outro aparelho".to_owned()
+        } else {
+            donor.header.writer_name.trim().to_owned()
+        };
+        let mut ids = crate::idmap::IdMap::strict();
+        for entry in entries {
+            let manual = match &entry.mutation {
+                IntranetMutation::ImportCapture { capture }
+                | IntranetMutation::ImportBundle { capture, .. }
+                    if capture.is_manual()
+                        && capture.document_number != crate::model::MANUAL_PENDING =>
+                {
+                    Some(capture.document_number.trim().to_uppercase())
+                }
+                _ => None,
+            };
+            let remapped = match manual {
+                Some(number) if base_numbers.contains(&number) => Err(format!(
+                    "o registro manual {number} já existe na pasta e pode ser outro registro"
+                )),
+                _ => ids
+                    .remap(&entry.mutation, &donor.payload.snapshot, Some(&*store))
+                    .and_then(|mutation| {
+                        store
+                            .keep_unseen_fields(mutation, donor.header.schema_version)
+                            .map_err(|e| e.to_string())
+                    }),
+            };
+            let outcome = match &remapped {
+                Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &*store)
+                    .and_then(|_| {
+                        store
+                            .execute_mutation(&entry.actor, mutation.clone())
+                            .map_err(|error| error.to_string())
+                    }),
+                Err(reason) => Err(reason.clone()),
+            };
+            match (remapped, outcome) {
+                (Ok(mutation), Ok(reply)) => {
+                    let created = crate::idmap::created_ids(&*store, &mutation, &reply)?;
+                    ids.learn(&entry.created, Some(&created));
+                    applied.insert(entry.uid.clone());
+                    report.merged_foreign += 1;
+                    let revision = store.cabinet_revision()?;
+                    journal.push(crate::sharedfolder::JournalEntry {
+                        revision,
+                        mutation,
+                        base: None,
+                        created,
+                        idents: Vec::new(),
+                        ..entry.clone()
+                    });
+                }
+                (remapped, outcome) => {
+                    ids.learn(&entry.created, None);
+                    if carded.contains(&entry.uid) {
+                        // Carded here already (an old copy read again).
+                        continue;
+                    }
+                    let detail = match (remapped, outcome) {
+                        (Err(reason), _) if reason == crate::idmap::UNRESOLVED => {
+                            "ela se refere a um item que pode ser outro agora".to_owned()
+                        }
+                        (Err(reason), _) => reason,
+                        (_, Err(error)) => error,
+                        _ => String::new(),
+                    };
+                    let as_entry = OutboxEntry {
+                        id: 0,
+                        created_at: entry.created_at.clone(),
+                        actor: entry.actor.clone(),
+                        label: format!("[versão anterior, {device}] {}", entry.label),
+                        mutation: entry.mutation.clone(),
+                        base: entry.base.clone(),
+                        uid: entry.uid.clone(),
+                        created: Vec::new(),
+                        attempted: false,
+                        idents: Vec::new(),
+                    };
+                    let mut reason = format!(
+                        "Alteração de {device} feita numa versão anterior do Ponte depois que a pasta foi atualizada; o texto está guardado neste aviso."
+                    );
+                    if !detail.is_empty() {
+                        reason.push_str(&format!(" ({detail})"));
+                    }
+                    conflicts.push(conflict_for(&as_entry, &reason, None, true));
+                    report.conflicts += 1;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Where this library keeps its own last written transport copy: beside
@@ -6125,6 +6923,11 @@ impl Store {
             Ok(RpcResponse::Mutated {
                 reply, snapshot, ..
             }) => {
+                if crate::idents::check(&snapshot, None).is_err() {
+                    bail!(
+                        "A alteração foi gravada no computador principal, mas a cópia que ele devolveu não confere (a identidade dos itens). Nada foi substituído aqui; ela aparece na próxima sincronização, não a repita."
+                    );
+                }
                 // The change is on that computer, but is it still the history
                 // this copy comes from? If it went back, its answer replaces
                 // nothing here: the next synchronization asks the person.
@@ -6137,11 +6940,15 @@ impl Store {
                     );
                 }
                 let cfg_clone = cfg.clone();
+                let epoch = snapshot.ident_epoch.clone();
                 match self.apply_snapshot_and(
                     &snapshot,
                     |file_id, capture_id| fetch_remote_pdf(&cfg_clone, file_id, capture_id),
                     |id| fetch_remote_attachment(&cfg_clone, id),
-                    |tx| ensure_queue_settled(tx, &[]),
+                    |tx| {
+                        ensure_queue_settled(tx, &[])?;
+                        adopted_from_host(tx, &epoch)
+                    },
                 ) {
                     // The change is on the main computer; this copy catches up
                     // with the next synchronization, after the queued change.
@@ -6175,6 +6982,20 @@ impl Store {
                 self.note_host_reachability(false);
                 self.queue_locally_as(&actor, mutation, Some((uid, reached)))
             }
+        }
+    }
+
+    /// The epoch of the main computer's identities this client holds (V2),
+    /// empty when it never took them: the main computer then sends its
+    /// whole snapshot, even at the same revision.
+    fn known_host_epoch(&self) -> String {
+        match crate::idents::origin(&self.conn) {
+            Ok((origin, lineage, Some(epoch)))
+                if origin == "adopted" && lineage.as_deref() == Some("principal") =>
+            {
+                epoch
+            }
+            _ => String::new(),
         }
     }
 
@@ -9744,6 +10565,50 @@ pub struct FolderSyncReport {
     pub promoted: bool,
 }
 
+/// What `sync_with_folders` decided for an exchange, given to its second
+/// half (design F2b §3.2-3.5).
+struct FolderPlan {
+    /// The folder is at format 9 for this device: its files of format 9 are
+    /// the copies, and what is written is format 9.
+    nine: bool,
+    /// Copies of format 8 read after the floor became 9 (old writers, the
+    /// guard, the phone's pending copies): changes are only taken from them.
+    donors: Vec<crate::sharedfolder::Copy>,
+    /// One of `donors` is this computer's guard copy.
+    guard_donor: bool,
+    /// Configured paths that get (back) the stub pointing to their file of
+    /// format 9 (a bare name beside them).
+    stub_targets: Vec<(PathBuf, String)>,
+    /// This exchange promotes the folder: (configured path, its file of
+    /// format 9) for every configured path.
+    promote: Option<Vec<(PathBuf, PathBuf)>>,
+    /// The plain start of every file read, as read (`None`: no file).
+    expected: BTreeMap<PathBuf, Option<Vec<u8>>>,
+}
+
+/// Whether a folder exchange may promote the folder to the shared file of
+/// format 9: always in the product; in the tests, only those that ask
+/// (`idents::hooks::PROMOTION`), so the tests of the old exchange keep
+/// exchanging in format 8.
+fn promotion_on() -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        crate::idents::hooks::PROMOTION.with(|c| c.get())
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        true
+    }
+}
+
+/// The line shown while the folder waits to move to the shared file of
+/// format 9.
+fn promotion_wait_line(reason: &str) -> String {
+    format!(
+        "Sincronize antes de atualizar o arquivo da pasta: {reason}. Até lá o Ponte continua sincronizando no formato anterior."
+    )
+}
+
 impl FolderSyncReport {
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
@@ -9811,10 +10676,21 @@ impl FolderSyncReport {
                 }
             ));
         }
-        if parts.is_empty() {
+        if self.promoted {
+            parts.push("pasta atualizada para o formato novo do Ponte".to_owned());
+        }
+        let line = if parts.is_empty() {
             format!("em dia (revisão {})", self.revision)
         } else {
             format!("{} (revisão {})", parts.join(" • "), self.revision)
+        };
+        // Shown with every exchange until the folder moves to format 9.
+        match &self.promotion_wait {
+            Some(wait) => format!(
+                "{line}
+{wait}"
+            ),
+            None => line,
         }
     }
 }
@@ -10241,13 +11117,21 @@ fn send_rpc_tracked(
                 "Não foi possível preparar a conexão com o computador principal: {e}"
             ))
         })?;
+    // Every request goes in the team protocol V2 (F2b).
+    let wire = match request {
+        RpcRequest::V2 { .. } => request.clone(),
+        other => RpcRequest::V2 {
+            level: crate::sharedfolder::LEVEL,
+            request: Box::new(other.clone()),
+        },
+    };
     let response = client
         .post(&endpoint)
         .header(
             "Authorization",
             format!("Bearer {}", cfg.cabinet_token.trim()),
         )
-        .json(request)
+        .json(&wire)
         .send()
         .map_err(|e| {
             *reached = !e.is_connect();
@@ -10308,6 +11192,13 @@ fn send_rpc_tracked(
         }
         if message.starts_with(HOST_CANNOT_READ_START) && is_setting_mutation(mutation) {
             return Err(RpcError::Unreachable(HOST_WITHOUT_SETTINGS.into()));
+        }
+    }
+    if let RpcResponse::Error { message } = &rpc {
+        // A main computer of an older Ponte does not read the protocol V2:
+        // nothing is refused, everything waits until it is updated.
+        if message.starts_with(HOST_CANNOT_READ_START) {
+            return Err(RpcError::Unreachable(HOST_WITHOUT_IDENTS.into()));
         }
     }
     if !status.is_success() {
@@ -10656,6 +11547,31 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
 /// Opens the library, checks the token and processes one request.
 fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16, RpcResponse) {
     let error = |message: String| RpcResponse::Error { message };
+    // Decoded before the library is opened: a request of an older Ponte
+    // (not V2) is answered 503 without touching it, even when it is locked;
+    // that Ponte keeps its queue (503 is "out of reach" there).
+    let rpc_req: RpcRequest = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(_) => return (400, error(host_cannot_read())),
+    };
+    let rpc_req = match rpc_req {
+        RpcRequest::V2 { level, request } if level <= crate::sharedfolder::LEVEL => {
+            if matches!(*request, RpcRequest::V2 { .. }) {
+                return (400, error(host_cannot_read()));
+            }
+            RpcRequest::V2 { level, request }
+        }
+        RpcRequest::V2 { .. } => {
+            return (
+                503,
+                error(format!(
+                    "{} Atualize o Ponte no computador principal.",
+                    HOST_CANNOT_READ_START
+                )),
+            )
+        }
+        _ => return (503, error(LEGACY_REFUSED.into())),
+    };
     let mut store = match Store::open_service(db_path) {
         Ok(s) => s,
         Err(e) => {
@@ -10684,10 +11600,6 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
             error("Chave de acesso do gabinete inválida ou sem autorização.".into()),
         );
     }
-    let rpc_req: RpcRequest = match serde_json::from_slice(body) {
-        Ok(r) => r,
-        Err(_) => return (400, error(host_cannot_read())),
-    };
     match process_rpc(&mut store, &host_cfg, rpc_req) {
         Ok(resp) => (200, resp),
         Err(err) => (400, error(err.to_string())),
@@ -10699,7 +11611,34 @@ pub(crate) fn process_rpc(
     host_cfg: &IntranetConfig,
     request: RpcRequest,
 ) -> Result<RpcResponse> {
+    process_rpc_at(store, host_cfg, request, false)
+}
+
+/// A snapshot the main computer serves in the protocol V2: with the
+/// identity of every item and its epoch.
+fn served_snapshot(store: &Store, v2: bool, epoch: &str) -> Result<CabinetSnapshot> {
+    if !v2 || epoch.is_empty() {
+        return store.export_snapshot();
+    }
+    #[allow(unused_mut)]
+    let mut snapshot = store.export_with_idents(epoch)?;
+    Ok(snapshot)
+}
+
+fn process_rpc_at(
+    store: &mut Store,
+    host_cfg: &IntranetConfig,
+    request: RpcRequest,
+    v2: bool,
+) -> Result<RpcResponse> {
+    // The epoch of the identities served (V2): a nonce kept in the library.
+    let epoch = if v2 && !matches!(request, RpcRequest::Ping) {
+        crate::idents::host_epoch(&store.conn)?
+    } else {
+        String::new()
+    };
     match request {
+        RpcRequest::V2 { request, .. } => process_rpc_at(store, host_cfg, *request, true),
         RpcRequest::Ping => {
             let revision = store.cabinet_revision()?;
             let documents = store.list_documents("")?.len();
@@ -10712,18 +11651,23 @@ pub(crate) fn process_rpc(
                 schema_version: crate::storage::SCHEMA_VERSION,
             })
         }
-        RpcRequest::Sync { since_revision, .. } => {
+        RpcRequest::Sync {
+            since_revision,
+            known_epoch,
+        } => {
             let generation = store.host_generation()?;
             let revision = store.cabinet_revision()?;
-            if since_revision == Some(revision) && revision > 0 {
+            // Up to date only with the same revision AND the same epoch: a
+            // client that never took this computer's identities gets them.
+            if since_revision == Some(revision) && revision > 0 && known_epoch == epoch {
                 return Ok(RpcResponse::UpToDate {
                     revision,
                     generation,
-                    epoch: String::new(),
-                    level: 0,
+                    level: if v2 { crate::sharedfolder::LEVEL } else { 0 },
+                    epoch,
                 });
             }
-            let mut snapshot = store.export_snapshot()?;
+            let mut snapshot = served_snapshot(store, v2, &epoch)?;
             snapshot.generation = generation;
             // The note follows the revision actually served.
             let _ = store.host_generation();
@@ -10750,7 +11694,7 @@ pub(crate) fn process_rpc(
             client_schema,
             expected_generation,
             mutation_uid,
-            idents: _,
+            idents,
         } => {
             ensure!(
                 !actor.trim().is_empty()
@@ -10769,14 +11713,15 @@ pub(crate) fn process_rpc(
                 // same answer, and nothing is applied again, whatever
                 // happened to the item since.
                 if let Some(receipt) = store.mutation_receipt(&mutation_uid)? {
-                    let mut snapshot = store.export_snapshot()?;
+                    let mut snapshot = served_snapshot(store, v2, &epoch)?;
                     snapshot.generation = generation;
+                    corrupt_for_test(store, &mut snapshot);
                     return Ok(RpcResponse::Mutated {
                         revision: snapshot.revision,
                         reply: receipt.reply,
                         snapshot: Box::new(snapshot),
                         created: receipt.created,
-                        idents: Vec::new(),
+                        idents: receipt.idents,
                     });
                 }
             }
@@ -10789,7 +11734,19 @@ pub(crate) fn process_rpc(
             }
             let mutation = store.keep_unseen_fields(mutation, client_schema)?;
             let applied = mutation.clone();
-            let reply = store.execute_mutation(&actor, mutation)?;
+            // The rows it inserts here take the identities they have on the
+            // client (V2).
+            let (reply, given) = match store.execute_carrying(&actor, mutation, &idents)? {
+                crate::idents::Carried::Applied(reply, rekeyed) => (
+                    reply,
+                    rekeyed
+                        .applied
+                        .into_iter()
+                        .map(|(slot, _)| slot)
+                        .collect::<Vec<_>>(),
+                ),
+                crate::idents::Carried::Refused(error) => return Err(error),
+            };
             let created = if receipted {
                 // What it created is read now, in the library where it was
                 // just applied, and kept with the answer: a repeat must give
@@ -10802,14 +11759,16 @@ pub(crate) fn process_rpc(
                     &StoredReceipt {
                         reply: reply.clone(),
                         created: created.clone(),
+                        idents: given.clone(),
                     },
                 );
                 created
             } else {
                 None
             };
-            let mut snapshot = store.export_snapshot()?;
+            let mut snapshot = served_snapshot(store, v2, &epoch)?;
             snapshot.generation = generation;
+            corrupt_for_test(store, &mut snapshot);
             // The note was made before the change: it now follows the
             // revision this answer carries, so a restart or a second opening
             // never finds the note behind what clients were told.
@@ -10819,10 +11778,29 @@ pub(crate) fn process_rpc(
                 reply,
                 snapshot: Box::new(snapshot),
                 created,
-                idents: Vec::new(),
+                idents: given,
             })
         }
-        RpcRequest::V2 { request, .. } => process_rpc(store, host_cfg, *request),
+    }
+}
+
+/// Tests: the main computer named by `idents::hooks::CORRUPT_MUTATED`
+/// answers one change with a snapshot whose identities do not check.
+#[allow(unused_variables)]
+fn corrupt_for_test(store: &Store, snapshot: &mut CabinetSnapshot) {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let mut target = crate::idents::hooks::CORRUPT_MUTATED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let ours = store
+            .conn
+            .path()
+            .is_some_and(|p| target.as_deref() == Some(std::path::Path::new(p)));
+        if ours {
+            *target = None;
+            snapshot.idents.pop();
+        }
     }
 }
 
@@ -16984,8 +17962,15 @@ mod resources_sync_tests {
 
     /// A main computer of the version before the recursos: it knows nothing
     /// of schema 15 and cannot read their changes.
-    fn old_host(snapshot: CabinetSnapshot) -> String {
+    fn old_host(mut snapshot: CabinetSnapshot) -> String {
         use std::io::{Read, Write};
+        // Since F2b every request goes in the protocol V2, which a Ponte
+        // before it cannot read at all (see `HOST_WITHOUT_IDENTS`): this
+        // stands for a main computer that speaks V2 with an older content
+        // schema, so its snapshots carry an epoch (and no item, no triple).
+        if snapshot.ident_epoch.is_empty() {
+            snapshot.ident_epoch = "epoca-do-principal-antigo".into();
+        }
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let snapshot_json =
@@ -17435,7 +18420,13 @@ mod resources_sync_tests {
                 idents: Vec::new(),
             },
         );
-        assert!(matches!(other, Err(RpcError::Rejected(_))));
+        // Since F2b, what an older main computer cannot read waits too
+        // (it cannot read the protocol V2 at all): out of reach, never a
+        // refusal of the change.
+        assert!(
+            matches!(&other, Err(RpcError::Unreachable(m)) if m == HOST_WITHOUT_IDENTS),
+            "queued too"
+        );
         // End to end: queued while the host was away, then the host answers
         // with that refusal: the change stays queued, no conflict.
         let (mut away, mut away_cfg) = client_of(dir.path(), "away.sqlite3", "http://127.0.0.1:9");

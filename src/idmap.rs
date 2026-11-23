@@ -522,6 +522,29 @@ impl IdMap {
         map
     }
 
+    /// A map that translates nothing it has not learned: every number of
+    /// every kind is "new" until a replayed creation teaches it (an old
+    /// copy taken in after the folder moved to format 9, design F2b §3.5:
+    /// a number of the base may be another item now).
+    pub fn strict() -> Self {
+        let mut map = Self::default();
+        for kind in [
+            IdKind::Document,
+            IdKind::Capture,
+            IdKind::File,
+            IdKind::Task,
+            IdKind::Saiop,
+            IdKind::Attachment,
+            IdKind::Draft,
+            IdKind::SaiopBatch,
+            IdKind::Link,
+            IdKind::Example,
+        ] {
+            map.watermark.insert(kind, 0);
+        }
+        map
+    }
+
     fn is_new(&self, kind: IdKind, id: i64) -> bool {
         self.watermark.get(&kind).is_some_and(|mark| id > *mark)
     }

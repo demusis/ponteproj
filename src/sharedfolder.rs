@@ -106,6 +106,18 @@ fn is_zero(value: &u32) -> bool {
     *value == 0
 }
 
+/// Whether this build can take the content of a copy with `header`: a file
+/// of format 8 up to the content schema of this build, one of format 9 up
+/// to its library schema.
+pub fn schema_readable(header: &Header) -> bool {
+    header.schema_version
+        <= if header.format >= FORMAT_9 {
+            crate::storage::LIBRARY_SCHEMA
+        } else {
+            crate::storage::SCHEMA_VERSION
+        }
+}
+
 /// Where the file of format 9 of the configured path `path` lives: beside
 /// it, `<stem>-formato9.ponte`.
 pub fn nine_path(path: &Path) -> PathBuf {
@@ -118,6 +130,8 @@ pub fn nine_path(path: &Path) -> PathBuf {
 
 /// What a transport file holds: a copy, or a stub saying the folder moved
 /// to the file of format 9 (`moved_to`, a bare file name beside it).
+// A copy is read once and used in place: boxing it would only add noise.
+#[allow(clippy::large_enum_variant)]
 pub enum Found {
     Copy(Copy),
     Moved { header: Header, moved_to: String },
@@ -329,39 +343,33 @@ pub fn validate_password(password: &str) -> Result<()> {
 
 /// Reads only the plain header. `None` when the file does not exist.
 pub fn read_header(path: &Path) -> Result<Option<Header>> {
-    read_header_up_to(path, FORMAT)
+    read_header_up_to(path, NEWEST_FORMAT)
 }
 
-/// Reads a copy or a stub. `None` when the file does not exist.
-pub fn read_any(path: &Path, password: &str) -> Result<Option<Found>> {
-    Ok(read(path, password)?.map(Found::Copy))
-}
-
-/// [`write`] of a copy of format 9 (stub).
-pub fn write_nine(
-    path: &Path,
-    password: &str,
-    request: &WriteRequest<'_>,
-    payload: &Payload,
-    blobs: &Blobs,
-) -> Result<Header> {
-    write(path, password, request, payload, blobs)
-}
-
-/// Writes a stub at `path` that points to `moved_to` (a file name beside it).
-pub fn write_stub(
-    _path: &Path,
-    _password: &str,
-    _request: &WriteRequest<'_>,
-    _moved_to: &str,
-) -> Result<Header> {
-    anyhow::bail!("ainda não implementado")
-}
+const DAMAGED: &str = "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.";
 
 /// [`read_header`] for a reader that knows the formats up to `newest`: this
 /// is how every build refuses the file of a newer one (and how the tests
-/// stand in for an older build).
+/// stand in for an older build: `read_header_up_to(path, 8)` is the very
+/// check of a Ponte 0.50/0.51, which refuses a file of format 9 or a stub
+/// before it reads anything else).
 pub(crate) fn read_header_up_to(path: &Path, newest: u32) -> Result<Option<Header>> {
+    let Some(line) = header_line(path)? else {
+        return Ok(None);
+    };
+    let header: Header = serde_json::from_slice(&line[MAGIC.len()..]).context(DAMAGED)?;
+    ensure!(
+        (1..=newest).contains(&header.format) && header.level <= LEVEL,
+        "O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte."
+    );
+    Ok(Some(header))
+}
+
+/// The plain start of the file, as it is on disk: the magic and the header
+/// line (salt and nonce included), without the line break. `None` when the
+/// file does not exist. What a writer compares, byte for byte, right before
+/// it replaces the file: any other writer in between changes it.
+pub fn header_line(path: &Path) -> Result<Option<Vec<u8>>> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -386,31 +394,40 @@ pub(crate) fn read_header_up_to(path: &Path, newest: u32) -> Result<Option<Heade
         "{} não é um arquivo de sincronização do Ponte.",
         path.display()
     );
-    let mut line = Vec::new();
+    let mut line = magic;
+    let mut reader = std::io::BufReader::new(file);
     let mut byte = [0_u8; 1];
     loop {
-        file.read_exact(&mut byte)
-            .context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
+        reader.read_exact(&mut byte).context(DAMAGED)?;
         if byte[0] == b'\n' {
             break;
         }
         line.push(byte[0]);
-        ensure!(
-            line.len() <= 64 * 1024,
-            "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo."
-        );
+        ensure!(line.len() <= MAGIC.len() + 64 * 1024, DAMAGED);
     }
-    let header: Header =
-        serde_json::from_slice(&line).context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
-    ensure!(
-        (1..=newest).contains(&header.format),
-        "O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte."
-    );
-    Ok(Some(header))
+    Ok(Some(line))
 }
 
-/// Reads and decrypts a copy. `None` when the file does not exist.
-pub fn read(path: &Path, password: &str) -> Result<Option<Copy>> {
+/// The body of a stub.
+#[derive(Serialize, Deserialize)]
+struct StubBody {
+    moved_to: String,
+}
+
+/// Whether `name` is a bare file name of a transport file (what a stub may
+/// point to: beside it, never elsewhere).
+fn bare_ponte_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['/', '\\', ':'])
+        && name != "."
+        && name != ".."
+        && name.to_lowercase().ends_with(".ponte")
+}
+
+/// Reads and decrypts a copy, or a stub (format 9, `points_to`), whose
+/// header the passphrase authenticates like any copy's. `None` when the file
+/// does not exist.
+pub fn read_any(path: &Path, password: &str) -> Result<Option<Found>> {
     let Some(header) = read_header(path)? else {
         return Ok(None);
     };
@@ -425,32 +442,53 @@ pub fn read(path: &Path, password: &str) -> Result<Option<Copy>> {
         + bytes[MAGIC.len()..]
             .iter()
             .position(|b| *b == b'\n')
-            .context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
+            .context(DAMAGED)?;
     let header_bytes = bytes[MAGIC.len()..header_end].to_vec();
     let mut body = bytes[header_end + 1..].to_vec();
-    let salt = STANDARD
-        .decode(&header.salt)
-        .context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
-    let nonce = STANDARD
-        .decode(&header.nonce)
-        .context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
-    ensure!(nonce.len() == NONCE_BYTES, "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.");
+    let salt = STANDARD.decode(&header.salt).context(DAMAGED)?;
+    let nonce = STANDARD.decode(&header.nonce).context(DAMAGED)?;
+    ensure!(nonce.len() == NONCE_BYTES, DAMAGED);
     let key = ring::aead::LessSafeKey::new(
         ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &derive_key(password, &salt))
             .map_err(|_| anyhow::anyhow!("Senha de sincronização inválida."))?,
     );
     let nonce = ring::aead::Nonce::try_assume_unique_for_key(&nonce)
-        .map_err(|_| anyhow::anyhow!("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo."))?;
+        .map_err(|_| anyhow::anyhow!(DAMAGED))?;
     let plain = key
         .open_in_place(nonce, ring::aead::Aad::from(&header_bytes), &mut body)
         .map_err(|_| anyhow::anyhow!("Senha de sincronização incorreta, ou arquivo danificado ou ainda sendo gravado pela nuvem. Confira a senha e espere a pasta terminar de sincronizar."))?;
+    if !header.points_to.is_empty() {
+        ensure!(header.format >= FORMAT_9, DAMAGED);
+        let stub = unpack_stub(plain)?;
+        ensure!(
+            stub.moved_to == header.points_to && bare_ponte_name(&stub.moved_to),
+            DAMAGED
+        );
+        return Ok(Some(Found::Moved {
+            header,
+            moved_to: stub.moved_to,
+        }));
+    }
     let (payload, blobs) = unpack(plain)?;
-    Ok(Some(Copy {
+    Ok(Some(Found::Copy(Copy {
         path: path.to_path_buf(),
         header,
         payload,
         blobs,
-    }))
+    })))
+}
+
+/// Reads and decrypts a copy. `None` when the file does not exist. A stub
+/// is refused, saying where the copy went.
+pub fn read(path: &Path, password: &str) -> Result<Option<Copy>> {
+    match read_any(path, password)? {
+        None => Ok(None),
+        Some(Found::Copy(copy)) => Ok(Some(copy)),
+        Some(Found::Moved { moved_to, .. }) => anyhow::bail!(
+            "O arquivo {} foi atualizado para o formato novo do Ponte; o acervo está agora em {moved_to}, na mesma pasta.",
+            path.display()
+        ),
+    }
 }
 
 /// Everything the caller decides about a new copy.
@@ -461,6 +499,32 @@ pub struct WriteRequest<'a> {
     pub writer_name: &'a str,
     pub schema_version: i64,
 }
+
+/// What the plain header of a file says besides the request: its format,
+/// level and, for a stub, where the copy went.
+struct Shape<'a> {
+    format: u32,
+    level: u32,
+    points_to: &'a str,
+}
+
+/// The error of a writer that found the destination changed by another
+/// writer between the moment it was read and the rename: the exchange stops
+/// (nothing adopted), and the next one reads it again.
+#[derive(Debug)]
+pub struct ChangedMeanwhile(pub PathBuf);
+
+impl std::fmt::Display for ChangedMeanwhile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "O arquivo {} mudou durante a sincronização (outro aparelho gravou nele). Nada foi substituído nem adotado; sincronize de novo.",
+            self.0.display()
+        )
+    }
+}
+
+impl std::error::Error for ChangedMeanwhile {}
 
 /// Encrypts and writes atomically (temporary file, then rename), so a cloud
 /// client never sees a half-written copy. Returns the header written.
@@ -485,11 +549,122 @@ pub(crate) fn write_stamped(
     blobs: &Blobs,
     written_at: &str,
 ) -> Result<Header> {
+    write_shaped(
+        path,
+        password,
+        request,
+        pack(payload, blobs)?,
+        &Shape {
+            format: FORMAT,
+            level: 0,
+            points_to: "",
+        },
+        written_at,
+        None,
+    )
+}
+
+/// [`write`] of a copy of format 9.
+pub fn write_nine(
+    path: &Path,
+    password: &str,
+    request: &WriteRequest<'_>,
+    payload: &Payload,
+    blobs: &Blobs,
+) -> Result<Header> {
+    write_checked(
+        path, password, request, payload, blobs, FORMAT_9, None, None,
+    )
+}
+
+/// [`write`] in `format` (8 or 9) that first compares, right before the
+/// rename, the plain start of the file at `path` with `expected` (what was
+/// read at the start of the exchange: `Some(None)` for "no file"): any
+/// difference fails with [`ChangedMeanwhile`] and leaves the file as it is.
+/// `written_at`: the moment of the exchange, the same in every file it
+/// writes (now when `None`).
+#[allow(clippy::too_many_arguments)]
+pub fn write_checked(
+    path: &Path,
+    password: &str,
+    request: &WriteRequest<'_>,
+    payload: &Payload,
+    blobs: &Blobs,
+    format: u32,
+    expected: Option<&Option<Vec<u8>>>,
+    written_at: Option<&str>,
+) -> Result<Header> {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let written_at = written_at.unwrap_or(&now);
+    let nine = format >= FORMAT_9;
+    write_shaped(
+        path,
+        password,
+        request,
+        pack(payload, blobs)?,
+        &Shape {
+            format: if nine { FORMAT_9 } else { FORMAT },
+            level: if nine { LEVEL } else { 0 },
+            points_to: "",
+        },
+        written_at,
+        expected,
+    )
+}
+
+/// Writes a stub at `path` that points to `moved_to` (a file name beside
+/// it), comparing the destination as [`write_checked`] does.
+pub fn write_stub(
+    path: &Path,
+    password: &str,
+    request: &WriteRequest<'_>,
+    moved_to: &str,
+    expected: Option<&Option<Vec<u8>>>,
+) -> Result<Header> {
+    ensure!(
+        bare_ponte_name(moved_to),
+        "Nome inválido para o arquivo do formato novo."
+    );
+    let json = serde_json::to_vec(&StubBody {
+        moved_to: moved_to.to_owned(),
+    })?;
+    let mut body = Vec::with_capacity(json.len() + 32);
+    body.push(CONTAINER_VERSION);
+    put_u64(&mut body, json.len() as u64);
+    body.extend_from_slice(&json);
+    put_u64(&mut body, 0);
+    put_u64(&mut body, 0);
+    let written_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    write_shaped(
+        path,
+        password,
+        request,
+        body,
+        &Shape {
+            format: FORMAT_9,
+            level: LEVEL,
+            points_to: moved_to,
+        },
+        &written_at,
+        expected,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_shaped(
+    path: &Path,
+    password: &str,
+    request: &WriteRequest<'_>,
+    mut body: Vec<u8>,
+    shape: &Shape<'_>,
+    written_at: &str,
+    expected: Option<&Option<Vec<u8>>>,
+) -> Result<Header> {
     ensure!(!password.is_empty(), "Informe a senha de sincronização.");
     let salt = random(SALT_BYTES)?;
     let nonce_bytes = random(NONCE_BYTES)?;
     let header = Header {
-        format: FORMAT,
+        format: shape.format,
         schema_version: request.schema_version,
         lineage: request.lineage.to_owned(),
         revision: request.revision,
@@ -498,12 +673,11 @@ pub(crate) fn write_stamped(
         written_at: written_at.to_owned(),
         salt: STANDARD.encode(&salt),
         nonce: STANDARD.encode(&nonce_bytes),
-        level: 0,
-        points_to: String::new(),
+        level: shape.level,
+        points_to: shape.points_to.to_owned(),
     };
     let header_bytes = serde_json::to_vec(&header)?;
-    ensure!(!header_bytes.contains(&b'\n'), "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.");
-    let mut body = pack(payload, blobs)?;
+    ensure!(!header_bytes.contains(&b'\n'), DAMAGED);
     let key = ring::aead::LessSafeKey::new(
         ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &derive_key(password, &salt))
             .map_err(|_| anyhow::anyhow!("Senha de sincronização inválida."))?,
@@ -529,6 +703,7 @@ pub(crate) fn write_stamped(
             .unwrap_or("ponte-sync.ponte"),
         uuid::Uuid::new_v4().simple()
     ));
+    let changed = std::cell::Cell::new(false);
     let result = (|| -> Result<()> {
         let mut file = std::fs::File::create(&temp)?;
         file.write_all(MAGIC)?;
@@ -537,14 +712,119 @@ pub(crate) fn write_stamped(
         file.write_all(&body)?;
         file.sync_all()?;
         drop(file);
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = crate::idents::hooks::BEFORE_RENAME.with(|h| h.borrow_mut().take()) {
+            hook(path);
+        }
+        if let Some(expected) = expected {
+            if header_line(path).ok().as_ref() != Some(expected) {
+                changed.set(true);
+                anyhow::bail!(ChangedMeanwhile(path.to_path_buf()));
+            }
+        }
         std::fs::rename(&temp, path)?;
         Ok(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
+    if changed.get() {
+        return Err(ChangedMeanwhile(path.to_path_buf()).into());
+    }
     result.with_context(|| format!("Não foi possível gravar {}.", path.display()))?;
     Ok(header)
+}
+
+/// Whether two configured paths are one file (same folder and name, case
+/// apart), or one is the other's file of format 9: such a list would let a
+/// copy be read twice or a 9 be taken for an 8. Names the pair.
+pub fn aliases(paths: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
+    let key = |path: &Path| -> String {
+        let parent = path
+            .parent()
+            .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+            .unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        format!("{}\u{0}{name}", parent.display().to_string().to_lowercase())
+    };
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    for (index, path) in paths.iter().enumerate() {
+        for one in [key(path), key(&nine_path(path))] {
+            match seen.get(&one) {
+                Some(other) if *other != index => {
+                    return Some((paths[*other].clone(), path.clone()));
+                }
+                _ => {
+                    seen.insert(one, index);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The words cloud clients put in the name of a conflict copy.
+const CONFLICT_WORDS: [&str; 4] = [
+    "cópia em conflito",
+    "copia em conflito",
+    "conflicted copy",
+    "copia en conflicto",
+];
+
+/// Whether `candidate` (a bare file name) is a copy that a cloud client made
+/// of `real` (`ponte-sync (1).ponte`, `… (cópia em conflito …).ponte`,
+/// `Cópia de ponte-sync.ponte`): the same rule as the folder check of 0.51,
+/// conservative (the Ponte's own files and other names never match).
+pub fn is_conflict_copy(real: &str, candidate: &str) -> bool {
+    let split = |name: &str| -> Option<(String, String)> {
+        let lower = name.to_lowercase();
+        let dot = lower.rfind('.')?;
+        Some((lower[..dot].to_owned(), lower[dot + 1..].to_owned()))
+    };
+    let (Some((real_stem, real_ext)), Some((stem, ext))) = (split(real), split(candidate)) else {
+        return false;
+    };
+    if ext != real_ext || candidate.eq_ignore_ascii_case(real) || candidate.starts_with('.') {
+        return false;
+    }
+    for prefix in ["cópia de ", "copia de ", "copy of "] {
+        if stem.strip_prefix(prefix) == Some(real_stem.as_str()) {
+            return true;
+        }
+    }
+    let Some(rest) = stem.strip_prefix(real_stem.as_str()) else {
+        return false;
+    };
+    if rest.is_empty() || rest.starts_with('-') || rest.contains(".tmp-") {
+        return false;
+    }
+    let numbered = rest
+        .strip_prefix(" (")
+        .and_then(|r| r.strip_suffix(')'))
+        .is_some_and(|inner| !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()));
+    numbered || CONFLICT_WORDS.iter().any(|word| rest.contains(word))
+}
+
+/// The conflict copies (see [`is_conflict_copy`]) of `path` beside it.
+pub fn conflict_copies_of(path: &Path) -> Vec<String> {
+    let (Some(folder), Some(real)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+    else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = std::fs::read_dir(folder)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| is_conflict_copy(real, name))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
 }
 
 fn put_u64(out: &mut Vec<u8>, value: u64) {
@@ -623,6 +903,18 @@ pub(crate) fn unpack(plain: &[u8]) -> Result<(Payload, Blobs)> {
         "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo."
     );
     Ok((payload, blobs))
+}
+
+fn unpack_stub(plain: &[u8]) -> Result<StubBody> {
+    let mut cursor = Cursor { data: plain, at: 0 };
+    ensure!(cursor.take(1)?[0] == CONTAINER_VERSION, DAMAGED);
+    let json_len = cursor.u64()? as usize;
+    let stub: StubBody = serde_json::from_slice(cursor.take(json_len)?).context(DAMAGED)?;
+    ensure!(
+        cursor.u64()? == 0 && cursor.u64()? == 0 && cursor.at == plain.len(),
+        DAMAGED
+    );
+    Ok(stub)
 }
 
 #[cfg(test)]
@@ -755,8 +1047,9 @@ mod tests {
         assert!(error.contains("versão mais nova") && error.contains("Atualize"));
         assert_eq!(std::fs::read(&path).unwrap(), raw);
         assert_eq!(read_header_up_to(&path, 8).unwrap().unwrap().format, 8);
-        // And this one refuses what a later format writes.
-        for newer_format in [9, 10] {
+        // And this one refuses what a later format writes (format 9 is read
+        // since F2b; its stub too, see `nine_files_and_stubs`).
+        for newer_format in [10, 11] {
             let newer = String::from_utf8_lossy(&raw)
                 .replace("\"format\":8", &format!("\"format\":{newer_format}"));
             std::fs::write(&path, newer.as_bytes()).unwrap();
@@ -769,5 +1062,106 @@ mod tests {
         assert!(
             validate_password("curta").is_err() && validate_password("senha-forte-123").is_ok()
         );
+    }
+
+    #[test]
+    fn nine_files_and_stubs() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("ponte-sync.ponte");
+        let nine = nine_path(&old);
+        assert_eq!(nine, dir.path().join("ponte-sync-formato9.ponte"));
+        let payload = Payload {
+            snapshot: empty_snapshot(),
+            applied: vec![],
+            journal: vec![],
+        };
+        let request = WriteRequest {
+            lineage: "lin-1",
+            revision: 3,
+            writer: "pc-a",
+            writer_name: "Casa",
+            schema_version: 22,
+        };
+        let header = write_nine(
+            &nine,
+            "senha-forte-123",
+            &request,
+            &payload,
+            &Blobs::default(),
+        )
+        .unwrap();
+        assert_eq!((header.format, header.level), (FORMAT_9, LEVEL));
+        write_stub(
+            &old,
+            "senha-forte-123",
+            &request,
+            "ponte-sync-formato9.ponte",
+            None,
+        )
+        .unwrap();
+        match read_any(&old, "senha-forte-123").unwrap().unwrap() {
+            Found::Moved { header, moved_to } => {
+                assert_eq!(moved_to, "ponte-sync-formato9.ponte");
+                assert_eq!(header.points_to, moved_to);
+            }
+            Found::Copy(_) => panic!("a stub"),
+        }
+        assert!(read(&old, "senha-forte-123")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("ponte-sync-formato9.ponte"));
+        // A reader of 0.51 (formats up to 8) refuses both, and so does a
+        // reader of a lower level.
+        for path in [&old, &nine] {
+            let error = read_header_up_to(path, 8).unwrap_err().to_string();
+            assert!(error.contains("Atualize"), "{error}");
+        }
+        // The stub never points outside its folder.
+        assert!(write_stub(&old, "senha-forte-123", &request, "../x.ponte", None).is_err());
+        // A writer that finds the destination changed leaves it alone.
+        let before = std::fs::read(&nine).unwrap();
+        let error = write_checked(
+            &nine,
+            "senha-forte-123",
+            &request,
+            &payload,
+            &Blobs::default(),
+            FORMAT_9,
+            Some(&None),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.is::<ChangedMeanwhile>());
+        assert_eq!(std::fs::read(&nine).unwrap(), before);
+        assert!(
+            dir.path().read_dir().unwrap().count() == 2,
+            "no temp file left"
+        );
+    }
+
+    #[test]
+    fn aliases_and_cloud_conflict_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("ponte-sync.ponte");
+        assert!(aliases(&[a.clone(), dir.path().join("PONTE-SYNC.ponte")]).is_some());
+        assert!(aliases(&[a.clone(), dir.path().join("ponte-sync-formato9.ponte")]).is_some());
+        assert!(aliases(&[a.clone(), dir.path().join("outro.ponte")]).is_none());
+        for name in [
+            "ponte-sync (1).ponte",
+            "ponte-sync (cópia em conflito de Maria).ponte",
+            "Cópia de ponte-sync.ponte",
+        ] {
+            assert!(is_conflict_copy("ponte-sync.ponte", name), "{name}");
+        }
+        for name in [
+            "ponte-sync.ponte",
+            "ponte-sync-formato9.ponte",
+            "ponte-sync-guarda.ponte",
+            "ponte-sync-divergente-a1b2c3d4e5f60789.ponte",
+            "outro (1).ponte",
+        ] {
+            assert!(!is_conflict_copy("ponte-sync.ponte", name), "{name}");
+        }
     }
 }

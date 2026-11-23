@@ -55,20 +55,293 @@ pub struct SlotIdent {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct IdentRow(pub String, pub i64, pub String);
 
-/// Checks the identities a snapshot carries (F2b, design §3.1): stub.
+/// What a reader says when the identities of a copy do not check.
+fn broken(detail: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!(
+        "A identidade dos itens desta cópia não confere ({detail}). Nada dela foi usado; sincronize de novo, ou a partir de outro computador."
+    )
+}
+
+/// The rows a snapshot projects, as (ident kind, row id): the rows whose
+/// identity it must carry (one triple each), sorted as the triples are.
+pub fn projected_rows(
+    snapshot: &crate::intranet::CabinetSnapshot,
+) -> std::collections::BTreeSet<(String, i64)> {
+    let mut rows = std::collections::BTreeSet::new();
+    let mut add = |kind: &str, ids: &mut dyn Iterator<Item = i64>| {
+        for id in ids {
+            rows.insert((kind.to_owned(), id));
+        }
+    };
+    add("document", &mut snapshot.documents.iter().map(|r| r.id));
+    add("capture", &mut snapshot.captures.iter().map(|r| r.id));
+    add("note", &mut snapshot.notes.iter().map(|r| r.id));
+    add("draft", &mut snapshot.drafts.iter().map(|r| r.id));
+    add("analysis", &mut snapshot.analyses.iter().map(|r| r.id));
+    add("file", &mut snapshot.files_meta.iter().map(|r| r.id));
+    add("link", &mut snapshot.document_links.iter().map(|r| r.id));
+    add("task", &mut snapshot.tasks.iter().map(|r| r.id));
+    add("attachment", &mut snapshot.attachments.iter().map(|r| r.id));
+    add(
+        "saiop",
+        &mut snapshot.saiop_attendances.iter().map(|r| r.attendance.id),
+    );
+    add(
+        "saiop_batch",
+        &mut snapshot.saiop_batches.iter().map(|r| r.id),
+    );
+    add(
+        "example",
+        &mut snapshot.templates.examples.iter().map(|r| r.id),
+    );
+    rows
+}
+
+fn is_ident(text: &str) -> bool {
+    text.len() == 32 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Checks the identities a snapshot carries (design §3.1), on the very
+/// object a writer is about to publish and on every snapshot of format 9 or
+/// of the team protocol V2 before it is used:
+///
+/// - format 9 ⇔ schema ≥ 22 ⇔ a non-empty epoch (`header` of a shared file;
+///   `None` for a snapshot of the team protocol V2, which always carries an
+///   epoch);
+/// - triples in strict order (kind, then row), so no duplicates;
+/// - known kinds, 32 lowercase hex digits, no identity twice;
+/// - exactly one triple per row projected (zero rows, zero triples).
 pub fn check(
-    _snapshot: &crate::intranet::CabinetSnapshot,
-    _header: Option<&crate::sharedfolder::Header>,
+    snapshot: &crate::intranet::CabinetSnapshot,
+    header: Option<&crate::sharedfolder::Header>,
 ) -> Result<()> {
+    let nine = match header {
+        Some(h) => {
+            let nine = h.format >= crate::sharedfolder::FORMAT_9;
+            if nine != (h.schema_version >= crate::storage::LIBRARY_SCHEMA) {
+                return Err(broken("formato e esquema não combinam"));
+            }
+            nine
+        }
+        // A snapshot of the team protocol V2.
+        None => true,
+    };
+    if nine == snapshot.ident_epoch.is_empty() {
+        return Err(broken("época ausente ou fora do lugar"));
+    }
+    if !nine {
+        if !snapshot.idents.is_empty() {
+            return Err(broken("identidades numa cópia do formato anterior"));
+        }
+        return Ok(());
+    }
+    check_triples(snapshot)
+}
+
+/// The triples of [`check`] alone (a portable copy may carry them without
+/// an epoch).
+pub fn check_triples(snapshot: &crate::intranet::CabinetSnapshot) -> Result<()> {
+    let mut seen = std::collections::HashSet::with_capacity(snapshot.idents.len());
+    for (index, IdentRow(kind, row, ident)) in snapshot.idents.iter().enumerate() {
+        if !KINDS.iter().any(|(k, _)| k == kind) {
+            return Err(broken(format!("tipo desconhecido «{kind}»")));
+        }
+        if !is_ident(ident) {
+            return Err(broken(format!("identidade malformada em {kind} {row}")));
+        }
+        if !seen.insert(ident.as_str()) {
+            return Err(broken(format!("identidade repetida em {kind} {row}")));
+        }
+        if index > 0 {
+            let IdentRow(pk, pr, _) = &snapshot.idents[index - 1];
+            if (pk.as_bytes(), *pr) >= (kind.as_bytes(), *row) {
+                return Err(broken("triplas fora de ordem ou repetidas"));
+            }
+        }
+    }
+    let rows = projected_rows(snapshot);
+    if rows.len() != snapshot.idents.len()
+        || !snapshot
+            .idents
+            .iter()
+            .all(|IdentRow(kind, row, _)| rows.contains(&(kind.clone(), *row)))
+    {
+        return Err(broken(format!(
+            "{} itens e {} identidades",
+            rows.len(),
+            snapshot.idents.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Whether this library has the tables of schema 22 (a library left at 21
+/// for an opening has none).
+pub(crate) fn has_idents(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_ident')",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+/// Fills `snapshot.idents` with the identity of every row it projects (and
+/// only those: an unreadable trashed task that the exporter left out has
+/// none), sorted, and `snapshot.ident_epoch` with `epoch`.
+pub(crate) fn attach(
+    conn: &Connection,
+    snapshot: &mut crate::intranet::CabinetSnapshot,
+    epoch: &str,
+) -> Result<()> {
+    let mut all: std::collections::HashMap<(String, i64), String> = Default::default();
+    {
+        let mut statement = conn.prepare("SELECT kind,row_id,ident FROM item_ident")?;
+        let rows = statement.query_map([], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?;
+        for row in rows {
+            let (key, ident) = row?;
+            all.insert(key, ident);
+        }
+    }
+    let mut triples = Vec::new();
+    for (kind, row) in projected_rows(snapshot) {
+        let ident = all
+            .remove(&(kind.clone(), row))
+            .ok_or_else(|| broken(format!("{kind} {row} sem identidade")))?;
+        triples.push(IdentRow(kind, row, ident));
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if hooks::DROP_TRIPLE.with(|c| c.replace(false)) && !triples.is_empty() {
+        triples.remove(0);
+    }
+    snapshot.idents = triples;
+    snapshot.ident_epoch = epoch.to_owned();
     Ok(())
 }
 
 impl Store {
     /// [`Store::export_snapshot`] with the identity of every row it projects
-    /// and `epoch` (stub).
-    pub fn export_with_idents(&self, _epoch: &str) -> Result<crate::intranet::CabinetSnapshot> {
-        self.export_snapshot()
+    /// and `epoch`, read in one state of the library.
+    pub fn export_with_idents(&self, epoch: &str) -> Result<crate::intranet::CabinetSnapshot> {
+        let read = if self.conn.is_autocommit() {
+            Some(self.conn.unchecked_transaction()?)
+        } else {
+            None
+        };
+        let mut snapshot = self.export_snapshot()?;
+        attach(&self.conn, &mut snapshot, epoch)?;
+        drop(read);
+        Ok(snapshot)
     }
+}
+
+/// The identity a folder promotion gives row `row` of kind `kind`: the
+/// same on every computer that cuts the same result (`lineage`, `epoch`).
+pub fn stamped_ident(lineage: &str, epoch: &str, kind: &str, row: i64) -> String {
+    let mut input = Vec::with_capacity(128);
+    for part in [
+        "ponte-ident-v1",
+        "leg",
+        lineage,
+        epoch,
+        kind,
+        &row.to_string(),
+    ] {
+        input.extend_from_slice(part.as_bytes());
+        input.push(0);
+    }
+    let digest = ring::digest::digest(&ring::digest::SHA256, &input);
+    digest.as_ref()[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Gives every row of the library (the temporary library of a promotion)
+/// its [`stamped_ident`].
+pub(crate) fn stamp(conn: &Connection, lineage: &str, epoch: &str) -> Result<()> {
+    let rows: Vec<(String, i64)> = conn
+        .prepare("SELECT kind,row_id FROM item_ident")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut update =
+            tx.prepare("UPDATE item_ident SET ident=?1 WHERE kind=?2 AND row_id=?3")?;
+        for (kind, row) in rows {
+            update.execute(params![
+                stamped_ident(lineage, epoch, &kind, row),
+                kind,
+                row
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Inside the adoption of a snapshot: every row it put in place takes the
+/// identity the snapshot carries for it.
+pub(crate) fn adopt_triples(
+    tx: &Connection,
+    snapshot: &crate::intranet::CabinetSnapshot,
+) -> Result<()> {
+    if snapshot.idents.is_empty() || !has_idents(tx)? {
+        return Ok(());
+    }
+    // The rows were all inserted by this adoption (with random identities):
+    // they are set aside first, so no carried identity meets a random one.
+    tx.execute_batch("UPDATE item_ident SET ident='-'||kind||'-'||row_id;")?;
+    let mut update = tx.prepare("UPDATE item_ident SET ident=?1 WHERE kind=?2 AND row_id=?3")?;
+    for IdentRow(kind, row, ident) in &snapshot.idents {
+        update.execute(params![ident, kind, row])?;
+    }
+    drop(update);
+    // A row the snapshot carries no identity for (none, when it checks)
+    // gets a new random one again.
+    tx.execute_batch(
+        "UPDATE item_ident SET ident=lower(hex(randomblob(16))) WHERE ident LIKE '-%';",
+    )?;
+    Ok(())
+}
+
+/// Records where the identities of this library come from.
+pub(crate) fn set_origin(
+    conn: &Connection,
+    origin: &str,
+    lineage: Option<&str>,
+    epoch: Option<&str>,
+) -> Result<()> {
+    if !has_idents(conn)? {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO ident_state(id,origin,lineage,epoch) VALUES(1,?1,?2,?3)",
+        params![origin, lineage, epoch],
+    )?;
+    Ok(())
+}
+
+/// The epoch of the identities a main computer serves (team protocol V2):
+/// the one its library already has, or, the first time it serves V2 with
+/// provisional identities, a new random nonce kept in the library
+/// (`host(nonce)`), the identities themselves unchanged. A library put back
+/// from a backup of schema 21 has none and gets a new one.
+pub(crate) fn host_epoch(conn: &Connection) -> Result<String> {
+    if !has_idents(conn)? {
+        return Ok(String::new());
+    }
+    let (origin, _, epoch) = origin(conn)?;
+    if origin != "provisional" {
+        if let Some(epoch) = epoch.filter(|e| !e.is_empty()) {
+            return Ok(epoch);
+        }
+    }
+    let nonce: String = crate::sharedfolder::random(16)?
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    set_origin(conn, "host", None, Some(&nonce))?;
+    Ok(nonce)
 }
 
 /// Where the identities of this library come from (`ident_state`): the
@@ -656,6 +929,7 @@ pub mod hooks {
     type Pause = Box<dyn FnOnce()>;
     type Fault = Box<dyn FnOnce(&std::path::Path) -> anyhow::Result<()>>;
     type Peek = Box<dyn FnMut(&crate::storage::Store)>;
+    type PathHook = Box<dyn FnOnce(&std::path::Path)>;
     thread_local! {
         /// Runs once, in `Store::open`, after the `ensure_*` steps and before
         /// the 21→22 step.
@@ -696,7 +970,7 @@ pub mod hooks {
         pub static CRASH_AFTER_NINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         /// Runs once right before a transport file is renamed into place,
         /// with its path.
-        pub static BEFORE_RENAME: RefCell<Option<Box<dyn FnOnce(&std::path::Path)>>> = RefCell::new(None);
+        pub static BEFORE_RENAME: RefCell<Option<PathHook>> = RefCell::new(None);
         /// Runs once in a folder exchange, right before the folders are
         /// written.
         pub static BEFORE_FOLDER_WRITE: RefCell<Option<Pause>> = RefCell::new(None);

@@ -9,8 +9,7 @@
 
 use crate::idents::hooks;
 use crate::intranet::{
-    FolderSyncReport, IntranetConfig, IntranetMode, IntranetMutation, RpcRequest,
-    RpcResponse,
+    FolderSyncReport, IntranetConfig, IntranetMode, IntranetMutation, RpcRequest, RpcResponse,
 };
 use crate::sharedfolder::{self, Found, JournalEntry};
 use crate::storage::Store;
@@ -194,7 +193,12 @@ fn promoted() -> Two {
     t
 }
 
-fn entry(uid: &str, label: &str, mutation: IntranetMutation, created: Vec<crate::idmap::CreatedId>) -> JournalEntry {
+fn entry(
+    uid: &str,
+    label: &str,
+    mutation: IntranetMutation,
+    created: Vec<crate::idmap::CreatedId>,
+) -> JournalEntry {
     JournalEntry {
         uid: uid.into(),
         created_at: "2026-11-20T12:00:00Z".into(),
@@ -255,7 +259,8 @@ fn conflicts_with(store: &Store, text: &str) -> usize {
         .count()
 }
 
-const OLD_VERSION_CARD: &str = "feita numa versão anterior do Ponte depois que a pasta foi atualizada";
+const OLD_VERSION_CARD: &str =
+    "feita numa versão anterior do Ponte depois que a pasta foi atualizada";
 
 // ------------------------------------------------------------------- B1 --
 
@@ -348,11 +353,10 @@ fn f2b_b1_divergent_merge_with_a_reused_row() {
 #[test]
 fn f2b_b2_old_copy_attachment_on_a_reused_owner_becomes_a_card() {
     let mut t = promoted();
-    let y = t
-        .b
-        .import_capture(&capture(&number("b", 1), "Documento Y"))
-        .unwrap()
-        .document_id;
+    let y =
+        t.b.import_capture(&capture(&number("b", 1), "Documento Y"))
+            .unwrap()
+            .document_id;
     sync(&mut t.b);
     sync(&mut t.a);
     use base64::Engine;
@@ -366,7 +370,11 @@ fn f2b_b2_old_copy_attachment_on_a_reused_owner_becomes_a_card() {
             description: "Ofício anexado no aparelho antigo".into(),
             data_base64: base64::engine::general_purpose::STANDARD.encode(b"texto do oficio"),
         },
-        vec![crate::idmap::CreatedId::new(crate::idmap::IdKind::Attachment, "", 77)],
+        vec![crate::idmap::CreatedId::new(
+            crate::idmap::IdKind::Attachment,
+            "",
+            77,
+        )],
     );
     let nine = t.nine();
     let donor = old_writer_over(&t.drive, &nine, vec![attach]);
@@ -420,19 +428,22 @@ fn f2b_b3_self_contained_old_creation_is_replayed() {
                 expected_version: None,
                 no_project: false,
             },
-            vec![crate::idmap::CreatedId::new(crate::idmap::IdKind::Task, "", 45)],
+            vec![crate::idmap::CreatedId::new(
+                crate::idmap::IdKind::Task,
+                "",
+                45,
+            )],
         ),
     ];
     old_writer_over(&t.drive, &t.nine(), entries);
     sync(&mut t.a);
     let n = doc_by_number(&t.a, &number("d", 1)).expect("N replayed");
-    let made = t
-        .a
-        .list_tasks()
-        .unwrap()
-        .into_iter()
-        .find(|t| t.title == "Tarefa do aparelho antigo")
-        .expect("the task replayed");
+    let made =
+        t.a.list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Tarefa do aparelho antigo")
+            .expect("the task replayed");
     assert_eq!(made.document_id, Some(n), "the task is on N");
     assert_eq!(conflicts_with(&t.a, OLD_VERSION_CARD), 0);
 }
@@ -495,9 +506,8 @@ fn f2b_b4_snapshot_only_item_in_an_old_copy_is_kept_aside() {
 #[test]
 fn f2b_b5_old_manual_number_edit_becomes_a_card() {
     let mut t = promoted();
-    let receipt = t
-        .a
-        .create_manual_document(&crate::manual::ManualFields {
+    let receipt =
+        t.a.create_manual_document(&crate::manual::ManualFields {
             kind: "ligacao".into(),
             title: "Registro manual do gabinete".into(),
             origin: "Gabinete".into(),
@@ -531,7 +541,11 @@ fn f2b_b5_old_manual_number_edit_becomes_a_card() {
             "Editar registro manual",
             IntranetMutation::ImportCapture { capture: edit },
             vec![
-                crate::idmap::CreatedId::new(crate::idmap::IdKind::Document, "", receipt.document_id),
+                crate::idmap::CreatedId::new(
+                    crate::idmap::IdKind::Document,
+                    "",
+                    receipt.document_id,
+                ),
                 crate::idmap::CreatedId::new(crate::idmap::IdKind::Capture, "", 99),
             ],
         )],
@@ -689,7 +703,10 @@ fn f2b_b10_configured_formato9_8_file_is_an_8() {
     assert!(sync(&mut t.a).promoted);
     let folder = t.drive.parent().unwrap().to_path_buf();
     assert!(folder.join("x-formato9-formato9.ponte").is_file());
-    assert!(!folder.join("x.ponte").exists(), "never taken for x.ponte's");
+    assert!(
+        !folder.join("x.ponte").exists(),
+        "never taken for x.ponte's"
+    );
     assert!(is_stub(&t.drive));
 }
 
@@ -760,7 +777,11 @@ fn f2b_b12_writer_aborts_on_changed_header_bytes() {
     assert!(error.contains("mudou"), "{error}");
     assert!(!replaced.borrow().is_empty(), "the hook ran");
     assert_eq!(std::fs::read(&nine).unwrap(), *replaced.borrow());
-    assert_eq!(t.a.list_offline_outbox().unwrap().len(), 1, "the note waits");
+    assert_eq!(
+        t.a.list_offline_outbox().unwrap().len(),
+        1,
+        "the note waits"
+    );
 }
 
 /// B13. A device that read a 9 keeps refusing the old 8 after another
@@ -824,9 +845,7 @@ fn f2b_b14_floor_rechecked_before_8_write_and_adoption() {
             .unwrap()
         };
         match point {
-            "write" => {
-                hooks::BEFORE_FOLDER_WRITE.with(|h| *h.borrow_mut() = Some(Box::new(raise)))
-            }
+            "write" => hooks::BEFORE_FOLDER_WRITE.with(|h| *h.borrow_mut() = Some(Box::new(raise))),
             _ => hooks::BEFORE_ADOPTION.with(|h| *h.borrow_mut() = Some(Box::new(raise))),
         }
         assert!(try_sync(&mut t.a).is_err(), "{point}: refused");
@@ -948,35 +967,56 @@ fn f2b_b17_purging_the_last_row_keeps_exchanging() {
 }
 
 /// B18. A trashed task whose payload cannot be read is left out of the
-/// export and has no triple: export, check and the receiver succeed.
+/// export and has no triple: export, check and the receiver succeed. (The
+/// exporter that reads a live library is the main computer's; a folder
+/// exchange exports its temporary library, built from the file.)
 #[test]
 fn f2b_b18_unreadable_trashed_task_has_no_triple() {
-    let mut t = promoted();
+    let mut team = Team::new(true);
     let mut task = crate::tasks::Task::standalone();
     task.title = "Tarefa que vai estragar".into();
-    let id = t.a.save_task(&task).unwrap();
-    sync(&mut t.a);
-    t.a.trash_item(crate::trash::Target {
-        kind: crate::trash::Kind::Task,
-        id,
-    })
-    .unwrap();
-    sync(&mut t.a);
-    sync(&mut t.b);
-    t.a.conn
-        .execute(
-            "UPDATE tasks SET payload=x'00010203' WHERE id=?1",
-            [id],
-        )
+    let id = team.host.save_task(&task).unwrap();
+    team.host
+        .trash_item(crate::trash::Target {
+            kind: crate::trash::Kind::Task,
+            id,
+        })
         .unwrap();
-    t.a.save_note(t.a.list_documents("").unwrap()[0].id, "Outra nota")
+    // Damaged on disk: written past the guards of the Lixeira, which are
+    // put back as they were.
+    let guards: Vec<(String, String)> = team
+        .host
+        .conn
+        .prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='tasks' AND sql IS NOT NULL")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
         .unwrap();
-    sync(&mut t.a);
-    let copy = copy_at(&t.nine());
-    crate::idents::check(&copy.payload.snapshot, Some(&copy.header)).unwrap();
-    assert!(!copy.payload.snapshot.tasks.iter().any(|x| x.id == id));
-    assert!(!triples(&t.nine()).contains_key(&("task".to_owned(), id)));
-    sync(&mut t.b);
+    for (name, _) in &guards {
+        team.host
+            .conn
+            .execute_batch(&format!("DROP TRIGGER \"{name}\";"))
+            .unwrap();
+    }
+    team.host
+        .conn
+        .execute("UPDATE tasks SET payload=x'00010203' WHERE id=?1", [id])
+        .unwrap();
+    for (_, sql) in &guards {
+        team.host.conn.execute_batch(sql).unwrap();
+    }
+    let RpcResponse::Snapshot(snapshot) = team.ask(v2_sync(None, "")) else {
+        panic!("a snapshot")
+    };
+    crate::idents::check(&snapshot, None).unwrap();
+    assert!(!snapshot.tasks.iter().any(|x| x.id == id), "left out");
+    assert!(
+        !snapshot.idents.iter().any(|t| t.0 == "task" && t.1 == id),
+        "no triple"
+    );
+    team.client.sync_from_host(false).unwrap();
+    assert!(!idents(&team.client).contains_key(&("task".to_owned(), id)));
 }
 
 /// B19. A missing triple is caught before any destination is touched.
@@ -1008,7 +1048,11 @@ fn f2b_b20_unchanged_folder_promotes_in_one_exchange() {
     assert_eq!(idents(&t.a), triples(&t.nine()));
     let report_b = sync(&mut t.b);
     assert!(!report_b.promoted);
-    assert_eq!(idents(&t.b), triples(&t.nine()), "B takes the same identities");
+    assert_eq!(
+        idents(&t.b),
+        triples(&t.nine()),
+        "B takes the same identities"
+    );
 }
 
 /// B21. A juntada derived when the library was opened (a link with no
@@ -1020,11 +1064,10 @@ fn f2b_b21_juntada_at_open_does_not_block_promotion() {
     // What opening the window derives (a juntada) changes the library
     // without a queued change: applied with the queue bypassed.
     t.a.suppress_remote = true;
-    let other = t
-        .a
-        .import_capture(&capture(&number("a", 5), "Outro documento juntado"))
-        .unwrap()
-        .document_id;
+    let other =
+        t.a.import_capture(&capture(&number("a", 5), "Outro documento juntado"))
+            .unwrap()
+            .document_id;
     t.a.suppress_remote = false;
     assert!(other > 0);
     assert!(t.a.list_offline_outbox().unwrap().is_empty());
@@ -1089,7 +1132,8 @@ fn f2b_b24_unreachable_folder_waits() {
     std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
     let both = vec![drive.display().to_string(), pen.display().to_string()];
     let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
-    a.save_intranet_config(&folder_config("Casa", both)).unwrap();
+    a.save_intranet_config(&folder_config("Casa", both))
+        .unwrap();
     sync(&mut a);
     std::fs::remove_dir_all(pen.parent().unwrap()).unwrap();
     let report = sync(&mut a);
@@ -1221,9 +1265,7 @@ fn f2b_b25_same_revision_client_gets_its_first_22_snapshot() {
     assert_eq!(snapshot.idents.len(), idents(&team.host).len());
     match team.ask(v2_sync(Some(revision), &epoch)) {
         RpcResponse::UpToDate {
-            epoch: told,
-            level,
-            ..
+            epoch: told, level, ..
         } => {
             assert_eq!(told, epoch);
             assert_eq!(level, sharedfolder::LEVEL);
@@ -1251,7 +1293,11 @@ fn f2b_b26_invalid_mutated_snapshot_keeps_the_entry() {
     let revision = team.client.cabinet_revision().unwrap();
     let error = team.client.sync_from_host(false).unwrap_err().to_string();
     assert!(error.contains("identidade"), "{error}");
-    assert_eq!(team.client.list_offline_outbox().unwrap().len(), 1, "queued");
+    assert_eq!(
+        team.client.list_offline_outbox().unwrap().len(),
+        1,
+        "queued"
+    );
     let learned: i64 = team
         .client
         .conn
@@ -1347,7 +1393,10 @@ fn f2b_b28_host_epoch_is_a_persisted_nonce() {
     assert_ne!(fresh.ident_epoch, epoch, "a new nonce");
     assert_eq!(team.host.cabinet_revision().unwrap(), revision);
     assert!(
-        matches!(team.ask(v2_sync(Some(revision), &epoch)), RpcResponse::Snapshot(_)),
+        matches!(
+            team.ask(v2_sync(Some(revision), &epoch)),
+            RpcResponse::Snapshot(_)
+        ),
         "a client with the old epoch takes a whole snapshot"
     );
 }

@@ -345,7 +345,15 @@ fn export_limited(
     let measured = content_bytes(&store.conn)?;
     after_measure();
     ensure!(measured <= limit, "{}", too_big(measured, limit));
-    let snapshot = store.export_snapshot()?;
+    // A library of schema 22 sends the identity of every item and the epoch
+    // of its identities along (F2b): the library made from the copy keeps
+    // them.
+    let snapshot = if crate::idents::has_idents(&store.conn)? {
+        let epoch = crate::idents::origin(&store.conn)?.2.unwrap_or_default();
+        store.export_with_idents(&epoch)?
+    } else {
+        store.export_snapshot()?
+    };
     ensure_trash_is_whole(&snapshot)?;
     ensure_every_task_travels(&store, &snapshot)?;
     let blobs = crate::intranet::collect_blobs(&store, &snapshot)?;
@@ -519,6 +527,9 @@ pub fn import(path: &Path, password: &str, place: &Place, now: NaiveDateTime) ->
                 .to_string()
         })
         .unwrap_or_default();
+    if !opened.snapshot.idents.is_empty() {
+        crate::idents::check_triples(&opened.snapshot)?;
+    }
     recovery::build_in_new_folder(place, now, |folder| {
         let db = crate::paths::db_path_in(folder);
         {
@@ -542,7 +553,7 @@ pub fn import(path: &Path, password: &str, place: &Place, now: NaiveDateTime) ->
                 },
             )?;
         }
-        recovery::finish_recovery_library(
+        let marker = recovery::finish_recovery_library(
             folder,
             &db,
             place,
@@ -553,7 +564,19 @@ pub fn import(path: &Path, password: &str, place: &Place, now: NaiveDateTime) ->
                 esquema: opened.header.esquema,
             },
             now,
-        )
+        )?;
+        // The epoch the copy carried stays with its identities (the
+        // recovery cleared the origin: the library is provisional).
+        if !opened.snapshot.ident_epoch.is_empty() {
+            let store = Store::open(&db)?;
+            crate::idents::set_origin(
+                &store.conn,
+                "provisional",
+                None,
+                Some(&opened.snapshot.ident_epoch),
+            )?;
+        }
+        Ok(marker)
     })
 }
 

@@ -99,6 +99,9 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_init<'local>(
             #[cfg(not(windows))]
             ponteproj::protection::set_platform_key(&key)?;
             let mut store = Store::open(&dir.join("acervo.sqlite3"))?;
+            // The minimum format of the folder this phone has seen lives in
+            // the app's private folder, outside the library (F2b).
+            store.set_device_dir(dir.clone());
             // Opened as it was (its update could not be done now): said to
             // the app, which shows it; the next opening tries again.
             notice = store.take_upgrade_notice();
@@ -158,6 +161,9 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_sync<'local>(
 /// partial file. When the copy changed, the answer carries `bytes`, the length
 /// of the file now at `path`, so the app can check what it will upload.
 fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result<Value> {
+    // The phone never promotes the folder to the shared file of format 9,
+    // and a stub asks the person to pick the new file (F2b).
+    store.set_phone_role();
     anyhow::ensure!(
         std::path::Path::new(path).is_file(),
         "O arquivo de sincronização não foi encontrado."
@@ -5342,9 +5348,10 @@ mod tests {
         let header = ponteproj::sharedfolder::read_header(&drive).unwrap().unwrap();
         assert_eq!((header.format, header.schema_version), (8, 21));
         assert_eq!(ponteproj::sharedfolder::FORMAT, 8);
-        // What a later build writes is refused with the "update" message.
+        // What a later build writes is refused with the "update" message
+        // (format 9 is read since F2b: format 10 is the later one).
         let raw = std::fs::read(&drive).unwrap();
-        let newer = String::from_utf8_lossy(&raw).replacen("\"format\":8", "\"format\":9", 1);
+        let newer = String::from_utf8_lossy(&raw).replacen("\"format\":8", "\"format\":10", 1);
         let work = dir.0.join("work.ponte");
         std::fs::write(&work, newer.as_bytes()).unwrap();
         let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
@@ -5410,7 +5417,7 @@ mod tests {
         let header = ponteproj::sharedfolder::read_header(&schema22).unwrap().unwrap();
         assert_eq!((header.format, header.schema_version), (8, 22));
         for (what, refused) in [
-            ("format 9", text.replacen("\"format\":8", "\"format\":9", 1).into_bytes()),
+            ("format 10", text.replacen("\"format\":8", "\"format\":10", 1).into_bytes()),
             ("format 8, schema 22", std::fs::read(&schema22).unwrap()),
         ] {
             assert_ne!(refused, raw, "{what}: the file differs");
