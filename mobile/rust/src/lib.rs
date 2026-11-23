@@ -6488,4 +6488,64 @@ dia 2026-12-26 Recesso do celular
             "{answer}"
         );
     }
+
+    /// Review F3.0a1, finding 1. Drive is at 9/2 and the pending copy is a
+    /// 9/1 with a task Drive lacks and its journal no longer explains. Its
+    /// archive cannot be made (the name is taken): the pending copy is left
+    /// as it is, so the core must report it unsettled by path, or the app
+    /// (which keeps only the listed copies, `SyncIo.settledPendings`)
+    /// deletes the only copy of that task.
+    #[test]
+    fn f3_0a_a_9_1_pending_copy_whose_archive_failed_is_listed_unsettled() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, _drive, mut phone, nine) = promoted_with_phone(&dir.0);
+        assert_eq!(ponteproj::sharedfolder::read_header(&nine).unwrap().unwrap().level, 2);
+        let work = dir.0.join("work.ponte");
+        let work_s = work.display().to_string();
+        std::fs::copy(&nine, &work).unwrap();
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        // Work that only reached the pending copy (the upload never
+        // happened), at the level of an older Ponte, history summarized.
+        create_task(&mut phone, &json!({"title": "Só na pendência 9/1"})).unwrap();
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        let pending = dir.0.join("pendente.ponte");
+        std::fs::copy(&work, &pending).unwrap();
+        ponteproj::sharedfolder::reseal_for_test(&pending, KEY, 1, |_, payload| {
+            payload.journal.clear();
+        })
+        .unwrap();
+        let _ = std::fs::remove_file(dir.0.join("celular.sqlite3-guarda.ponte"));
+        // Meanwhile the computer moves Drive ahead, at 9/2.
+        let cfg = computer.load_intranet_config().unwrap();
+        let reporter = ponteproj::ai::Reporter::silent();
+        for title in ["Do computador", "Outra do computador"] {
+            let mut task = ponteproj::tasks::Task::blank(None);
+            task.title = title.into();
+            computer.save_task(&task).unwrap();
+            computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        }
+        std::fs::copy(&nine, &work).unwrap();
+        let before = std::fs::read(&pending).unwrap();
+        let aside = ponteproj::sharedfolder::aside_path(&pending).unwrap();
+        std::fs::create_dir(&aside).unwrap();
+
+        let pending_s = pending.display().to_string();
+        let answer = sync_paths(&mut phone, &work_s, &pending_s, KEY).unwrap();
+        assert_eq!(answer["pending_settled"], json!(false), "{answer}");
+        assert_eq!(std::fs::read(&pending).unwrap(), before, "the only copy is untouched");
+        // What the app does with the answer (SyncIo.settledPendings): the
+        // working copy listed keeps every pending one; otherwise only the
+        // listed ones are kept.
+        let unsettled: Vec<String> = answer["unsettled"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no per-copy verdict: {answer}"))
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+        let kept = unsettled.contains(&work_s) || unsettled.contains(&pending_s);
+        assert!(kept, "the app would delete the blocked pending copy: {answer}");
+        std::fs::remove_dir(&aside).unwrap();
+    }
 }

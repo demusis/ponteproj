@@ -1002,8 +1002,8 @@ fn unpack_stub(plain: &[u8]) -> Result<StubBody> {
 /// after `edit` changed its header or payload. The moment, writer and
 /// revision stay those of the header unless `edit` changes them; the salt
 /// and nonce are new, so the plain start of the file changes.
-#[cfg(test)]
-pub(crate) fn reseal_for_test(
+#[cfg(any(test, feature = "test-support"))]
+pub fn reseal_for_test(
     path: &Path,
     password: &str,
     level: u32,
