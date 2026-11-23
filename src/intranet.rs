@@ -1300,9 +1300,32 @@ pub enum RpcResponse {
     },
     /// The change asked about (`ReceiptOf`) was never applied here.
     NotApplied,
+    /// A change of level 2 refused before anything ran because one of its
+    /// items could not be proven here (frozen rules 5–7 and 23): the sender
+    /// keeps it as a card, never applied again by number.
+    ProofRefused {
+        message: String,
+    },
     Error {
         message: String,
     },
+}
+
+/// A failure of the main computer AFTER the effect of a change may have been
+/// committed (its log, rekey, receipt or answer): never a refusal of the
+/// change. It is answered 503, so the sender keeps the change and asks its
+/// receipt next time (frozen rules 10 and 11).
+#[derive(Debug)]
+struct NotARefusal;
+
+impl std::fmt::Display for NotARefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("O computador principal recebeu a alteração, mas não conseguiu concluir o registro dela agora. Ela continua guardada aqui e é conferida na próxima sincronização; não a repita.")
+    }
+}
+
+fn not_a_refusal(error: anyhow::Error) -> anyhow::Error {
+    error.context(NotARefusal)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1671,6 +1694,14 @@ const APPLIED_LIMIT: i64 = 500_000;
 fn valid_mutation_uid(uid: &str) -> bool {
     (8..=64).contains(&uid.len()) && uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
+
+/// The card of a queued change an older Ponte sent under no identity of its
+/// own and whose answer was lost: whether it was applied is unknown.
+const UNCERTAIN_STATE: &str = "Esta alteração foi enviada por uma versão anterior do Ponte, sem identificação própria, e a resposta do computador principal não chegou: não há como saber se ela foi aplicada lá. Ela não foi enviada de novo; confira o item e refaça a alteração, se ainda for preciso.";
+
+/// The card of a queued change made after another change of the same item
+/// that became a card in the same exchange.
+const AFTER_A_CARD: &str = "Uma alteração anterior deste mesmo item não pôde ser aplicada e ficou em Conflitos de edição; esta, feita depois dela, também não foi aplicada, para não gravar sobre o que outro aparelho mudou. Confira as duas e refaça o que ainda for preciso.";
 
 /// What the main computer answers to a change made against another history
 /// (its library was replaced by a backup): the change is kept in the sender's
@@ -4429,10 +4460,34 @@ impl Store {
             // `ids`.
             let mut creation_results: BTreeMap<i64, crate::renumber::CreationOutcome> =
                 BTreeMap::new();
-            for entry in outbox {
+            // The items an entry of this drain was carded for (whether that
+            // card was unresolved): every later entry of the same item is
+            // carded too, never applied over another device's version.
+            let mut carded: BTreeMap<String, bool> = BTreeMap::new();
+            for mut entry in outbox {
+                let item = mutation_target_key(&entry.mutation);
+                let carded_now = |carded: &mut BTreeMap<String, bool>, conflict: &SyncConflict| {
+                    if let Some(item) = &item {
+                        *carded.entry(item.clone()).or_default() |= conflict.unresolved;
+                    }
+                };
                 // A change that may already be there is asked about first,
                 // before anything of it is checked or resolved (adendo §6):
                 // only one never applied goes on.
+                if entry.attempted && !valid_mutation_uid(&entry.uid) {
+                    // Sent by an older Ponte under no identity of its own:
+                    // nothing tells whether it was applied there. It is
+                    // kept as a card, never sent again, and the queue goes
+                    // on (review F3.0a2, finding 6).
+                    let learned = ids.learn(&entry.created, None);
+                    let mut conflict =
+                        build_sync_conflict(&entry, UNCERTAIN_STATE, host_frame.as_deref());
+                    conflict.unresolved = true;
+                    carded_now(&mut carded, &conflict);
+                    self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
+                    pushed_offline = true;
+                    continue;
+                }
                 if entry.attempted {
                     let mut reached = false;
                     let asked = RpcRequest::ReceiptOf {
@@ -4476,6 +4531,18 @@ impl Store {
                     receipt_doc: crate::renumber::receipt_document(&entry.created),
                 };
                 let identity = crate::renumber::edit_identity(&entry.mutation, &edit_source);
+                // An earlier entry of the same item became a card here: this
+                // one expects the version that entry would have left.
+                if let Some(unresolved) = item.as_ref().and_then(|i| carded.get(i)).copied() {
+                    let learned = ids.learn(&entry.created, None);
+                    let mut conflict =
+                        build_sync_conflict(&entry, AFTER_A_CARD, host_frame.as_deref());
+                    conflict.unresolved = unresolved;
+                    conflict.identity = identity;
+                    self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
+                    pushed_offline = true;
+                    continue;
+                }
                 // Level 2: each site by its proof, in the main computer's
                 // frame, base included; an older Ponte's entry through the
                 // translation of numbers, as before.
@@ -4527,12 +4594,13 @@ impl Store {
                     };
                     let mut conflict = build_sync_conflict(&sent, &reason, host_frame.as_deref());
                     conflict.identity = identity;
+                    carded_now(&mut carded, &conflict);
                     self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
                     pushed_offline = true;
                     continue;
                 }
                 let creation = crate::renumber::creation_document(&entry.mutation, &entry.created);
-                let sent = match routed {
+                let mut sent = match routed {
                     Ok((mutation, base, refs)) => OutboxEntry {
                         mutation,
                         base,
@@ -4548,11 +4616,21 @@ impl Store {
                             build_sync_conflict(&entry, &reason, host_frame.as_deref());
                         conflict.unresolved = true;
                         conflict.identity = identity;
+                        carded_now(&mut carded, &conflict);
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
                         pushed_offline = true;
                         continue;
                     }
                 };
+                // Before anything leaves: an identity of its own (an older
+                // Ponte's entry has none) and the attempt itself, both kept
+                // here, so a crash or a lost answer from now on is settled by
+                // its receipt (review F3.0a2, findings 2 and 6).
+                if !valid_mutation_uid(&sent.uid) {
+                    sent.uid = uuid::Uuid::new_v4().simple().to_string();
+                }
+                self.set_outbox_attempt(entry.id, &entry.uid, &sent.uid, true)?;
+                entry.uid = sent.uid.clone();
                 let mut reached = false;
                 match send_rpc_tracked(
                     &cfg,
@@ -4607,6 +4685,22 @@ impl Store {
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
                         pushed_offline = true;
                     }
+                    // One of its items could not be proven there: a card of
+                    // the change as it was made, never applied again by
+                    // number (review F3.0a2, finding 7).
+                    Ok(RpcResponse::ProofRefused { message }) => {
+                        let learned = ids.learn(&entry.created, None);
+                        if let Some(doc) = creation {
+                            creation_results.insert(doc, crate::renumber::CreationOutcome::Refused);
+                        }
+                        let mut conflict =
+                            build_sync_conflict(&entry, &message, host_frame.as_deref());
+                        conflict.unresolved = true;
+                        conflict.identity = identity;
+                        carded_now(&mut carded, &conflict);
+                        self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
+                        pushed_offline = true;
+                    }
                     Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
                         let learned = ids.learn(&entry.created, None);
                         if let Some(doc) = creation {
@@ -4615,6 +4709,7 @@ impl Store {
                         let mut conflict =
                             build_sync_conflict(&sent, &message, host_frame.as_deref());
                         conflict.identity = identity;
+                        carded_now(&mut carded, &conflict);
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
                         pushed_offline = true;
                     }
@@ -4624,11 +4719,12 @@ impl Store {
                         );
                     }
                     Err(RpcError::Unreachable(msg)) => {
-                        if reached {
-                            // It may have been applied: it keeps its identity
-                            // and stands alone until the next exchange.
-                            self.mark_outbox_attempted(entry.id)?;
+                        if !reached {
+                            // It never left: not attempted, as before.
+                            self.set_outbox_attempt(entry.id, &entry.uid, &entry.uid, false)?;
                         }
+                        // Otherwise it may have been applied: it keeps its
+                        // identity and stands alone until the next exchange.
                         bail!("{msg}");
                     }
                 }
@@ -7377,6 +7473,34 @@ impl Store {
         Ok(())
     }
 
+    /// Gives the queued change `entry_id` (still under `uid_now`, not
+    /// rewritten meanwhile) the identity `uid` and the attempt `attempted`.
+    fn set_outbox_attempt(
+        &mut self,
+        entry_id: i64,
+        uid_now: &str,
+        uid: &str,
+        attempted: bool,
+    ) -> Result<()> {
+        let Some(mut entry) = self
+            .list_offline_outbox()?
+            .into_iter()
+            .find(|e| e.id == entry_id && e.uid == uid_now)
+        else {
+            return Ok(());
+        };
+        if entry.attempted == attempted && entry.uid == uid {
+            return Ok(());
+        }
+        entry.attempted = attempted;
+        entry.uid = uid.to_owned();
+        self.conn.execute(
+            "UPDATE offline_outbox SET payload=?1 WHERE id=?2",
+            params![seal(&serde_json::to_vec(&entry)?)?, entry_id],
+        )?;
+        Ok(())
+    }
+
     /// Marks a queued change as possibly applied by the main computer.
     fn mark_outbox_attempted(&mut self, entry_id: i64) -> Result<()> {
         let Some(mut entry) = self
@@ -7563,6 +7687,28 @@ impl Store {
                     Err(error) => Err(error),
                     Ok(()) => Ok(reply),
                 }
+            }
+            // One of its items could not be proven on the main computer: the
+            // change, as it was made, is kept as a card, never applied there
+            // or here by number (review F3.0a2, finding 7).
+            Ok(RpcResponse::ProofRefused { message }) => {
+                let made = OutboxEntry {
+                    id: 0,
+                    created_at: now_iso(),
+                    actor: actor.clone(),
+                    label: mutation_label(&mutation),
+                    mutation,
+                    base: None,
+                    uid,
+                    created: Vec::new(),
+                    attempted: false,
+                    idents: Vec::new(),
+                    refs,
+                };
+                let mut conflict = build_sync_conflict(&made, &message, None);
+                conflict.unresolved = true;
+                insert_conflict(&self.conn, &conflict)?;
+                bail!("{message} Ela ficou guardada em Conflitos de edição.")
             }
             // Made against another history: kept, never applied there.
             Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message))
@@ -12455,6 +12601,9 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
     }
     match process_rpc(&mut store, &host_cfg, rpc_req) {
         Ok(resp) => (200, resp),
+        // After the effect: the sender keeps the change (review F3.0a2,
+        // finding 2).
+        Err(err) if err.downcast_ref::<NotARefusal>().is_some() => (503, error(err.to_string())),
         Err(err) => (400, error(err.to_string())),
     }
 }
@@ -12581,7 +12730,9 @@ fn process_rpc_at(
             // answer, and nothing is applied again, whatever happened to the
             // item since.
             if receipted {
-                if let Some(known) = known_mutation(store, &mutation_uid, &idents, v2, &epoch)? {
+                if let Some(known) = known_mutation(store, &mutation_uid, &idents, v2, &epoch)
+                    .map_err(not_a_refusal)?
+                {
                     return Ok(known);
                 }
             }
@@ -12596,9 +12747,12 @@ fn process_rpc_at(
                         revision: store.cabinet_revision()?,
                     };
                     let holds = refs.frame == here;
-                    refs.resolve(&mutation, None, &store.conn, holds)
-                        .map_err(anyhow::Error::msg)?
-                        .0
+                    match refs.resolve(&mutation, None, &store.conn, holds) {
+                        Ok((mutation, ..)) => mutation,
+                        // Said as such, so the sender keeps it as a card
+                        // without any number (review F3.0a2, finding 7).
+                        Err(message) => return Ok(RpcResponse::ProofRefused { message }),
+                    }
                 }
                 None => mutation,
             };
@@ -12612,18 +12766,21 @@ fn process_rpc_at(
                 crate::idents::open_carry(&store.conn, &mutation_uid, &idents)?;
             }
             let logged = store.run_logged(|store| store.execute_mutation(&actor, mutation));
-            crate::idents::close_carry(&store.conn)?;
+            let carry_closed = crate::idents::close_carry(&store.conn);
             let logged = logged?;
             let reply = match logged.result {
                 Ok(reply) => reply,
                 Err(error) => {
                     logged.closed?;
+                    carry_closed?;
                     crate::idents::end_carry(&store.conn, &mutation_uid)?;
                     return Err(error);
                 }
             };
-            logged.closed?;
-            let inserted = logged.inserted?;
+            // From here on the change is applied: a failure is not a refusal.
+            carry_closed.map_err(not_a_refusal)?;
+            logged.closed.map_err(not_a_refusal)?;
+            let inserted = logged.inserted.map_err(not_a_refusal)?;
             // What it created is read now, in the library where it was just
             // applied, and kept with the answer: a repeat must give back
             // these numbers, not what a later state would suggest.
@@ -12666,12 +12823,12 @@ fn process_rpc_at(
             let (given, proof) = match settle() {
                 Ok(settled) => settled,
                 // The log keeps it: the next arrival of the uid completes it.
-                Err(error) if durable => return Err(error),
+                Err(error) if durable => return Err(not_a_refusal(error)),
                 // Without the receipt a repeated send would only be applied
                 // again, as before: the change itself is already done.
                 Err(_) => (Vec::new(), Vec::new()),
             };
-            let mut snapshot = served_snapshot(store, v2, &epoch)?;
+            let mut snapshot = served_snapshot(store, v2, &epoch).map_err(not_a_refusal)?;
             snapshot.generation = generation;
             corrupt_for_test(store, &mut snapshot);
             // The note was made before the change: it now follows the
@@ -12695,7 +12852,9 @@ fn process_rpc_at(
                 valid_mutation_uid(&mutation_uid),
                 "Identificação da alteração inválida."
             );
-            Ok(known_mutation(store, &mutation_uid, &idents, v2, &epoch)?
+            // It may be applied: a failure here is not a refusal either.
+            Ok(known_mutation(store, &mutation_uid, &idents, v2, &epoch)
+                .map_err(not_a_refusal)?
                 .unwrap_or(RpcResponse::NotApplied))
         }
     }
