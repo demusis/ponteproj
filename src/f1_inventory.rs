@@ -2024,3 +2024,185 @@ fn f0_idmap_translates_attachment_and_fact_sources_when_the_numbers_swap() {
     let used: Vec<&str> = record.sources.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(used, ["A9Hdeadbeef", "A7H0123abcd"]);
 }
+
+// ------------------------------------------- F0: plain edits (item 8) --
+
+fn tick() {
+    std::thread::sleep(std::time::Duration::from_millis(15));
+}
+
+fn link_active(store: &Store, id: i64) -> bool {
+    store
+        .conn
+        .query_row("SELECT active FROM document_links WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+fn link_id(store: &Store, source: i64, target: i64) -> i64 {
+    store
+        .conn
+        .query_row(
+            "SELECT id FROM document_links WHERE source_id=?1 AND target_id=?2",
+            [source, target],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn description(store: &Store, doc: i64) -> String {
+    store
+        .list_attachments(crate::attachments::Owner::Document(doc))
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .description
+}
+
+/// Two computers with two documents linked and one attachment, in sync.
+fn pair_with_link_and_attachment() -> (Pair, i64, i64) {
+    let mut p = pair();
+    let doc = p.a.list_documents("").unwrap()[0].id;
+    let other =
+        p.a.import_capture(&capture(&number("a", 1), "Outro documento"))
+            .unwrap()
+            .document_id;
+    p.a.add_document_link(doc, other, "relacionado", "base")
+        .unwrap();
+    let link = link_id(&p.a, doc, other);
+    p.a.add_attachment(
+        crate::attachments::Owner::Document(doc),
+        "anexo.pdf",
+        "descrição inicial",
+        b"%PDF-1.4 anexo",
+    )
+    .unwrap();
+    sync(&mut p.a);
+    sync(&mut p.b);
+    assert!(link_active(&p.b, link));
+    (p, doc, link)
+}
+
+/// F0 (R2-B7, item 8), shared folder: B deactivates a link and changes the
+/// description of an attachment without exchanging; A, later, deactivates
+/// and reactivates the link and writes another description, and publishes
+/// first. B's older edits are not applied over A's newer ones: each becomes a
+/// conflict card on B, and both computers keep A's values.
+#[test]
+fn f0_an_older_link_or_description_edit_does_not_overwrite_a_newer_one_in_a_folder() {
+    let (mut p, doc, link) = pair_with_link_and_attachment();
+    let attachment =
+        p.b.list_attachments(crate::attachments::Owner::Document(doc))
+            .unwrap()[0]
+            .id;
+    p.b.set_link_active(link, false).unwrap();
+    p.b.update_attachment_description(attachment, "descrição de B (antes)")
+        .unwrap();
+    tick();
+    p.a.set_link_active(link, false).unwrap();
+    p.a.set_link_active(link, true).unwrap();
+    p.a.update_attachment_description(attachment, "descrição de A (depois)")
+        .unwrap();
+    sync(&mut p.a);
+    let report = sync(&mut p.b);
+    sync(&mut p.a);
+    for (who, store) in [("A", &p.a), ("B", &p.b)] {
+        assert!(link_active(store, link), "{who}: link deactivated");
+        assert_eq!(description(store, doc), "descrição de A (depois)", "{who}");
+    }
+    let cards = p.b.list_sync_conflicts().unwrap();
+    assert_eq!(report.conflicts, 2, "{cards:?}");
+    assert_eq!(cards.len(), 2, "{cards:?}");
+    assert!(
+        cards
+            .iter()
+            .all(|c| c.reason.contains("alteração mais nova")),
+        "{cards:?}"
+    );
+}
+
+/// F0 (item 8), shared folder, the other order: A changes first and
+/// publishes, B changes later (after A's copy was written) and then
+/// exchanges. B's edit is the newer one and is applied, without a card.
+#[test]
+fn f0_a_newer_link_or_description_edit_is_applied_in_a_folder() {
+    let (mut p, doc, link) = pair_with_link_and_attachment();
+    let attachment =
+        p.a.list_attachments(crate::attachments::Owner::Document(doc))
+            .unwrap()[0]
+            .id;
+    p.a.update_attachment_description(attachment, "descrição de A (antes)")
+        .unwrap();
+    sync(&mut p.a);
+    tick();
+    p.b.set_link_active(link, false).unwrap();
+    p.b.update_attachment_description(attachment, "descrição de B (depois)")
+        .unwrap();
+    sync(&mut p.b);
+    sync(&mut p.a);
+    assert!(p.b.list_sync_conflicts().unwrap().is_empty());
+    for (who, store) in [("A", &p.a), ("B", &p.b)] {
+        assert!(!link_active(store, link), "{who}");
+        assert_eq!(description(store, doc), "descrição de B (depois)", "{who}");
+    }
+}
+
+/// F0 (item 8), team: a client offline changes the description of an
+/// attachment and deactivates a link; the principal, later, changes them
+/// itself. When the client comes back, its older edits are not sent over the
+/// principal's newer values: they become conflict cards on the client.
+#[test]
+fn f0_a_team_client_s_older_plain_edit_does_not_overwrite_the_principal_s_newer_one() {
+    let mut t = Team::new();
+    let doc = t.host.list_documents("").unwrap()[0].id;
+    let other = t
+        .host
+        .import_capture(&capture(&number("a", 1), "Outro documento"))
+        .unwrap()
+        .document_id;
+    t.host
+        .add_document_link(doc, other, "relacionado", "base")
+        .unwrap();
+    let link = link_id(&t.host, doc, other);
+    t.host
+        .add_attachment(
+            crate::attachments::Owner::Document(doc),
+            "anexo.pdf",
+            "descrição inicial",
+            b"%PDF-1.4 anexo",
+        )
+        .unwrap();
+    t.client.sync_from_host(false).unwrap();
+    let attachment = t
+        .client
+        .list_attachments(crate::attachments::Owner::Document(doc))
+        .unwrap()[0]
+        .id;
+    t.offline();
+    t.client.set_link_active(link, false).unwrap();
+    t.client
+        .update_attachment_description(attachment, "descrição do cliente (antes)")
+        .unwrap();
+    assert_eq!(t.client.list_offline_outbox().unwrap().len(), 2);
+    tick();
+    t.host.set_link_active(link, false).unwrap();
+    t.host.set_link_active(link, true).unwrap();
+    t.host
+        .update_attachment_description(attachment, "descrição do principal (depois)")
+        .unwrap();
+    t.online();
+    t.client.sync_from_host(false).unwrap();
+    for (who, store) in [("principal", &t.host), ("cliente", &t.client)] {
+        assert!(link_active(store, link), "{who}: link deactivated");
+        assert_eq!(
+            description(store, doc),
+            "descrição do principal (depois)",
+            "{who}"
+        );
+    }
+    let cards = t.client.list_sync_conflicts().unwrap();
+    assert_eq!(cards.len(), 2, "{cards:?}");
+    assert!(t.client.list_offline_outbox().unwrap().is_empty());
+}
