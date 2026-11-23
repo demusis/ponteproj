@@ -12787,10 +12787,13 @@ fn process_rpc_at(
             let created = receipted
                 .then(|| crate::idmap::created_ids(&*store, &applied, &reply).ok())
                 .flatten();
-            // The proof names the rows it inserted, by their final identity.
+            // The proof names the rows it inserted, by their final identity;
+            // a duplicate import proves none (frozen rule 9).
+            let duplicate = matches!(&reply, MutationReply::Receipt(r) if r.duplicate);
             let sites: Vec<_> = created
                 .iter()
                 .flatten()
+                .filter(|_| !duplicate)
                 .filter(|c| inserted.contains_key(&(crate::idents::kind_of(c.kind).into(), c.id)))
                 .map(|c| (c.kind, c.id))
                 .collect();

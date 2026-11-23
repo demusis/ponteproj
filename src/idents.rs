@@ -698,8 +698,38 @@ pub(crate) fn open_carry(conn: &Connection, uid: &str, carried: &[SlotIdent]) ->
         )?;
     }
     conn.execute_batch(&format!(
-        "CREATE TEMP TRIGGER IF NOT EXISTS {CARRY_TRIGGER} AFTER INSERT ON main.item_ident          BEGIN INSERT OR IGNORE INTO main.carry_log(uid,kind,row_id,ident) VALUES('{uid}',NEW.kind,NEW.row_id,NEW.ident); END;"
+        "CREATE TEMP TRIGGER IF NOT EXISTS {CARRY_TRIGGER} AFTER INSERT ON main.item_ident          BEGIN INSERT OR IGNORE INTO main.carry_log(uid,kind,row_id,ident) VALUES('{uid}',NEW.kind,NEW.row_id,NEW.ident); END;
+         CREATE TEMP TABLE IF NOT EXISTS {CARRY_OPEN}(uid TEXT NOT NULL);
+         DELETE FROM temp.{CARRY_OPEN};
+         INSERT INTO temp.{CARRY_OPEN}(uid) VALUES('{uid}');"
     ))?;
+    Ok(())
+}
+
+/// The change whose durable log is open on this connection (one row).
+const CARRY_OPEN: &str = "ponte_carry_open";
+
+/// The kind of the mark a duplicate import leaves in the durable log.
+const DUPLICATE_MARK: &str = "duplicate";
+
+/// Called by an import inside its own transaction when it lands on a version
+/// already there (a duplicate): with a durable log open, the log keeps that
+/// decision with the effect, so a completion after a fall gives no identity
+/// to what the duplicate inserted (frozen rule 9; review F3.0a2, finding 4).
+pub(crate) fn note_duplicate(conn: &Connection) -> Result<()> {
+    let open: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM temp.sqlite_master WHERE name=?1)",
+        [CARRY_OPEN],
+        |r| r.get(0),
+    )?;
+    if open {
+        conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO main.carry_log(uid,kind,row_id,ident) SELECT uid,?1,-1,'' FROM temp.{CARRY_OPEN}"
+            ),
+            [DUPLICATE_MARK],
+        )?;
+    }
     Ok(())
 }
 
@@ -714,7 +744,9 @@ fn ensure_carry_log(conn: &Connection) -> Result<()> {
 
 /// Closes the durable log of this connection (the rows stay).
 pub(crate) fn close_carry(conn: &Connection) -> Result<()> {
-    conn.execute_batch(&format!("DROP TRIGGER IF EXISTS temp.{CARRY_TRIGGER};"))?;
+    conn.execute_batch(&format!(
+        "DROP TRIGGER IF EXISTS temp.{CARRY_TRIGGER}; DROP TABLE IF EXISTS temp.{CARRY_OPEN};"
+    ))?;
     Ok(())
 }
 
@@ -747,6 +779,13 @@ pub(crate) fn complete_carry(conn: &Connection, uid: &str) -> Result<()> {
         .prepare("SELECT kind,row_id,ident FROM carry_log WHERE uid=?1")?
         .query_map([uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    // A duplicate gives no identity, even to what it inserted.
+    if rows
+        .iter()
+        .any(|(kind, row, _)| kind == DUPLICATE_MARK && *row < 0)
+    {
+        return end_carry(conn, uid);
+    }
     let of = |kind: &str, carried: bool| {
         rows.iter()
             .filter(|(k, row, _)| k == kind && (*row == 0) == carried)
@@ -959,6 +998,11 @@ pub(crate) fn rekey(
     hooks::crash_before_rekey(conn);
     #[cfg(any(test, feature = "test-support"))]
     hooks::fail_rekey_at(conn)?;
+    // An import that landed on a version already there proves nothing: what
+    // it inserted (a triage task) keeps its own identity (frozen rule 9).
+    if matches!(reply, MutationReply::Receipt(receipt) if receipt.duplicate) {
+        return Ok(out);
+    }
     let rows = slot_rows(conn, mutation, reply, inserted)?;
     for slot in carried {
         let Some((kind, _, row, _)) = rows

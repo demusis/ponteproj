@@ -957,6 +957,7 @@ impl Store {
                 false,
             )?;
             close_import_log(&tx, extras)?;
+            crate::idents::note_duplicate(&tx)?;
             tx.commit()?;
             return Ok((receipt, added));
         }
@@ -1021,6 +1022,7 @@ impl Store {
                     false,
                 )?;
                 close_import_log(&tx, extras)?;
+                crate::idents::note_duplicate(&tx)?;
                 tx.commit()?;
                 return Ok((receipt, added));
             }
@@ -1100,6 +1102,9 @@ impl Store {
             new_document,
         )?;
         close_import_log(&tx, extras)?;
+        if duplicate {
+            crate::idents::note_duplicate(&tx)?;
+        }
         tx.commit()
             .context("Não foi possível concluir a importação; tente de novo.")?;
         // The capture is already committed; a failure here must not undo the
