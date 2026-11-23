@@ -202,9 +202,17 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
         Err(error) => return Err(error),
     };
     // A copy read once for its twin is settled with it; one left for the
-    // next exchange is not settled.
+    // next exchange is not settled. Nor is one that could not be rewritten
+    // (its archive failed, or the write did): it is as it was, and may hold
+    // the only copy of some work; the working copy among them keeps every
+    // pending copy (nothing reached Drive).
     let mut unsettled = report.unsettled.clone();
     unsettled.extend(waiting.iter().cloned());
+    for path in &report.unwritten {
+        if !unsettled.contains(path) {
+            unsettled.push(path.clone());
+        }
+    }
     for (twin, first) in &twins {
         if unsettled.iter().any(|u| u == first) && !unsettled.contains(twin) {
             unsettled.push(twin.clone());
