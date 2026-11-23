@@ -2047,7 +2047,7 @@ fn check_readable_as_is(db: &Path) -> Result<()> {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(|e| friendly(e.into()))?;
     ensure!(
-        version >= crate::storage::LIBRARY_SCHEMA,
+        version >= crate::storage::SCHEMA_VERSION,
         "O acervo é de uma versão mais antiga do Ponte; abra o Ponte uma vez para atualizá-lo antes de usar --dry-run (a simulação não altera nada)."
     );
     Ok(())
@@ -2094,7 +2094,14 @@ fn execute_with(
         } else {
             Some(lock_import(db)?)
         };
-        let mut store = Store::open(db).map_err(friendly)?;
+        // A simulation reads the library as it is: a library of schema 21 is
+        // not moved to 22 by it (the window does that).
+        let mut store = if options.dry_run {
+            Store::open_as_is(db)
+        } else {
+            Store::open(db)
+        }
+        .map_err(friendly)?;
         store.import_plan(&plan, options.dry_run).map_err(friendly)
     })();
     match outcome {

@@ -465,6 +465,7 @@ fn open_raw(path: &Path) -> Result<Connection> {
             | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
         |_| Ok(crate::storage::LIBRARY_SCHEMA),
     )?;
+    crate::idents::register_functions(&conn)?;
     Ok(conn)
 }
 

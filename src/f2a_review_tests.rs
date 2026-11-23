@@ -56,6 +56,7 @@ fn raw(path: &Path) -> Connection {
         |_| Ok(22i64),
     )
     .unwrap();
+    crate::idents::register_functions(&conn).unwrap();
     conn
 }
 
@@ -522,17 +523,23 @@ fn f2a_07_a_free_space_that_cannot_be_measured_refuses_the_update() {
     library_21(&path, "nota");
     hooks::FREE_SPACE
         .with(|h| *h.borrow_mut() = Some(Err(std::io::Error::other("volume indisponível"))));
-    let error = Store::open(&path).err().map(|e| format!("{e:#}"));
+    // (Since the second review the library opens as it was, with a notice
+    // that tells the measure failed or the room is short, apart.)
+    let notice = Store::open(&path)
+        .ok()
+        .and_then(|mut s| s.take_upgrade_notice());
     hooks::FREE_SPACE.with(|h| h.borrow_mut().take());
-    let error = error.expect("a atualização seguiu sem medir o espaço");
+    let notice = notice.expect("a atualização seguiu sem medir o espaço");
     assert!(
-        error.contains("Não foi possível medir o espaço livre"),
-        "{error}"
+        notice.contains("não foi possível medir o espaço livre"),
+        "{notice}"
     );
     hooks::FREE_SPACE.with(|h| *h.borrow_mut() = Some(Ok(1)));
-    let error = Store::open(&path).err().map(|e| format!("{e:#}"));
+    let notice = Store::open(&path)
+        .ok()
+        .and_then(|mut s| s.take_upgrade_notice());
     hooks::FREE_SPACE.with(|h| h.borrow_mut().take());
-    assert!(error.expect("faltou recusar").contains("Falta espaço"));
+    assert!(notice.expect("faltou recusar").contains("falta espaço"));
     assert_eq!(test_support::user_version(&path).unwrap(), 21);
     assert!(copies(&path).is_empty(), "{:?}", copies(&path));
 }
@@ -549,7 +556,10 @@ fn f2a_07_updates_that_keep_failing_do_not_pile_up_copies() {
         hooks::BEFORE_MIGRATION_COMMIT.with(|h| {
             *h.borrow_mut() = Some(Box::new(|_: &Path| anyhow::bail!("falha injetada (teste)")))
         });
-        assert!(Store::open(&path).is_err(), "tentativa {attempt}");
+        let stopped = Store::open(&path)
+            .ok()
+            .and_then(|mut s| s.take_upgrade_notice());
+        assert!(stopped.is_some(), "tentativa {attempt}");
         hooks::BEFORE_MIGRATION_COMMIT.with(|h| h.borrow_mut().take());
     }
     assert_eq!(copies(&path).len(), 1, "{:?}", copies(&path));

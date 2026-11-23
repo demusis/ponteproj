@@ -14,6 +14,15 @@ use std::path::{Path, PathBuf};
 
 const KEY: &str = "senha-de-teste-123";
 const GUARD_MESSAGE: &str = "Use a versão atual do Ponte para salvar alterações.";
+/// How an older Ponte's write is refused where a trigger of schema 22 calls a
+/// function only this build registers: the statement does not even prepare
+/// (see `idents::register_functions`).
+const FUNCTION_MESSAGE: &str = "no such function: ponte_analysis_micros";
+
+fn fenced(error: &rusqlite::Error) -> bool {
+    let text = error.to_string();
+    text.contains(GUARD_MESSAGE) || text.contains(FUNCTION_MESSAGE)
+}
 
 // ---------------------------------------------------------------- helpers --
 
@@ -241,6 +250,19 @@ fn library_with_content(dir: &Path, name: &str) -> PathBuf {
 /// replays a queue: numbers translated change by change, each change
 /// applied with the identities it carries.
 fn replay(source: &Store, target: &mut Store, entries: &[OutboxEntry]) -> Vec<Rekeyed> {
+    replay_marked(source, target, entries)
+        .into_iter()
+        .map(Option::unwrap_or_default)
+        .collect()
+}
+
+/// [`replay`], with `None` for a change the target refused (only a delete of
+/// an item created and deleted while queued is accepted as refused).
+fn replay_marked(
+    source: &Store,
+    target: &mut Store,
+    entries: &[OutboxEntry],
+) -> Vec<Option<Rekeyed>> {
     let mut ids = crate::idmap::load(&source.conn).unwrap();
     let mut out = Vec::new();
     for entry in entries {
@@ -267,7 +289,7 @@ fn replay(source: &Store, target: &mut Store, entries: &[OutboxEntry]) -> Vec<Re
                     "{}: recusada: {error:#}",
                     entry.label
                 );
-                out.push(crate::idents::Rekeyed::default());
+                out.push(None);
                 continue;
             }
         };
@@ -284,7 +306,7 @@ fn replay(source: &Store, target: &mut Store, entries: &[OutboxEntry]) -> Vec<Re
         }
         let created = crate::idmap::created_ids(&*target, &mutation, &reply).unwrap();
         ids.learn(&entry.created, Some(&created));
-        out.push(rekeyed);
+        out.push(Some(rekeyed));
     }
     out
 }
@@ -928,10 +950,7 @@ fn f2a_m4_every_table_is_fenced_after_migration() {
         let error = old
             .execute(&format!("INSERT INTO \"{table}\" DEFAULT VALUES"), [])
             .expect_err(&format!("INSERT em {table} passou"));
-        assert!(
-            error.to_string().contains(GUARD_MESSAGE),
-            "{table}: {error}"
-        );
+        assert!(fenced(&error), "{table}: {error}");
         let rows: i64 = old
             .query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |r| {
                 r.get(0)
@@ -955,10 +974,7 @@ fn f2a_m4_every_table_is_fenced_after_migration() {
                 let error = old
                     .execute(&sql, [])
                     .expect_err(&format!("{operation} em {table} passou"));
-                assert!(
-                    error.to_string().contains(GUARD_MESSAGE),
-                    "{table}: {error}"
-                );
+                assert!(fenced(&error), "{table}: {error}");
             } else {
                 // No row to fire on: the guard itself is checked.
                 let name = format!("ponte_guard_v22_{table}_{operation}");
@@ -999,11 +1015,16 @@ fn f2a_m4_failure_inside_the_migration_keeps_21_and_its_guards() {
     crate::idents::hooks::BEFORE_MIGRATION_COMMIT.with(|h| {
         *h.borrow_mut() = Some(Box::new(|_: &Path| anyhow::bail!("falha injetada (teste)")));
     });
-    let error = Store::open(&path).err().expect("a abertura devia falhar");
+    // (Since the second review the library then opens as it was, with a
+    // notice, instead of staying closed.)
+    let notice = Store::open(&path)
+        .expect("o acervo abre como estava")
+        .take_upgrade_notice()
+        .expect("um aviso diz por quê");
     crate::idents::hooks::BEFORE_MIGRATION_COMMIT.with(|h| h.borrow_mut().take());
     assert!(
-        format!("{error:#}").contains("A atualização do acervo parou em"),
-        "{error:#}"
+        notice.contains("A atualização do acervo parou em"),
+        "{notice}"
     );
     assert_eq!(test_support::user_version(&path).unwrap(), 21);
     assert_eq!(
@@ -1171,8 +1192,45 @@ fn f2a_behaviour_unchanged() {
     let mut p = pair();
     assert_invariants(&p.a, "A, início");
     assert_invariants(&p.b, "B, início");
+    // Items both libraries know, deleted below while queued: those deletes
+    // reach the replay with an existing item.
+    let shared_resource =
+        p.a.save_resource(
+            &crate::resources::Resource {
+                name: "Recurso comum".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    let shared_use =
+        p.a.save_resource_use(
+            &crate::resources::ResourceUse {
+                resource_uid: shared_resource.clone(),
+                who: "Servidor comum".into(),
+                start: "2099-03-05T09:00".into(),
+                end: "2099-03-05T10:00".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    let shared_category =
+        p.a.save_category(&crate::categories::Category::new("Categoria comum", 3))
+            .unwrap()
+            .uid;
+    let shared_project =
+        p.a.save_project(&crate::projects::Project::new("Projeto comum"))
+            .unwrap()
+            .uid;
+    sync(&mut p.a);
+    sync(&mut p.b);
     // Every variant of `IntranetMutation`, made through the product.
     crate::f2a_parity::every_variant(&mut p.a, "a");
+    p.a.delete_resource_use(&shared_use, None).unwrap();
+    p.a.delete_resource(&shared_resource, None).unwrap();
+    p.a.delete_category_checked(&shared_category, None).unwrap();
+    p.a.delete_project_checked(&shared_project, None).unwrap();
     assert_invariants(&p.a, "A, depois de preencher");
     let queued_a = outbox(&p.a);
     assert!(queued_a.len() > 10);
@@ -1183,7 +1241,24 @@ fn f2a_behaviour_unchanged() {
         crate::upgrade_backup::copy_consistently(&p.dir.path().join("b.sqlite3"), &path).unwrap();
         Store::open(&path).unwrap()
     };
-    let rekeyed = replay(&p.a, &mut replica, &queued_a);
+    let marked = replay_marked(&p.a, &mut replica, &queued_a);
+    // Every delete variant reached the replay at least once with an
+    // existing item, and was applied there.
+    for name in [
+        "DeleteResource",
+        "DeleteResourceUse",
+        "DeleteCategory",
+        "DeleteProject",
+    ] {
+        assert!(
+            queued_a
+                .iter()
+                .zip(&marked)
+                .any(|(e, r)| crate::f2a_parity::variant_name(&e.mutation) == name && r.is_some()),
+            "nenhuma {name} aplicada"
+        );
+    }
+    let rekeyed: Vec<Rekeyed> = marked.into_iter().map(Option::unwrap_or_default).collect();
     let mut variants = BTreeSet::new();
     for (entry, result) in queued_a.iter().zip(&rekeyed) {
         variants.insert(crate::f2a_parity::variant_name(&entry.mutation));

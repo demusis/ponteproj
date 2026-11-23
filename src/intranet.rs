@@ -4169,6 +4169,17 @@ impl Store {
         force_full: bool,
         accept_host_history: bool,
     ) -> Result<bool> {
+        let changed = self.sync_from_host_inner(force_full, accept_host_history)?;
+        #[cfg(test)]
+        crate::idents::test_support::check_f1_step(&self.conn, "uma troca com o principal");
+        Ok(changed)
+    }
+
+    fn sync_from_host_inner(
+        &mut self,
+        force_full: bool,
+        accept_host_history: bool,
+    ) -> Result<bool> {
         ensure!(!self.transport_off, TRANSPORT_OFF);
         let cfg = self.load_intranet_config()?;
         ensure!(
@@ -4635,6 +4646,19 @@ impl Store {
     /// as in the connected mode. `allow_replace` confirms, on a computer
     /// joining with its own documents, that they will be replaced.
     pub fn sync_with_folders(
+        &mut self,
+        cfg: &IntranetConfig,
+        key: &str,
+        allow_replace: bool,
+        reporter: &crate::ai::Reporter,
+    ) -> Result<FolderSyncReport> {
+        let report = self.sync_with_folders_inner(cfg, key, allow_replace, reporter)?;
+        #[cfg(test)]
+        crate::idents::test_support::check_f1_step(&self.conn, "uma troca pela pasta");
+        Ok(report)
+    }
+
+    fn sync_with_folders_inner(
         &mut self,
         cfg: &IntranetConfig,
         key: &str,
@@ -6222,6 +6246,8 @@ impl Store {
         self.offline_queued += 1;
         // A log that did not close is said, after the change was queued.
         logged.closed?;
+        #[cfg(test)]
+        crate::idents::test_support::check_f1_step(&self.conn, "uma alteração na fila");
         Ok(reply)
     }
 

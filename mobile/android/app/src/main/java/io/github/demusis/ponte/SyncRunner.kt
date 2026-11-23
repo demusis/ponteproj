@@ -196,14 +196,21 @@ internal object SyncRunner {
                 if (reset) wipeLocalState(app)
                 val key = loadOrCreateLibraryKey(app)
                 val name = phoneMemberName()
-                check(core.init(app.filesDir.absolutePath, key, name))
+                val opened = check(core.init(app.filesDir.absolutePath, key, name))
                 // The holidays are the library's: take them, or (the library has none yet) hand over the
                 // copy this phone kept until now.
                 adoptHolidays(app)
                 ready = true
                 keyBroken = false
                 val e = refreshDocs()
-                if (e == null) setStatus("Pronto.", false) else setStatus(e, true)
+                // The library opened as it was (its update could not be done now): said here; the next
+                // opening tries again.
+                val notice = opened.optString("aviso", "")
+                when {
+                    e != null -> setStatus(e, true)
+                    notice.isNotEmpty() -> setStatus(PhoneWords.adapt(notice), true)
+                    else -> setStatus("Pronto.", false)
+                }
             } catch (e: KeyUnavailableException) {
                 keyBroken = true
                 setStatus("Não foi possível abrir o acervo deste aparelho.", true)

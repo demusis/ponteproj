@@ -551,6 +551,11 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     // window's live folder), this one's goes at close.
     crate::attachments::sweep_stale_temp();
     let mut app = PonteApp::new(store, db_path);
+    // The library opened as it was (its update could not be done now): the
+    // person sees why; the next opening tries again.
+    if let Some(notice) = app.store.take_upgrade_notice() {
+        app.error(notice);
+    }
     app.library = backup::LibraryPlace::detect(&resolution, &data_dir);
     app.requests_dir = window.is_some().then_some(data_dir);
     // A recovery library being looked at gets no automatic copies.

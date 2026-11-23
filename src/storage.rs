@@ -71,6 +71,10 @@ pub struct Store {
     /// The person chose "Substituir mesmo assim": a replacement goes on
     /// although its safety copy is not a good one (set for one exchange).
     pub(crate) accept_bad_safety_copy: bool,
+    /// Why the library could not move to the library schema of this build
+    /// at this opening (it opened as it was, schema 21): told to the person
+    /// once ([`Store::take_upgrade_notice`]); the next opening tries again.
+    pub(crate) upgrade_notice: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -262,23 +266,67 @@ fn state_digest(conn: &Connection) -> Result<String> {
 }
 
 /// Whether the copy at `path` is the state with `version`, `counts` and
-/// `digest`. Opened as immutable: nothing is created beside it.
+/// `digest`. Opened by its plain path, as the library itself (a path SQLite
+/// opens for the library, a network one included, opens the copy beside
+/// it); the copy is only read, and closed cleanly.
 fn copy_is_state(
     path: &Path,
     version: i64,
     counts: &BTreeMap<String, i64>,
     digest: &str,
 ) -> Result<bool> {
-    let copy = crate::recovery::open_own_copy(path)?;
-    let copied: i64 = copy.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if copied != version {
-        return Ok(false);
-    }
-    let tables: Vec<String> = counts.keys().cloned().collect();
-    if table_counts(&copy, &tables).ok().as_ref() != Some(counts) {
-        return Ok(false);
-    }
-    Ok(state_digest(&copy)? == digest)
+    let copy = Connection::open(path)
+        .with_context(|| format!("Não foi possível abrir a cópia {}.", path.display()))?;
+    copy.busy_timeout(Duration::from_secs(5))?;
+    let same = (|| -> Result<bool> {
+        let copied: i64 = copy.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if copied != version {
+            return Ok(false);
+        }
+        let tables: Vec<String> = counts.keys().cloned().collect();
+        if table_counts(&copy, &tables).ok().as_ref() != Some(counts) {
+            return Ok(false);
+        }
+        Ok(state_digest(&copy)? == digest)
+    })();
+    copy.close()
+        .map_err(|(_, e)| e)
+        .with_context(|| format!("Não foi possível fechar a cópia {}.", path.display()))?;
+    same
+}
+
+/// The folder of the copies made before the step to schema 22.
+fn copies_folder(db: &Path) -> PathBuf {
+    db.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .join("backups")
+}
+
+/// A copy an earlier attempt already published that is proved to be this
+/// very state (same version, counts and digest) and checks out
+/// (`quick_check`): an update that keeps failing after its copy does not
+/// pile up copies, and needs no room for another one.
+fn earlier_copy_of_state(
+    db: &Path,
+    version: i64,
+    counts: &BTreeMap<String, i64>,
+    digest: &str,
+) -> Option<PathBuf> {
+    let mut earlier: Vec<PathBuf> = std::fs::read_dir(copies_folder(db))
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .is_some_and(|n| n.starts_with(MIGRATION_COPY_FAMILY) && n.ends_with(".sqlite3"))
+        })
+        .collect();
+    earlier.sort();
+    earlier.into_iter().find(|path| {
+        copy_is_state(path, version, counts, digest).unwrap_or(false)
+            && crate::upgrade_backup::verify(path).is_ok()
+    })
 }
 
 /// The copy made before the step to schema 22, of the state the caller
@@ -292,38 +340,14 @@ fn copy_is_state(
 /// `user_version`, the rows of every table and the digest of the whole
 /// state equal to the locked one) and published under a name nobody has,
 /// never over another file. A failed attempt leaves no partial file of its
-/// own. A copy an earlier attempt already published is used again only when
-/// it is proved to be this very state (same version, counts and digest), so
-/// an update that keeps failing after the copy does not pile up copies.
+/// own.
 fn copy_locked_state(
     db: &Path,
     version: i64,
     counts: &BTreeMap<String, i64>,
     digest: &str,
 ) -> Result<PathBuf> {
-    let folder = db
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
-        .join("backups");
-    if let Ok(entries) = std::fs::read_dir(&folder) {
-        let mut earlier: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                p.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .is_some_and(|n| {
-                        n.starts_with(MIGRATION_COPY_FAMILY) && n.ends_with(".sqlite3")
-                    })
-            })
-            .collect();
-        earlier.sort();
-        for path in earlier {
-            if copy_is_state(&path, version, counts, digest).unwrap_or(false) {
-                return Ok(path);
-            }
-        }
-    }
+    let folder = copies_folder(db);
     let now = || chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     #[cfg(any(test, feature = "test-support"))]
     let stamp = crate::idents::hooks::MIGRATION_STAMP
@@ -409,7 +433,21 @@ impl Store {
     /// missing juntada links between documents are created (this reads every
     /// document, so only the main opening and the command line pay for it).
     pub fn open(path: &Path) -> Result<Self> {
-        Self::open_with(path, true)
+        Self::open_with(path, true, true)
+    }
+
+    /// Opens the library as it is, never moving it to the library schema of
+    /// this build (`--import-plan --dry-run`, which must not change it): a
+    /// library of schema 21 is read as such.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn open_as_is(path: &Path) -> Result<Self> {
+        Self::open_with(path, false, false)
+    }
+
+    /// Why this opening left the library at its previous schema (see
+    /// `upgrade_notice`), once.
+    pub fn take_upgrade_notice(&mut self) -> Option<String> {
+        self.upgrade_notice.take()
     }
 
     /// Opens the library for a service that opens it again and again (the
@@ -419,10 +457,10 @@ impl Store {
     /// schema this opening upgrades is still linked, once; the main opening
     /// of the application does the rest.
     pub(crate) fn open_service(path: &Path) -> Result<Self> {
-        Self::open_with(path, false)
+        Self::open_with(path, false, true)
     }
 
-    fn open_with(path: &Path, link_juntadas: bool) -> Result<Self> {
+    fn open_with(path: &Path, link_juntadas: bool, upgrade: bool) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).context("Não foi possível criar a pasta do acervo.")?;
         }
@@ -437,6 +475,7 @@ impl Store {
                 | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
             |_| Ok(LIBRARY_SCHEMA),
         )?;
+        crate::idents::register_functions(&conn)?;
         // Check the version before changing any persistent database pragma.
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         ensure!(
@@ -525,6 +564,7 @@ impl Store {
             transport_off: false,
             replacement_notes: Default::default(),
             accept_bad_safety_copy: false,
+            upgrade_notice: None,
         };
         store.ensure_tasks()?;
         crate::tasks::backfill_task_uids(&mut store.conn)?;
@@ -554,9 +594,32 @@ impl Store {
         // The last word: the step to schema 22 (identities, pointers and the
         // guard set over every table) stamps the library in one transaction,
         // after a verified copy of exactly the state it locked.
-        store.migrate_to_library_schema(path, version == 0)?;
-        store.ensure_write_guards()?;
-        crate::idents::install_insert_log(&store.conn)?;
+        //
+        // When the step cannot be done (no room, a measure of free space
+        // that fails, a copy or a write that fails: it rolls back), the
+        // library is NOT left closed: it opens as it was (schema 21, the
+        // way a Ponte before F2a used it, queue included), the person is
+        // told why, and the next opening tries again.
+        if upgrade {
+            if let Err(error) = store.migrate_to_library_schema(path, version == 0) {
+                store.upgrade_notice = Some(format!(
+                    "O acervo foi aberto como estava, na versão anterior, e nada foi perdido: a atualização desta versão do Ponte não pôde ser feita agora ({error:#}). Ela será tentada de novo na próxima vez que o Ponte abrir."
+                ));
+            }
+        }
+        let library_schema = store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?;
+        if library_schema >= LIBRARY_SCHEMA {
+            store.ensure_write_guards()?;
+            crate::idents::install_insert_log(&store.conn)?;
+        } else if library_schema < SCHEMA_VERSION {
+            // Left before 22: the earlier steps are in place, as an opening
+            // before F2a stamped them.
+            store
+                .conn
+                .pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
         crate::idmap::init_watermark(&store.conn)?;
         // Lazy, idempotent: libraries imported before this feature gain the
         // juntada links too. Unreadable content never prevents opening.
@@ -645,8 +708,18 @@ impl Store {
         let tables = library_tables(&tx).with_context(|| stopped("contagem das linhas"))?;
         let counts = table_counts(&tx, &tables).with_context(|| stopped("contagem das linhas"))?;
         if !created_now {
+            // A copy an earlier attempt made of this very state is looked
+            // for first: then no room for another copy is needed.
+            let digest = state_digest(&tx).with_context(|| stopped("cópia de segurança"))?;
+            let earlier = earlier_copy_of_state(db, version, &counts, &digest);
             let (size, _) = crate::auto_backup::needed_space(db);
-            let needed = size.saturating_mul(2);
+            // The step's own writes (identities, pointers, guards) and,
+            // without a copy, the copy too.
+            let needed = if earlier.is_some() {
+                size
+            } else {
+                size.saturating_mul(2)
+            };
             let folder = db
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
@@ -654,18 +727,20 @@ impl Store {
             // A measure that fails is never taken for "room enough".
             let free = measured_free_space(folder).map_err(|error| {
                 anyhow::anyhow!(
-                    "Não foi possível medir o espaço livre em {} ({error}). O acervo não foi atualizado e nada foi alterado; abra o Ponte de novo e, se isso continuar, avise quem cuida dele.",
+                    "não foi possível medir o espaço livre em {} ({error})",
                     folder.display()
                 )
             })?;
             ensure!(
                 free >= needed,
-                "Falta espaço para atualizar o acervo com segurança (são necessários {} MB). Libere espaço e abra o Ponte de novo; nada foi alterado.",
-                needed.div_ceil(1024 * 1024).max(1)
+                "falta espaço no disco do acervo: são necessários {} MB livres e há {} MB; libere espaço",
+                needed.div_ceil(1024 * 1024).max(1),
+                free / (1024 * 1024)
             );
-            let digest = state_digest(&tx).with_context(|| stopped("cópia de segurança"))?;
-            copy_locked_state(db, version, &counts, &digest)
-                .with_context(|| stopped("cópia de segurança"))?;
+            if earlier.is_none() {
+                copy_locked_state(db, version, &counts, &digest)
+                    .with_context(|| stopped("cópia de segurança"))?;
+            }
         }
         (|| -> Result<()> {
             tx.execute_batch(crate::idents::TABLES_SQL)?;
@@ -1846,14 +1921,8 @@ pub(crate) fn current_analysis_row(
         .any(|(_, capture, _, _)| *capture == current_capture);
     rows.into_iter()
         .filter(|(_, capture, _, _)| !of_current || *capture == current_capture)
-        .max_by_key(|(id, _, at, _)| {
-            (
-                chrono::DateTime::parse_from_rfc3339(at.trim())
-                    .ok()
-                    .map(|t| t.timestamp_micros()),
-                *id,
-            )
-        })
+        // The same converter the triggers of `current_pointer` call.
+        .max_by_key(|(id, _, at, _)| (crate::idents::analysis_micros(at), *id))
         .map(|(id, _, _, blob)| decode(&blob).map(|analysis| (id, analysis)))
         .transpose()
 }

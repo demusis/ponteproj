@@ -83,6 +83,7 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_init<'local>(
         let key = env
             .convert_byte_array(&library_key)
             .context("Chave do acervo inválida.")?;
+        let mut notice: Option<String> = None;
         let mut guard = STORE
             .lock()
             .map_err(|_| anyhow::anyhow!("O acervo ficou indisponível."))?;
@@ -98,6 +99,9 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_init<'local>(
             #[cfg(not(windows))]
             ponteproj::protection::set_platform_key(&key)?;
             let mut store = Store::open(&dir.join("acervo.sqlite3"))?;
+            // Opened as it was (its update could not be done now): said to
+            // the app, which shows it; the next opening tries again.
+            notice = store.take_upgrade_notice();
             let mut cfg = store.load_intranet_config()?;
             if cfg.mode != IntranetMode::SharedFolder || cfg.folder_writer.is_empty() {
                 cfg = IntranetConfig {
@@ -116,7 +120,10 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_init<'local>(
             let _ = store.prune_operations(OPERATION_DAYS);
             *guard = Some(store);
         }
-        Ok(json!({}))
+        Ok(match notice {
+            Some(text) => json!({ "aviso": text }),
+            None => json!({}),
+        })
     })
 }
 

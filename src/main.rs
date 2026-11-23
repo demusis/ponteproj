@@ -13,7 +13,9 @@ fn main() {
                 Some("--open-document" | "--restaurar-copia")
             )
         {
-            show_startup_error(&format!("Não foi possível abrir o PonteProj.\n\n{err}"));
+            // The whole chain: the step that failed and what to do are in
+            // the causes, not only in the first line.
+            show_startup_error(&format!("Não foi possível abrir o PonteProj.\n\n{err:#}"));
         }
         // A plan that was applied has its own exit codes (see
         // `plan_import::execute`): it must not look like one that failed.

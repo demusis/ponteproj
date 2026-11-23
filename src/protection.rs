@@ -22,6 +22,9 @@ mod keyed {
     use std::sync::OnceLock;
 
     static KEY: OnceLock<LessSafeKey> = OnceLock::new();
+    /// SHA-256 of the key `KEY` was made from: the same key given again is
+    /// recognised.
+    static KEY_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
     /// Binds every sealed payload to this purpose, as the DPAPI entropy does.
     const PURPOSE: &[u8] = b"ponteproj-document-content-v1";
 
@@ -30,10 +33,28 @@ mod keyed {
         let unbound = UnboundKey::new(&AES_256_GCM, key)
             .map_err(|_| anyhow::anyhow!("Chave do acervo inválida."))?;
         // A second call with another key would make the library unreadable
-        // halfway through a session: it is refused.
-        if KEY.set(LessSafeKey::new(unbound)).is_err() {
-            bail!("A chave do acervo já foi definida nesta sessão.");
+        // halfway through a session: it is refused. The SAME key again (the
+        // app opening the library again after an opening that failed) is
+        // accepted.
+        let digest: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, key)
+            .as_ref()
+            .try_into()
+            .expect("SHA-256 tem 32 bytes");
+        if KEY.get().is_some() {
+            anyhow::ensure!(
+                KEY_DIGEST.get() == Some(&digest),
+                "A chave do acervo já foi definida nesta sessão."
+            );
+            return Ok(());
         }
+        if KEY.set(LessSafeKey::new(unbound)).is_err() {
+            anyhow::ensure!(
+                KEY_DIGEST.get() == Some(&digest),
+                "A chave do acervo já foi definida nesta sessão."
+            );
+            return Ok(());
+        }
+        let _ = KEY_DIGEST.set(digest);
         Ok(())
     }
 
@@ -209,6 +230,8 @@ mod keyed_tests {
         assert!(keyed::set_key(&[7u8; 31]).is_err());
         keyed::set_key(&[7u8; 32]).unwrap();
         assert!(keyed::set_key(&[8u8; 32]).is_err());
+        // The same key again (an opening retried in the same process).
+        keyed::set_key(&[7u8; 32]).unwrap();
         let secret = "Ofício de exemplo: conteúdo reservado".as_bytes();
         let encoded = keyed::transform(secret, true).unwrap();
         assert!(!encoded.windows(secret.len()).any(|w| w == secret));

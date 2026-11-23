@@ -1,5 +1,60 @@
 {
-  "applied": 54,
+  "applied": [
+    "AddAttachment|Anexo “anexo-a.pdf” em documento #1",
+    "AddAttachment|Anexo “atendimento-a.pdf” em atendimento #3",
+    "AddAttachment|Anexo “exemplo-a.pdf” em exemplo #1",
+    "AddAttachment|Anexo “tarefa-a.pdf” em tarefa #3",
+    "AddAttachment|Anexo “texto-a.txt” em exemplo #1",
+    "AddDocumentLink|Vínculo entre documentos #1 e #2",
+    "CreateTaskForSaiop|Tarefa \"Retorno a\" do atendimento #1",
+    "DeleteAttachment|Exclusão definitiva do anexo #2",
+    "DeleteBlock|Exclusão de instrução",
+    "DeleteCategory|Exclusão de categoria",
+    "DeleteDocument|Excluir documento #3",
+    "DeleteExample|Exclusão de exemplo",
+    "DeleteProject|Exclusão de projeto",
+    "DeleteResourceUse|Exclusão de uso de recurso",
+    "DeleteResource|Exclusão de recurso",
+    "DeleteSaiopAttendance|Exclusão do atendimento #5",
+    "DeleteTemplate|Exclusão de modelo de trabalho",
+    "ExtractAttachmentText|Texto do anexo #5",
+    "ImportBundle|Importação de SEFAZ-PRO-2026/00102 com 1 PDF",
+    "ImportCapture|Importação de SEFAZ-PRO-2026/00101",
+    "ImportCapture|Importação de SEFAZ-PRO-2026/00101",
+    "ImportCapture|Importação de SEFAZ-PRO-2026/00109",
+    "ImportSaiopBatch|Importação de planilha planilha-a.xlsx",
+    "PurgeTrash|Apagado de vez da lixeira: tarefa #6",
+    "RecordGeneration|Registro de geração do documento #1",
+    "RelinkTask|Tarefa #5: troca de documento",
+    "RestoreItem|Restaurar tarefa #6 da lixeira",
+    "ReviewAttachmentText|Texto conferido do anexo #5",
+    "SaveAnalysis|Análise do documento #1",
+    "SaveCategory|Categoria \"Cat a\"",
+    "SaveDraft|Minuta (resposta) do documento #1",
+    "SaveExample|Exemplo \"Exemplo a\"",
+    "SaveInstructionBlock|Instrução \"Bloco a\"",
+    "SaveNote|Notas do documento #1",
+    "SavePageText|Texto lido da página 0 (arquivo #1)",
+    "SaveProject|Projeto \"Projeto a\"",
+    "SaveResourceUse|Uso de recurso: Servidor a (05/01/2099 09:00 a 05/01/2099 10:00)",
+    "SaveResource|Recurso \"Projetor a\"",
+    "SaveSaiopAttendance|Novo atendimento: AVULSO-a",
+    "SaveSaiopAttendance|Novo atendimento: PROC-a",
+    "SaveSetting|Feriados e dias sem expediente",
+    "SaveTask|Nova tarefa: T-a-alone",
+    "SaveTask|Nova tarefa: T-a-doc",
+    "SaveTask|Nova tarefa: T-a-sub",
+    "SaveTask|Nova tarefa: T-a-trash",
+    "SaveTemplate|Modelo de trabalho \"Modelo a\"",
+    "SaveWorkContext|Contexto do documento #1",
+    "SetBlockStatus|Instrução: arquivado",
+    "SetLinkActive|Situação do vínculo #1",
+    "SetTemplateStatus|Modelo de trabalho: publicado",
+    "TrashItem|Mover tarefa #6 para a lixeira",
+    "TrashItem|Mover tarefa #6 para a lixeira",
+    "UndoSaiopBatch|Desfazer importação de planilha #1",
+    "UpdateAttachment|Descrição do anexo #1"
+  ],
   "blobs": [
     [
       "pdf",
@@ -43,12 +98,12 @@
           "slot": "import"
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Importação de SEFAZ-PRO-2026/00101",
       "mutation": {
         "ImportCapture": {
           "capture": {
-            "captured_at": "<tempo>",
+            "captured_at": "2026-11-01T12:00:00Z",
             "coverage": {
               "adapter": "sigadoc-dom-v1",
               "pending": [
@@ -61,7 +116,7 @@
             "document_number": "SEFAZ-PRO-2026/00101",
             "metadata": {},
             "references": [],
-            "request_id": "<id-1>",
+            "request_id": "<v-1>",
             "schema_version": 1,
             "source_url": "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00101",
             "text": "Primeira versão do texto.",
@@ -70,8 +125,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-2>",
-      "writer": "<id-3>"
+      "uid": "<v-2>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -98,12 +153,12 @@
           "slot": "import"
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Importação de SEFAZ-PRO-2026/00101",
       "mutation": {
         "ImportCapture": {
           "capture": {
-            "captured_at": "<tempo>",
+            "captured_at": "2026-11-03T12:00:00Z",
             "coverage": {
               "adapter": "sigadoc-dom-v1",
               "pending": [
@@ -116,7 +171,7 @@
             "document_number": "SEFAZ-PRO-2026/00101",
             "metadata": {},
             "references": [],
-            "request_id": "<id-4>",
+            "request_id": "<v-4>",
             "schema_version": 1,
             "source_url": "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00101",
             "text": "Segunda versão do texto, mais nova.",
@@ -125,8 +180,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-5>",
-      "writer": "<id-3>"
+      "uid": "<v-5>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -158,12 +213,12 @@
           "slot": "import"
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Importação de SEFAZ-PRO-2026/00102 com 1 PDF",
       "mutation": {
         "ImportBundle": {
           "capture": {
-            "captured_at": "<tempo>",
+            "captured_at": "2026-11-01T12:00:00Z",
             "coverage": {
               "adapter": "sigadoc-dom-v1",
               "pending": [
@@ -182,7 +237,7 @@
                 "url": "https://www.sigadoc.mt.gov.br/arquivos/a.pdf"
               }
             ],
-            "request_id": "<id-6>",
+            "request_id": "<v-6>",
             "schema_version": 1,
             "source_url": "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00102",
             "text": "Documento com PDF.",
@@ -197,29 +252,29 @@
         }
       },
       "revision": 0,
-      "uid": "<id-7>",
-      "writer": "<id-3>"
+      "uid": "<v-7>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Texto lido da página 0 (arquivo #1)",
       "mutation": {
         "SavePageText": {
           "file_id": 1,
           "page": 0,
           "value": {
-            "created_at": "<tempo>",
+            "created_at": "2026-11-05T10:00:00Z",
             "language": "por",
             "text": "texto reconhecido a"
           }
         }
       },
       "revision": 0,
-      "uid": "<id-8>",
-      "writer": "<id-3>"
+      "uid": "<v-8>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -231,7 +286,7 @@
         }
       },
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Notas do documento #1",
       "mutation": {
         "SaveNote": {
@@ -241,8 +296,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-9>",
-      "writer": "<id-3>"
+      "uid": "<v-9>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -254,7 +309,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Minuta (resposta) do documento #1",
       "mutation": {
         "SaveDraft": {
@@ -267,14 +322,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-10>",
-      "writer": "<id-3>"
+      "uid": "<v-10>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Análise do documento #1",
       "mutation": {
         "SaveAnalysis": {
@@ -287,7 +342,7 @@
                 "source_id": "C2"
               }
             ],
-            "created_at": "<tempo>",
+            "created_at": "2026-11-05T10:00:00Z",
             "deadline_candidate": null,
             "human_context": "",
             "materials": [
@@ -314,8 +369,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-11>",
-      "writer": "<id-3>"
+      "uid": "<v-11>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -337,7 +392,7 @@
         }
       },
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Contexto do documento #1",
       "mutation": {
         "SaveWorkContext": {
@@ -357,8 +412,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-12>",
-      "writer": "<id-3>"
+      "uid": "<v-12>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -370,7 +425,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Vínculo entre documentos #1 e #2",
       "mutation": {
         "AddDocumentLink": {
@@ -381,8 +436,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-13>",
-      "writer": "<id-3>"
+      "uid": "<v-13>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -394,7 +449,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Nova tarefa: T-a-doc",
       "mutation": {
         "SaveTask": {
@@ -420,13 +475,13 @@
             "scheduled_start": "",
             "status": "pendente",
             "title": "T-a-doc",
-            "uid": "<id-14>"
+            "uid": "<v-14>"
           }
         }
       },
       "revision": 0,
-      "uid": "<id-15>",
-      "writer": "<id-3>"
+      "uid": "<v-15>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -438,7 +493,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Nova tarefa: T-a-sub",
       "mutation": {
         "SaveTask": {
@@ -466,13 +521,13 @@
             "scheduled_start": "",
             "status": "pendente",
             "title": "T-a-sub",
-            "uid": "<id-16>"
+            "uid": "<v-16>"
           }
         }
       },
       "revision": 0,
-      "uid": "<id-17>",
-      "writer": "<id-3>"
+      "uid": "<v-17>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -484,7 +539,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Nova tarefa: T-a-alone",
       "mutation": {
         "SaveTask": {
@@ -510,13 +565,13 @@
             "scheduled_start": "",
             "status": "pendente",
             "title": "T-a-alone",
-            "uid": "<id-18>"
+            "uid": "<v-18>"
           }
         }
       },
       "revision": 0,
-      "uid": "<id-19>",
-      "writer": "<id-3>"
+      "uid": "<v-19>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -528,7 +583,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Nova tarefa: T-a-trash",
       "mutation": {
         "SaveTask": {
@@ -554,19 +609,19 @@
             "scheduled_start": "",
             "status": "pendente",
             "title": "T-a-trash",
-            "uid": "<id-20>"
+            "uid": "<v-20>"
           }
         }
       },
       "revision": 0,
-      "uid": "<id-21>",
-      "writer": "<id-3>"
+      "uid": "<v-21>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Mover tarefa #6 para a lixeira",
       "mutation": {
         "TrashItem": {
@@ -575,8 +630,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-22>",
-      "writer": "<id-3>"
+      "uid": "<v-22>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -588,7 +643,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Anexo “anexo-a.pdf” em documento #1",
       "mutation": {
         "AddAttachment": {
@@ -600,8 +655,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-23>",
-      "writer": "<id-3>"
+      "uid": "<v-23>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -613,7 +668,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Anexo “tarefa-a.pdf” em tarefa #3",
       "mutation": {
         "AddAttachment": {
@@ -625,8 +680,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-24>",
-      "writer": "<id-3>"
+      "uid": "<v-24>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -638,7 +693,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Novo atendimento: PROC-a",
       "mutation": {
         "SaveSaiopAttendance": {
@@ -647,13 +702,13 @@
             "attachment_relation": "",
             "batch_id": null,
             "closed_at": "",
-            "created_at": "<tempo>",
+            "created_at": "<agora>",
             "document_id": 1,
             "due_date": "",
             "due_date_raw": "",
             "due_kind": "oficial",
-            "entry_date": "<data>",
-            "entry_date_raw": "<data>",
+            "entry_date": "2026-11-23",
+            "entry_date_raw": "2026-11-23",
             "events": [],
             "exit_date": "",
             "exit_date_raw": "",
@@ -675,7 +730,7 @@
             "sigadoc_code": "",
             "signed_status": "nao_informado",
             "source_row": null,
-            "stage_changed_at": "<data>",
+            "stage_changed_at": "2026-11-23",
             "status": "em_analise",
             "subject": "At-a",
             "tags": [],
@@ -684,15 +739,15 @@
             ],
             "uas_raw": "",
             "uas_return": "nao_informado",
-            "updated_at": "<tempo>",
+            "updated_at": "<agora>",
             "verification_raw": ""
           },
           "expected_version": null
         }
       },
       "revision": 0,
-      "uid": "<id-25>",
-      "writer": "<id-3>"
+      "uid": "<v-25>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -704,7 +759,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Anexo “atendimento-a.pdf” em atendimento #3",
       "mutation": {
         "AddAttachment": {
@@ -716,8 +771,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-26>",
-      "writer": "<id-3>"
+      "uid": "<v-26>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -734,7 +789,7 @@
           "slot": "row#2"
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Importação de planilha planilha-a.xlsx",
       "mutation": {
         "ImportSaiopBatch": {
@@ -747,13 +802,13 @@
                 "attachment_relation": "",
                 "batch_id": null,
                 "closed_at": "",
-                "created_at": "<tempo>",
+                "created_at": "<agora>",
                 "document_id": null,
                 "due_date": "",
                 "due_date_raw": "",
                 "due_kind": "oficial",
-                "entry_date": "<data>",
-                "entry_date_raw": "<data>",
+                "entry_date": "2026-11-23",
+                "entry_date_raw": "2026-11-23",
                 "events": [],
                 "exit_date": "",
                 "exit_date_raw": "",
@@ -775,14 +830,14 @@
                 "sigadoc_code": "",
                 "signed_status": "nao_informado",
                 "source_row": 2,
-                "stage_changed_at": "<data>",
+                "stage_changed_at": "2026-11-23",
                 "status": "em_analise",
                 "subject": "Lote-a",
                 "tags": [],
                 "task_ids": [],
                 "uas_raw": "",
                 "uas_return": "nao_informado",
-                "updated_at": "<tempo>",
+                "updated_at": "<agora>",
                 "verification_raw": ""
               },
               {
@@ -797,14 +852,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-27>",
-      "writer": "<id-3>"
+      "uid": "<v-27>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Recurso \"Projetor a\"",
       "mutation": {
         "SaveResource": {
@@ -818,20 +873,20 @@
             "notes": "",
             "quantity": 1,
             "status": "ativo",
-            "uid": "<id-28>",
+            "uid": "<v-28>",
             "updated_at": ""
           }
         }
       },
       "revision": 0,
-      "uid": "<id-29>",
-      "writer": "<id-3>"
+      "uid": "<v-29>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Uso de recurso: Servidor a (05/01/2099 09:00 a 05/01/2099 10:00)",
       "mutation": {
         "SaveResourceUse": {
@@ -840,32 +895,32 @@
             "created_at": "",
             "created_by": "",
             "document_id": 1,
-            "end": "<tempo>",
+            "end": "2099-01-05T10:00",
             "notes": "",
             "purpose": "",
             "quantity": 1,
-            "resource_uid": "<id-28>",
+            "resource_uid": "<v-28>",
             "returned_at": null,
             "saiop_id": 3,
             "sector": "",
-            "start": "<tempo>",
+            "start": "2099-01-05T09:00",
             "status": "reservado",
             "task_id": 3,
-            "uid": "<id-30>",
+            "uid": "<v-30>",
             "updated_at": "",
             "who": "Servidor a"
           }
         }
       },
       "revision": 0,
-      "uid": "<id-31>",
-      "writer": "<id-3>"
+      "uid": "<v-31>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Projeto \"Projeto a\"",
       "mutation": {
         "SaveProject": {
@@ -878,20 +933,20 @@
             "start_date": "",
             "status": "ativo",
             "target_date": "",
-            "uid": "<id-32>",
+            "uid": "<v-32>",
             "updated_at": ""
           }
         }
       },
       "revision": 0,
-      "uid": "<id-33>",
-      "writer": "<id-3>"
+      "uid": "<v-33>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Categoria \"Cat a\"",
       "mutation": {
         "SaveCategory": {
@@ -900,21 +955,21 @@
             "color": 1,
             "created_at": "",
             "name": "Cat a",
-            "uid": "<id-34>",
+            "uid": "<v-34>",
             "updated_at": ""
           },
           "expected_version": null
         }
       },
       "revision": 0,
-      "uid": "<id-35>",
-      "writer": "<id-3>"
+      "uid": "<v-35>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Instrução \"Bloco a\"",
       "mutation": {
         "SaveInstructionBlock": {
@@ -928,7 +983,7 @@
             "scope": "Personal",
             "status": "Draft",
             "topic": "Estilo",
-            "uid": "<id-36>",
+            "uid": "<v-36>",
             "updated_at": "",
             "versions": [
               {
@@ -945,14 +1000,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-37>",
-      "writer": "<id-3>"
+      "uid": "<v-37>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Modelo de trabalho \"Modelo a\"",
       "mutation": {
         "SaveTemplate": {
@@ -969,7 +1024,7 @@
             "purpose": "",
             "scope": "Personal",
             "status": "Draft",
-            "uid": "<id-38>",
+            "uid": "<v-38>",
             "updated_at": "",
             "usage_criteria": "",
             "versions": [
@@ -1002,8 +1057,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-39>",
-      "writer": "<id-3>"
+      "uid": "<v-39>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -1015,7 +1070,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exemplo \"Exemplo a\"",
       "mutation": {
         "SaveExample": {
@@ -1031,16 +1086,16 @@
             "reviewed_at": "",
             "reviewed_by": "",
             "status": "Unverified",
-            "template_uid": "<id-38>",
+            "template_uid": "<v-38>",
             "title": "Exemplo a",
-            "uid": "<id-40>"
+            "uid": "<v-40>"
           },
           "expected_version": null
         }
       },
       "revision": 0,
-      "uid": "<id-41>",
-      "writer": "<id-3>"
+      "uid": "<v-41>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -1052,7 +1107,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Anexo “exemplo-a.pdf” em exemplo #1",
       "mutation": {
         "AddAttachment": {
@@ -1064,14 +1119,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-42>",
-      "writer": "<id-3>"
+      "uid": "<v-42>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Registro de geração do documento #1",
       "mutation": {
         "RecordGeneration": {
@@ -1100,19 +1155,19 @@
             "template_name": "nenhum",
             "template_uid": null,
             "template_version": null,
-            "uid": "<id-43>"
+            "uid": "<v-43>"
           }
         }
       },
       "revision": 0,
-      "uid": "<id-44>",
-      "writer": "<id-3>"
+      "uid": "<v-44>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Tarefa #5: troca de documento",
       "mutation": {
         "RelinkTask": {
@@ -1122,8 +1177,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-45>",
-      "writer": "<id-3>"
+      "uid": "<v-45>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -1134,7 +1189,7 @@
         }
       },
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Situação do vínculo #1",
       "mutation": {
         "SetLinkActive": {
@@ -1143,8 +1198,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-46>",
-      "writer": "<id-3>"
+      "uid": "<v-46>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -1155,7 +1210,7 @@
         }
       },
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Descrição do anexo #1",
       "mutation": {
         "UpdateAttachment": {
@@ -1164,8 +1219,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-47>",
-      "writer": "<id-3>"
+      "uid": "<v-47>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -1177,7 +1232,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Anexo “texto-a.txt” em exemplo #1",
       "mutation": {
         "AddAttachment": {
@@ -1189,14 +1244,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-48>",
-      "writer": "<id-3>"
+      "uid": "<v-48>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Texto do anexo #5",
       "mutation": {
         "ExtractAttachmentText": {
@@ -1204,14 +1259,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-49>",
-      "writer": "<id-3>"
+      "uid": "<v-49>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Texto conferido do anexo #5",
       "mutation": {
         "ReviewAttachmentText": {
@@ -1220,8 +1275,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-50>",
-      "writer": "<id-3>"
+      "uid": "<v-50>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -1233,7 +1288,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Tarefa \"Retorno a\" do atendimento #1",
       "mutation": {
         "CreateTaskForSaiop": {
@@ -1260,14 +1315,14 @@
             "scheduled_start": "",
             "status": "pendente",
             "title": "Retorno a",
-            "uid": "<id-51>"
+            "uid": "<v-51>"
           },
           "title": "Retorno a"
         }
       },
       "revision": 0,
-      "uid": "<id-52>",
-      "writer": "<id-3>"
+      "uid": "<v-52>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -1279,7 +1334,7 @@
           "slot": ""
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Novo atendimento: AVULSO-a",
       "mutation": {
         "SaveSaiopAttendance": {
@@ -1288,13 +1343,13 @@
             "attachment_relation": "",
             "batch_id": null,
             "closed_at": "",
-            "created_at": "<tempo>",
+            "created_at": "<agora>",
             "document_id": null,
             "due_date": "",
             "due_date_raw": "",
             "due_kind": "oficial",
-            "entry_date": "<data>",
-            "entry_date_raw": "<data>",
+            "entry_date": "2026-11-23",
+            "entry_date_raw": "2026-11-23",
             "events": [],
             "exit_date": "",
             "exit_date_raw": "",
@@ -1316,28 +1371,28 @@
             "sigadoc_code": "",
             "signed_status": "nao_informado",
             "source_row": null,
-            "stage_changed_at": "<data>",
+            "stage_changed_at": "2026-11-23",
             "status": "em_analise",
             "subject": "Avulso-a",
             "tags": [],
             "task_ids": [],
             "uas_raw": "",
             "uas_return": "nao_informado",
-            "updated_at": "<tempo>",
+            "updated_at": "<agora>",
             "verification_raw": ""
           },
           "expected_version": null
         }
       },
       "revision": 0,
-      "uid": "<id-53>",
-      "writer": "<id-3>"
+      "uid": "<v-53>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exclusão do atendimento #5",
       "mutation": {
         "DeleteSaiopAttendance": {
@@ -1345,14 +1400,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-54>",
-      "writer": "<id-3>"
+      "uid": "<v-54>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Desfazer importação de planilha #1",
       "mutation": {
         "UndoSaiopBatch": {
@@ -1360,14 +1415,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-55>",
-      "writer": "<id-3>"
+      "uid": "<v-55>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Modelo de trabalho: publicado",
       "mutation": {
         "SetTemplateStatus": {
@@ -1379,144 +1434,144 @@
             "version": 1
           },
           "status": "Published",
-          "uid": "<id-38>"
+          "uid": "<v-38>"
         }
       },
       "revision": 0,
-      "uid": "<id-56>",
-      "writer": "<id-3>"
+      "uid": "<v-56>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Instrução: arquivado",
       "mutation": {
         "SetBlockStatus": {
           "expected_version": 1,
           "status": "Archived",
-          "uid": "<id-36>"
+          "uid": "<v-36>"
         }
       },
       "revision": 0,
-      "uid": "<id-57>",
-      "writer": "<id-3>"
+      "uid": "<v-57>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exclusão de exemplo",
       "mutation": {
         "DeleteExample": {
-          "uid": "<id-40>"
+          "uid": "<v-40>"
         }
       },
       "revision": 0,
-      "uid": "<id-58>",
-      "writer": "<id-3>"
+      "uid": "<v-58>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exclusão de modelo de trabalho",
       "mutation": {
         "DeleteTemplate": {
-          "uid": "<id-38>"
+          "uid": "<v-38>"
         }
       },
       "revision": 0,
-      "uid": "<id-59>",
-      "writer": "<id-3>"
+      "uid": "<v-59>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exclusão de instrução",
       "mutation": {
         "DeleteBlock": {
-          "uid": "<id-36>"
+          "uid": "<v-36>"
         }
       },
       "revision": 0,
-      "uid": "<id-60>",
-      "writer": "<id-3>"
+      "uid": "<v-60>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exclusão de uso de recurso",
       "mutation": {
         "DeleteResourceUse": {
           "expected_version": null,
-          "uid": "<id-61>"
+          "uid": "<v-61>"
         }
       },
       "revision": 0,
-      "uid": "<id-62>",
-      "writer": "<id-3>"
+      "uid": "<v-62>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exclusão de recurso",
       "mutation": {
         "DeleteResource": {
           "expected_version": null,
-          "uid": "<id-63>"
+          "uid": "<v-63>"
         }
       },
       "revision": 0,
-      "uid": "<id-64>",
-      "writer": "<id-3>"
+      "uid": "<v-64>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exclusão de categoria",
       "mutation": {
         "DeleteCategory": {
           "expected_version": null,
-          "uid": "<id-65>"
+          "uid": "<v-65>"
         }
       },
       "revision": 0,
-      "uid": "<id-66>",
-      "writer": "<id-3>"
+      "uid": "<v-66>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exclusão de projeto",
       "mutation": {
         "DeleteProject": {
           "expected_version": null,
-          "uid": "<id-67>"
+          "uid": "<v-67>"
         }
       },
       "revision": 0,
-      "uid": "<id-68>",
-      "writer": "<id-3>"
+      "uid": "<v-68>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Feriados e dias sem expediente",
       "mutation": {
         "SaveSetting": {
@@ -1525,14 +1580,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-69>",
-      "writer": "<id-3>"
+      "uid": "<v-69>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Restaurar tarefa #6 da lixeira",
       "mutation": {
         "RestoreItem": {
@@ -1541,14 +1596,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-70>",
-      "writer": "<id-3>"
+      "uid": "<v-70>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Mover tarefa #6 para a lixeira",
       "mutation": {
         "TrashItem": {
@@ -1557,14 +1612,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-71>",
-      "writer": "<id-3>"
+      "uid": "<v-71>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Apagado de vez da lixeira: tarefa #6",
       "mutation": {
         "PurgeTrash": {
@@ -1573,14 +1628,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-72>",
-      "writer": "<id-3>"
+      "uid": "<v-72>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Exclusão definitiva do anexo #2",
       "mutation": {
         "DeleteAttachment": {
@@ -1588,8 +1643,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-73>",
-      "writer": "<id-3>"
+      "uid": "<v-73>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
@@ -1616,12 +1671,12 @@
           "slot": "import"
         }
       ],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Importação de SEFAZ-PRO-2026/00109",
       "mutation": {
         "ImportCapture": {
           "capture": {
-            "captured_at": "<tempo>",
+            "captured_at": "2026-11-01T12:00:00Z",
             "coverage": {
               "adapter": "sigadoc-dom-v1",
               "pending": [
@@ -1634,7 +1689,7 @@
             "document_number": "SEFAZ-PRO-2026/00109",
             "metadata": {},
             "references": [],
-            "request_id": "<id-74>",
+            "request_id": "<v-74>",
             "schema_version": 1,
             "source_url": "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00109",
             "text": "Documento para apagar a.",
@@ -1643,14 +1698,14 @@
         }
       },
       "revision": 0,
-      "uid": "<id-75>",
-      "writer": "<id-3>"
+      "uid": "<v-75>",
+      "writer": "<v-3>"
     },
     {
       "actor": "Roteiro",
       "base": null,
       "created": [],
-      "created_at": "<tempo>",
+      "created_at": "<agora>",
       "label": "Excluir documento #3",
       "mutation": {
         "DeleteDocument": {
@@ -1658,8 +1713,8 @@
         }
       },
       "revision": 0,
-      "uid": "<id-76>",
-      "writer": "<id-3>"
+      "uid": "<v-76>",
+      "writer": "<v-3>"
     }
   ],
   "snapshot": {
@@ -1674,7 +1729,7 @@
               "source_id": "C2"
             }
           ],
-          "created_at": "<tempo>",
+          "created_at": "2026-11-05T10:00:00Z",
           "deadline_candidate": null,
           "human_context": "",
           "materials": [
@@ -1698,7 +1753,7 @@
           "summary": "Resumo a"
         },
         "capture_id": 2,
-        "created_at": "<tempo>",
+        "created_at": "2026-11-05T10:00:00Z",
         "document_id": 1,
         "id": 1
       }
@@ -1708,7 +1763,7 @@
         "document_id": 1,
         "id": 1,
         "meta": {
-          "added_at": "<tempo>",
+          "added_at": "<agora>",
           "added_by": "Roteiro",
           "description": "descrição nova a",
           "id": 1,
@@ -1724,7 +1779,7 @@
         "document_id": 1,
         "id": 3,
         "meta": {
-          "added_at": "<tempo>",
+          "added_at": "<agora>",
           "added_by": "Roteiro",
           "description": "do atendimento",
           "id": 3,
@@ -1754,7 +1809,7 @@
     "captures": [
       {
         "capture": {
-          "captured_at": "<tempo>",
+          "captured_at": "2026-11-01T12:00:00Z",
           "coverage": {
             "adapter": "sigadoc-dom-v1",
             "pending": [
@@ -1767,7 +1822,7 @@
           "document_number": "SEFAZ-PRO-2026/00101",
           "metadata": {},
           "references": [],
-          "request_id": "<id-1>",
+          "request_id": "<v-1>",
           "schema_version": 1,
           "source_url": "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00101",
           "text": "Primeira versão do texto.",
@@ -1807,13 +1862,13 @@
           37,
           144
         ],
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "document_id": 1,
         "id": 1
       },
       {
         "capture": {
-          "captured_at": "<tempo>",
+          "captured_at": "2026-11-03T12:00:00Z",
           "coverage": {
             "adapter": "sigadoc-dom-v1",
             "pending": [
@@ -1826,7 +1881,7 @@
           "document_number": "SEFAZ-PRO-2026/00101",
           "metadata": {},
           "references": [],
-          "request_id": "<id-4>",
+          "request_id": "<v-4>",
           "schema_version": 1,
           "source_url": "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00101",
           "text": "Segunda versão do texto, mais nova.",
@@ -1866,13 +1921,13 @@
           93,
           211
         ],
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "document_id": 1,
         "id": 2
       },
       {
         "capture": {
-          "captured_at": "<tempo>",
+          "captured_at": "2026-11-01T12:00:00Z",
           "coverage": {
             "adapter": "sigadoc-dom-v1",
             "pending": [
@@ -1894,7 +1949,7 @@
               "url": "https://www.sigadoc.mt.gov.br/arquivos/a.pdf"
             }
           ],
-          "request_id": "<id-6>",
+          "request_id": "<v-6>",
           "schema_version": 1,
           "source_url": "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00102",
           "text": "Documento com PDF.\n\n════════ PDF: PDF ════════\nMARCADOR_PDF_TESTE - Documento ficticio",
@@ -1934,7 +1989,7 @@
           204,
           248
         ],
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "document_id": 2,
         "id": 3
       }
@@ -1943,10 +1998,10 @@
       {
         "archived": false,
         "color": 1,
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "name": "Cat a",
-        "uid": "<id-34>",
-        "updated_at": "<tempo>"
+        "uid": "<v-34>",
+        "updated_at": "<agora>"
       }
     ],
     "document_links": [
@@ -1988,7 +2043,7 @@
           181
         ],
         "payload": {
-          "created_at": "<tempo>",
+          "created_at": "<agora>",
           "kind": "relacionado",
           "reason": "base a"
         },
@@ -2033,7 +2088,7 @@
           150,
           73
         ],
-        "last_seen_at": "<tempo>",
+        "last_seen_at": "<agora>",
         "latest_capture_id": 2
       },
       {
@@ -2072,7 +2127,7 @@
           78,
           126
         ],
-        "last_seen_at": "<tempo>",
+        "last_seen_at": "<agora>",
         "latest_capture_id": 3
       }
     ],
@@ -2080,7 +2135,7 @@
       {
         "body": "Minuta a",
         "capture_id": 2,
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "document_id": 1,
         "id": 1,
         "kind": "resposta",
@@ -2104,127 +2159,10 @@
     ],
     "item_versions": [
       [
-        "<chave>",
-        "block",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 3
-        }
-      ],
-      [
-        "<chave>",
-        "category",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 1
-        }
-      ],
-      [
-        "<chave>",
-        "category",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 2
-        }
-      ],
-      [
-        "<chave>",
-        "example",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 2
-        }
-      ],
-      [
-        "<chave>",
-        "generation",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 1
-        }
-      ],
-      [
-        "<chave>",
-        "project",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 1
-        }
-      ],
-      [
-        "<chave>",
-        "project",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 2
-        }
-      ],
-      [
-        "<chave>",
-        "resource",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 1
-        }
-      ],
-      [
-        "<chave>",
-        "resource",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 2
-        }
-      ],
-      [
-        "<chave>",
-        "resource_use",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 1
-        }
-      ],
-      [
-        "<chave>",
-        "resource_use",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 2
-        }
-      ],
-      [
-        "<chave>",
-        "setting",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 1
-        }
-      ],
-      [
-        "<chave>",
-        "template",
-        {
-          "updated_at": "<tempo>",
-          "updated_by": "Roteiro",
-          "version": 3
-        }
-      ],
-      [
         "analysis",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2233,7 +2171,7 @@
         "attachment",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 2
         }
@@ -2242,25 +2180,52 @@
         "attachment",
         3,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
+        }
+      ],
+      [
+        "block",
+        "<chave:<v-36>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 3
         }
       ],
       [
         "cabinet",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 63
+        }
+      ],
+      [
+        "category",
+        "<chave:<v-34>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 1
+        }
+      ],
+      [
+        "category",
+        "<chave:<v-65>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 2
         }
       ],
       [
         "document",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 2
         }
@@ -2269,7 +2234,7 @@
         "document",
         2,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2278,7 +2243,7 @@
         "document_link",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 2
         }
@@ -2287,7 +2252,25 @@
         "draft",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 1
+        }
+      ],
+      [
+        "example",
+        "<chave:<v-40>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 2
+        }
+      ],
+      [
+        "generation",
+        "<chave:<v-43>>",
+        {
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2296,7 +2279,7 @@
         "note",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2305,16 +2288,70 @@
         "page_text",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
+        }
+      ],
+      [
+        "project",
+        "<chave:<v-32>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 1
+        }
+      ],
+      [
+        "project",
+        "<chave:<v-67>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 2
+        }
+      ],
+      [
+        "resource",
+        "<chave:<v-28>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 1
+        }
+      ],
+      [
+        "resource",
+        "<chave:<v-63>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 2
+        }
+      ],
+      [
+        "resource_use",
+        "<chave:<v-30>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 1
+        }
+      ],
+      [
+        "resource_use",
+        "<chave:<v-61>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 2
         }
       ],
       [
         "saiop",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 2
         }
@@ -2323,7 +2360,7 @@
         "saiop",
         2,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2332,7 +2369,7 @@
         "saiop",
         3,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2341,7 +2378,7 @@
         "saiop",
         4,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2350,7 +2387,16 @@
         "saiop",
         6,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 1
+        }
+      ],
+      [
+        "setting",
+        "<chave:holidays>",
+        {
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2359,7 +2405,7 @@
         "task",
         3,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2368,7 +2414,7 @@
         "task",
         4,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2377,7 +2423,7 @@
         "task",
         5,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 2
         }
@@ -2386,16 +2432,25 @@
         "task",
         7,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
+        }
+      ],
+      [
+        "template",
+        "<chave:<v-38>>",
+        {
+          "updated_at": "<agora>",
+          "updated_by": "Roteiro",
+          "version": 3
         }
       ],
       [
         "work_context",
         1,
         {
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "updated_by": "Roteiro",
           "version": 1
         }
@@ -2403,7 +2458,7 @@
     ],
     "notes": [
       {
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "document_id": 1,
         "id": 1,
         "note": "Nota a"
@@ -2414,7 +2469,7 @@
         "file_id": 1,
         "page": 0,
         "value": {
-          "created_at": "<tempo>",
+          "created_at": "2026-11-05T10:00:00Z",
           "language": "por",
           "text": "texto reconhecido a"
         }
@@ -2423,31 +2478,31 @@
     "projects": [
       {
         "assignee": "",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "name": "Projeto a",
         "objective": "",
         "start_date": "",
         "status": "ativo",
         "target_date": "",
-        "uid": "<id-32>",
-        "updated_at": "<tempo>"
+        "uid": "<v-32>",
+        "updated_at": "<agora>"
       }
     ],
     "requests": [
       {
         "capture_id": 1,
         "document_id": 1,
-        "request_id": "<id-1>"
+        "request_id": "<v-1>"
       },
       {
         "capture_id": 2,
         "document_id": 1,
-        "request_id": "<id-4>"
+        "request_id": "<v-4>"
       },
       {
         "capture_id": 3,
         "document_id": 2,
-        "request_id": "<id-6>"
+        "request_id": "<v-6>"
       }
     ],
     "resources": {
@@ -2455,10 +2510,10 @@
         {
           "id": 1,
           "status": "ativo",
-          "uid": "<id-28>",
-          "updated_at": "<tempo>",
+          "uid": "<v-28>",
+          "updated_at": "<agora>",
           "value": {
-            "created_at": "<tempo>",
+            "created_at": "<agora>",
             "identification": "",
             "kind": "outro",
             "location": "",
@@ -2466,8 +2521,8 @@
             "notes": "",
             "quantity": 1,
             "status": "ativo",
-            "uid": "<id-28>",
-            "updated_at": "<tempo>"
+            "uid": "<v-28>",
+            "updated_at": "<agora>"
           }
         }
       ],
@@ -2475,27 +2530,27 @@
         {
           "document_id": 1,
           "id": 1,
-          "resource_uid": "<id-28>",
+          "resource_uid": "<v-28>",
           "status": "reservado",
-          "uid": "<id-30>",
-          "updated_at": "<tempo>",
+          "uid": "<v-30>",
+          "updated_at": "<agora>",
           "value": {
-            "created_at": "<tempo>",
+            "created_at": "<agora>",
             "created_by": "Roteiro",
             "document_id": 1,
-            "end": "<tempo>",
+            "end": "2099-01-05T10:00",
             "notes": "",
             "purpose": "",
             "quantity": 1,
-            "resource_uid": "<id-28>",
+            "resource_uid": "<v-28>",
             "returned_at": null,
             "saiop_id": 3,
             "sector": "",
-            "start": "<tempo>",
+            "start": "2099-01-05T09:00",
             "status": "reservado",
             "task_id": 3,
-            "uid": "<id-30>",
-            "updated_at": "<tempo>",
+            "uid": "<v-30>",
+            "updated_at": "<agora>",
             "who": "Servidor a"
           }
         }
@@ -2509,25 +2564,25 @@
           "attachment_relation": "",
           "batch_id": null,
           "closed_at": "",
-          "created_at": "<tempo>",
+          "created_at": "<agora>",
           "document_id": null,
           "due_date": "",
           "due_date_raw": "",
           "due_kind": "oficial",
-          "entry_date": "<data>",
-          "entry_date_raw": "<data>",
+          "entry_date": "2026-11-23",
+          "entry_date_raw": "2026-11-23",
           "events": [
             {
               "actor": "Roteiro",
               "detail": "Criado automaticamente na importação de SEFAZ-PRO-2026/00109 do SIGADOC",
               "kind": "entrada",
-              "when": "<tempo>"
+              "when": "<agora>"
             },
             {
               "actor": "Roteiro",
               "detail": "Atendimento registrado no controle do gabinete",
               "kind": "entrada",
-              "when": "<tempo>"
+              "when": "<agora>"
             }
           ],
           "exit_date": "",
@@ -2550,18 +2605,18 @@
           "sigadoc_code": "SEFAZ-PRO-2026/00109",
           "signed_status": "nao_informado",
           "source_row": null,
-          "stage_changed_at": "<data>",
+          "stage_changed_at": "2026-11-23",
           "status": "em_analise",
           "subject": "Documento SEFAZ-PRO-2026/00109",
           "tags": [],
           "task_ids": [],
           "uas_raw": "",
           "uas_return": "nao_informado",
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "verification_raw": ""
         },
         "raw_import": null,
-        "updated_at": "<tempo>"
+        "updated_at": "<agora>"
       },
       {
         "attendance": {
@@ -2569,13 +2624,13 @@
           "attachment_relation": "",
           "batch_id": null,
           "closed_at": "",
-          "created_at": "<tempo>",
+          "created_at": "<agora>",
           "document_id": null,
           "due_date": "",
           "due_date_raw": "",
           "due_kind": "oficial",
-          "entry_date": "<data>",
-          "entry_date_raw": "<data>",
+          "entry_date": "2026-11-23",
+          "entry_date_raw": "2026-11-23",
           "events": [],
           "exit_date": "",
           "exit_date_raw": "",
@@ -2597,14 +2652,14 @@
           "sigadoc_code": "",
           "signed_status": "nao_informado",
           "source_row": 2,
-          "stage_changed_at": "<data>",
+          "stage_changed_at": "2026-11-23",
           "status": "em_analise",
           "subject": "Lote-a",
           "tags": [],
           "task_ids": [],
           "uas_raw": "",
           "uas_return": "nao_informado",
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "verification_raw": ""
         },
         "raw_import": {
@@ -2613,7 +2668,7 @@
           "row_number": 2,
           "sheet_name": "Plan1"
         },
-        "updated_at": "<tempo>"
+        "updated_at": "<agora>"
       },
       {
         "attendance": {
@@ -2621,19 +2676,19 @@
           "attachment_relation": "",
           "batch_id": null,
           "closed_at": "",
-          "created_at": "<tempo>",
+          "created_at": "<agora>",
           "document_id": 1,
           "due_date": "",
           "due_date_raw": "",
           "due_kind": "oficial",
-          "entry_date": "<data>",
-          "entry_date_raw": "<data>",
+          "entry_date": "2026-11-23",
+          "entry_date_raw": "2026-11-23",
           "events": [
             {
               "actor": "Roteiro",
               "detail": "Atendimento registrado no controle do gabinete",
               "kind": "entrada",
-              "when": "<tempo>"
+              "when": "<agora>"
             }
           ],
           "exit_date": "",
@@ -2656,7 +2711,7 @@
           "sigadoc_code": "",
           "signed_status": "nao_informado",
           "source_row": null,
-          "stage_changed_at": "<data>",
+          "stage_changed_at": "2026-11-23",
           "status": "em_analise",
           "subject": "At-a",
           "tags": [],
@@ -2665,11 +2720,11 @@
           ],
           "uas_raw": "",
           "uas_return": "nao_informado",
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "verification_raw": ""
         },
         "raw_import": null,
-        "updated_at": "<tempo>"
+        "updated_at": "<agora>"
       },
       {
         "attendance": {
@@ -2677,25 +2732,25 @@
           "attachment_relation": "",
           "batch_id": null,
           "closed_at": "",
-          "created_at": "<tempo>",
+          "created_at": "<agora>",
           "document_id": 2,
           "due_date": "",
           "due_date_raw": "",
           "due_kind": "oficial",
-          "entry_date": "<data>",
-          "entry_date_raw": "<data>",
+          "entry_date": "2026-11-23",
+          "entry_date_raw": "2026-11-23",
           "events": [
             {
               "actor": "Roteiro",
               "detail": "Criado automaticamente na importação de SEFAZ-PRO-2026/00102 do SIGADOC",
               "kind": "entrada",
-              "when": "<tempo>"
+              "when": "<agora>"
             },
             {
               "actor": "Roteiro",
               "detail": "Atendimento registrado no controle do gabinete",
               "kind": "entrada",
-              "when": "<tempo>"
+              "when": "<agora>"
             }
           ],
           "exit_date": "",
@@ -2718,18 +2773,18 @@
           "sigadoc_code": "SEFAZ-PRO-2026/00102",
           "signed_status": "nao_informado",
           "source_row": null,
-          "stage_changed_at": "<data>",
+          "stage_changed_at": "2026-11-23",
           "status": "em_analise",
           "subject": "Documento SEFAZ-PRO-2026/00102",
           "tags": [],
           "task_ids": [],
           "uas_raw": "",
           "uas_return": "nao_informado",
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "verification_raw": ""
         },
         "raw_import": null,
-        "updated_at": "<tempo>"
+        "updated_at": "<agora>"
       },
       {
         "attendance": {
@@ -2737,31 +2792,31 @@
           "attachment_relation": "",
           "batch_id": null,
           "closed_at": "",
-          "created_at": "<tempo>",
+          "created_at": "<agora>",
           "document_id": 1,
           "due_date": "",
           "due_date_raw": "",
           "due_kind": "oficial",
-          "entry_date": "<data>",
-          "entry_date_raw": "<data>",
+          "entry_date": "2026-11-23",
+          "entry_date_raw": "2026-11-23",
           "events": [
             {
               "actor": "Roteiro",
               "detail": "Criado automaticamente na importação de SEFAZ-PRO-2026/00101 do SIGADOC",
               "kind": "entrada",
-              "when": "<tempo>"
+              "when": "<agora>"
             },
             {
               "actor": "Roteiro",
               "detail": "Atendimento registrado no controle do gabinete",
               "kind": "entrada",
-              "when": "<tempo>"
+              "when": "<agora>"
             },
             {
               "actor": "Roteiro",
               "detail": "Tarefa #7 criada: Retorno a",
               "kind": "tarefa",
-              "when": "<tempo>"
+              "when": "<agora>"
             }
           ],
           "exit_date": "",
@@ -2784,7 +2839,7 @@
           "sigadoc_code": "SEFAZ-PRO-2026/00101",
           "signed_status": "nao_informado",
           "source_row": null,
-          "stage_changed_at": "<data>",
+          "stage_changed_at": "2026-11-23",
           "status": "em_analise",
           "subject": "Documento SEFAZ-PRO-2026/00101",
           "tags": [],
@@ -2793,11 +2848,11 @@
           ],
           "uas_raw": "",
           "uas_return": "nao_informado",
-          "updated_at": "<tempo>",
+          "updated_at": "<agora>",
           "verification_raw": ""
         },
         "raw_import": null,
-        "updated_at": "<tempo>"
+        "updated_at": "<agora>"
       }
     ],
     "saiop_batches": [],
@@ -2805,7 +2860,7 @@
     "settings": [
       {
         "key": "holidays",
-        "updated_at": "<tempo>",
+        "updated_at": "<agora>",
         "value": "uf SP\n"
       }
     ],
@@ -2831,7 +2886,7 @@
         "scheduled_start": "",
         "status": "pendente",
         "title": "Triar documento",
-        "uid": "<id-77>"
+        "uid": "<v-77>"
       },
       {
         "action": "triar",
@@ -2854,7 +2909,7 @@
         "scheduled_start": "",
         "status": "pendente",
         "title": "Triar documento",
-        "uid": "<id-78>"
+        "uid": "<v-78>"
       },
       {
         "action": "triar",
@@ -2877,7 +2932,7 @@
         "scheduled_start": "",
         "status": "pendente",
         "title": "T-a-doc",
-        "uid": "<id-14>"
+        "uid": "<v-14>"
       },
       {
         "action": "triar",
@@ -2902,7 +2957,7 @@
         "scheduled_start": "",
         "status": "pendente",
         "title": "T-a-sub",
-        "uid": "<id-16>"
+        "uid": "<v-16>"
       },
       {
         "action": "examinar",
@@ -2925,7 +2980,7 @@
         "scheduled_start": "",
         "status": "pendente",
         "title": "T-a-alone",
-        "uid": "<id-18>"
+        "uid": "<v-18>"
       },
       {
         "action": "examinar",
@@ -2948,14 +3003,14 @@
         "scheduled_start": "",
         "status": "pendente",
         "title": "Retorno a",
-        "uid": "<id-51>"
+        "uid": "<v-51>"
       }
     ],
     "team_events": [
       {
         "action": "delete_document",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Removeu documento #3",
         "document_id": 3,
         "id": 63
@@ -2963,7 +3018,7 @@
       {
         "action": "create_saiop_attendance",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Novo atendimento registrado: SEFAZ-PRO-2026/00109",
         "document_id": 3,
         "id": 62
@@ -2971,7 +3026,7 @@
       {
         "action": "import_capture",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Importou SEFAZ-PRO-2026/00109 (captura #4)",
         "document_id": 3,
         "id": 61
@@ -2979,7 +3034,7 @@
       {
         "action": "delete_attachment",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Apagou de vez o anexo “tarefa-a.pdf” de tarefa #3",
         "document_id": 1,
         "id": 60
@@ -2987,7 +3042,7 @@
       {
         "action": "purge_trash",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Apagou de vez da lixeira: Tarefa #6 — T-a-trash",
         "document_id": 1,
         "id": 59
@@ -2995,7 +3050,7 @@
       {
         "action": "trash_item",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Moveu para a lixeira: Tarefa #6 — T-a-trash",
         "document_id": 1,
         "id": 58
@@ -3003,7 +3058,7 @@
       {
         "action": "restore_item",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Restaurou da lixeira: Tarefa #6",
         "document_id": 1,
         "id": 57
@@ -3011,7 +3066,7 @@
       {
         "action": "save_setting",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Alterou os feriados e dias sem expediente",
         "document_id": null,
         "id": 56
@@ -3019,7 +3074,7 @@
       {
         "action": "delete_project",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Apagou o projeto \"Descartável a\"",
         "document_id": null,
         "id": 55
@@ -3027,7 +3082,7 @@
       {
         "action": "delete_category",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Apagou a categoria \"Descartável a\"",
         "document_id": null,
         "id": 54
@@ -3035,7 +3090,7 @@
       {
         "action": "delete_resource",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Apagou o recurso \"Descartável a\"",
         "document_id": null,
         "id": 53
@@ -3043,7 +3098,7 @@
       {
         "action": "delete_resource_use",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Apagou o uso de \"Projetor a\" (05/02/2099 09:00 a 05/02/2099 10:00)",
         "document_id": null,
         "id": 52
@@ -3051,7 +3106,7 @@
       {
         "action": "save_project",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Cadastrou o projeto \"Descartável a\"",
         "document_id": null,
         "id": 51
@@ -3059,7 +3114,7 @@
       {
         "action": "save_category",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Cadastrou a categoria \"Descartável a\"",
         "document_id": null,
         "id": 50
@@ -3067,7 +3122,7 @@
       {
         "action": "save_resource_use",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Reservou \"Projetor a\" (05/02/2099 09:00 a 05/02/2099 10:00)",
         "document_id": null,
         "id": 49
@@ -3075,7 +3130,7 @@
       {
         "action": "save_resource",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Cadastrou o recurso \"Descartável a\"",
         "document_id": null,
         "id": 48
@@ -3083,7 +3138,7 @@
       {
         "action": "delete_block",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Excluiu a instrução \"Bloco a\"",
         "document_id": null,
         "id": 47
@@ -3091,7 +3146,7 @@
       {
         "action": "delete_template",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Excluiu o modelo \"Modelo a\"",
         "document_id": null,
         "id": 46
@@ -3099,7 +3154,7 @@
       {
         "action": "delete_example",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Excluiu o exemplo \"Exemplo a\"",
         "document_id": null,
         "id": 45
@@ -3107,7 +3162,7 @@
       {
         "action": "set_block_status",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Arquivou a instrução \"Bloco a\"",
         "document_id": null,
         "id": 44
@@ -3115,7 +3170,7 @@
       {
         "action": "set_template_status",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Publicou a versão 1 do modelo \"Modelo a\"",
         "document_id": null,
         "id": 43
@@ -3123,7 +3178,7 @@
       {
         "action": "undo_saiop_batch",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Lote #1 revertido (0 removidos, 1 preservados por terem edição local)",
         "document_id": null,
         "id": 42
@@ -3131,7 +3186,7 @@
       {
         "action": "delete_saiop_attendance",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Atendimento AVULSO-a excluído",
         "document_id": null,
         "id": 41
@@ -3139,7 +3194,7 @@
       {
         "action": "create_saiop_attendance",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Novo atendimento registrado: AVULSO-a",
         "document_id": null,
         "id": 40
@@ -3147,7 +3202,7 @@
       {
         "action": "save_saiop_attendance",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Atendimento SEFAZ-PRO-2026/00101 (Em análise) atualizado",
         "document_id": 1,
         "id": 39
@@ -3155,7 +3210,7 @@
       {
         "action": "save_task",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Tarefa #7: Retorno a (pendente)",
         "document_id": 1,
         "id": 38
@@ -3163,7 +3218,7 @@
       {
         "action": "review_attachment_text",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Conferiu o texto de “texto-a.txt”",
         "document_id": null,
         "id": 37
@@ -3171,7 +3226,7 @@
       {
         "action": "extract_attachment_text",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Texto de “texto-a.txt”: Texto extraído",
         "document_id": null,
         "id": 36
@@ -3179,7 +3234,7 @@
       {
         "action": "add_attachment",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Anexou “texto-a.txt” (Texto, 38 bytes) a exemplo #1",
         "document_id": null,
         "id": 35
@@ -3187,7 +3242,7 @@
       {
         "action": "update_attachment",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Descrição do anexo “anexo-a.pdf” alterada",
         "document_id": 1,
         "id": 34
@@ -3195,7 +3250,7 @@
       {
         "action": "set_link_active",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Vínculo #1 desativado",
         "document_id": null,
         "id": 33
@@ -3203,7 +3258,7 @@
       {
         "action": "relink_task",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Tarefa #5: T-a-alone (vinculada a um documento)",
         "document_id": 2,
         "id": 32
@@ -3211,7 +3266,7 @@
       {
         "action": "record_generation",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Geração recusada: teste (sem modelo)",
         "document_id": 1,
         "id": 31
@@ -3219,7 +3274,7 @@
       {
         "action": "add_attachment",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Anexou “exemplo-a.pdf” (PDF, 27 bytes) a exemplo #1",
         "document_id": null,
         "id": 30
@@ -3227,7 +3282,7 @@
       {
         "action": "save_example",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Acrescentou o exemplo \"Exemplo a\"",
         "document_id": null,
         "id": 29
@@ -3235,7 +3290,7 @@
       {
         "action": "create_template",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Criou o modelo de trabalho \"Modelo a\"",
         "document_id": null,
         "id": 28
@@ -3243,7 +3298,7 @@
       {
         "action": "create_block",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Criou a instrução \"Bloco a\"",
         "document_id": null,
         "id": 27
@@ -3251,7 +3306,7 @@
       {
         "action": "save_category",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Cadastrou a categoria \"Cat a\"",
         "document_id": null,
         "id": 26
@@ -3259,7 +3314,7 @@
       {
         "action": "save_project",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Cadastrou o projeto \"Projeto a\"",
         "document_id": null,
         "id": 25
@@ -3267,7 +3322,7 @@
       {
         "action": "save_resource_use",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Reservou \"Projetor a\" (05/01/2099 09:00 a 05/01/2099 10:00)",
         "document_id": 1,
         "id": 24
@@ -3275,7 +3330,7 @@
       {
         "action": "save_resource",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Cadastrou o recurso \"Projetor a\"",
         "document_id": null,
         "id": 23
@@ -3283,7 +3338,7 @@
       {
         "action": "import_saiop_batch",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Lote #1 importado (1 atendimentos da aba Plan1)",
         "document_id": null,
         "id": 22
@@ -3291,7 +3346,7 @@
       {
         "action": "import_saiop_row",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Linha 2 importada no lote #1",
         "document_id": null,
         "id": 21
@@ -3299,7 +3354,7 @@
       {
         "action": "add_attachment",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Anexou “atendimento-a.pdf” (PDF, 31 bytes) a atendimento #3",
         "document_id": 1,
         "id": 20
@@ -3307,7 +3362,7 @@
       {
         "action": "create_saiop_attendance",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Novo atendimento registrado: PROC-a",
         "document_id": 1,
         "id": 19
@@ -3315,7 +3370,7 @@
       {
         "action": "add_attachment",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Anexou “tarefa-a.pdf” (PDF, 26 bytes) a tarefa #3",
         "document_id": 1,
         "id": 18
@@ -3323,7 +3378,7 @@
       {
         "action": "add_attachment",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Anexou “anexo-a.pdf” (PDF, 16 bytes) a documento #1",
         "document_id": 1,
         "id": 17
@@ -3331,7 +3386,7 @@
       {
         "action": "trash_item",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Moveu para a lixeira: Tarefa #6 — T-a-trash",
         "document_id": 1,
         "id": 16
@@ -3339,7 +3394,7 @@
       {
         "action": "save_task",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Tarefa #6: T-a-trash (pendente)",
         "document_id": 1,
         "id": 15
@@ -3347,7 +3402,7 @@
       {
         "action": "save_task",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Tarefa #5: T-a-alone (pendente)",
         "document_id": null,
         "id": 14
@@ -3355,7 +3410,7 @@
       {
         "action": "save_task",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Tarefa #4: T-a-sub (pendente)",
         "document_id": 1,
         "id": 13
@@ -3363,7 +3418,7 @@
       {
         "action": "save_task",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Tarefa #3: T-a-doc (pendente)",
         "document_id": 1,
         "id": 12
@@ -3371,7 +3426,7 @@
       {
         "action": "add_document_link",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Registrou vínculo (relacionado) entre documentos #1 e #2",
         "document_id": 1,
         "id": 11
@@ -3379,7 +3434,7 @@
       {
         "action": "save_work_context",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Contexto atualizado no documento #1",
         "document_id": 1,
         "id": 10
@@ -3387,7 +3442,7 @@
       {
         "action": "save_analysis",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Registrou análise assistida no documento #1",
         "document_id": 1,
         "id": 9
@@ -3395,7 +3450,7 @@
       {
         "action": "save_draft",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Salvou minuta (resposta) versão #1",
         "document_id": 1,
         "id": 8
@@ -3403,7 +3458,7 @@
       {
         "action": "save_note",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Atualizou notas do documento #1",
         "document_id": 1,
         "id": 7
@@ -3411,7 +3466,7 @@
       {
         "action": "save_page_text",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Salvou OCR do arquivo #1 (pág. 1)",
         "document_id": null,
         "id": 6
@@ -3419,7 +3474,7 @@
       {
         "action": "create_saiop_attendance",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Novo atendimento registrado: SEFAZ-PRO-2026/00102",
         "document_id": 2,
         "id": 5
@@ -3427,7 +3482,7 @@
       {
         "action": "import_capture",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Importou SEFAZ-PRO-2026/00102 (captura #3)",
         "document_id": 2,
         "id": 4
@@ -3435,7 +3490,7 @@
       {
         "action": "import_capture",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Importou SEFAZ-PRO-2026/00101 (captura #2)",
         "document_id": 1,
         "id": 3
@@ -3443,7 +3498,7 @@
       {
         "action": "create_saiop_attendance",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Novo atendimento registrado: SEFAZ-PRO-2026/00101",
         "document_id": 1,
         "id": 2
@@ -3451,7 +3506,7 @@
       {
         "action": "import_capture",
         "actor": "Roteiro",
-        "created_at": "<tempo>",
+        "created_at": "<agora>",
         "details": "Importou SEFAZ-PRO-2026/00101 (captura #1)",
         "document_id": 1,
         "id": 1
@@ -3465,7 +3520,7 @@
       "generations": [
         {
           "capture_id": 2,
-          "created_at": "<tempo>",
+          "created_at": "<agora>",
           "document_id": 1,
           "draft_id": 1,
           "id": 1,
@@ -3473,7 +3528,7 @@
             "blocks": [],
             "capture_id": 2,
             "conflicts_shown": [],
-            "created_at": "<tempo>",
+            "created_at": "<agora>",
             "created_by": "Roteiro",
             "data_bytes": 0,
             "document_id": 1,
@@ -3494,10 +3549,10 @@
             "template_name": "nenhum",
             "template_uid": null,
             "template_version": null,
-            "uid": "<id-43>"
+            "uid": "<v-43>"
           },
           "template_uid": null,
-          "uid": "<id-43>"
+          "uid": "<v-43>"
         }
       ],
       "template_versions": [],

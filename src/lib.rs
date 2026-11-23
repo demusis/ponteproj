@@ -77,6 +77,8 @@ pub mod workload;
 mod f1_inventory;
 #[cfg(test)]
 mod f2a_parity;
+#[cfg(test)]
+mod f2a_review2_tests;
 /// F2a: the review regression tests and the parity with the build without F2a.
 #[cfg(test)]
 mod f2a_review_tests;

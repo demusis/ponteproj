@@ -2230,6 +2230,7 @@ mod planning_tests {
                 transport_off: false,
                 replacement_notes: Default::default(),
                 accept_bad_safety_copy: false,
+                upgrade_notice: None,
             };
             partial.ensure_tasks().unwrap();
             assert!(version(&partial) < crate::storage::SCHEMA_VERSION);

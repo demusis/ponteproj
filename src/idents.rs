@@ -93,27 +93,45 @@ CREATE TABLE ident_state(id INTEGER PRIMARY KEY CHECK(id=1), origin TEXT NOT NUL
 /// A new random identity: 32 lowercase hex digits.
 const RANDOM_IDENT: &str = "lower(hex(randomblob(16)))";
 
-/// The moment an analysis was made in microseconds since 1970 (an SQL
-/// expression), exactly as `storage::current_analysis` reads it with
-/// `chrono::DateTime::parse_from_rfc3339(…).timestamp_micros()`: an RFC 3339
-/// time (`T`, `t` or a space between date and time, an optional fraction of
-/// any length, of which the first six digits count, and `Z`, `z` or
-/// `±HH:MM`), or NULL when it does not read as one (an impossible date or
-/// time included).
+/// The moment an analysis was made, in microseconds since 1970: what
+/// `storage::current_analysis` orders by, and (as the SQL function
+/// `ponte_analysis_micros`) what the triggers of `current_pointer` order by.
+/// ONE converter for both: an RFC 3339 time as `chrono` reads it (any offset
+/// it accepts, a leap second included), or `None` when it does not read as
+/// one.
+pub(crate) fn analysis_micros(text: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(text.trim())
+        .ok()
+        .map(|t| t.timestamp_micros())
+}
+
+/// The SQL functions the triggers of schema 22 call, registered on every
+/// connection of this build that writes (`Store::open`). A connection of
+/// an older Ponte does not have them: its writes that would fire those
+/// triggers are refused when they are prepared ("no such function"), as its
+/// guard would refuse them.
+pub(crate) fn register_functions(conn: &Connection) -> Result<()> {
+    conn.create_scalar_function(
+        "ponte_analysis_micros",
+        1,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
+            | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+        |ctx| {
+            Ok(match ctx.get_raw(0) {
+                rusqlite::types::ValueRef::Text(text) => {
+                    std::str::from_utf8(text).ok().and_then(analysis_micros)
+                }
+                _ => None,
+            })
+        },
+    )?;
+    Ok(())
+}
+
+/// [`analysis_micros`] of `column` (an SQL expression).
 pub(crate) fn analysis_time(column: &str) -> String {
-    let head = "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T ][0-9][0-9]:[0-9][0-9]:[0-9][0-9]*'";
-    format!(
-        "(SELECT CASE WHEN h AND tz IS NOT NULL \
-           AND (body='' OR (substr(body,1,1)='.' AND length(body)>1 AND substr(body,2) NOT GLOB '*[^0-9]*')) \
-           AND date(substr(u,1,10))=substr(u,1,10) AND time(substr(u,12,8))=substr(u,12,8) \
-         THEN unixepoch(substr(u,1,10)||'T'||substr(u,12,8)||tz)*1000000 \
-           + CAST(substr(substr(body,2)||'000000',1,6) AS INTEGER) END \
-         FROM (SELECT u,h,tz,CASE WHEN tz IS NULL THEN NULL ELSE substr(rest,1,length(rest)-length(tz)) END AS body \
-           FROM (SELECT u, u GLOB {head} AS h, substr(u,20) AS rest, \
-             CASE WHEN substr(u,20) GLOB '*Z' THEN 'Z' \
-                  WHEN substr(u,20) GLOB '*[+-][0-9][0-9]:[0-9][0-9]' THEN substr(u,-6) END AS tz \
-             FROM (SELECT upper(trim({column})) AS u))))"
-    )
+    format!("ponte_analysis_micros({column})")
 }
 
 /// The current analysis of the document `document` (an SQL expression), as
@@ -283,16 +301,34 @@ pub(crate) fn install_insert_log(conn: &Connection) -> Result<()> {
 const LOG_TRIGGER: &str = "CREATE TEMP TRIGGER IF NOT EXISTS ponte_log_item_ident AFTER INSERT ON main.item_ident \
      BEGIN INSERT INTO temp.ponte_inserted(kind,row_id,ident) VALUES(NEW.kind,NEW.row_id,NEW.ident); END;";
 
+/// Whether this connection keeps the log: only on a library of schema 22
+/// (`install_insert_log` ran). A library left at 21 for this opening (its
+/// update could not be done, see `Store::upgrade_notice`) works as before
+/// F2a: nothing is logged and nothing is carried.
+fn log_kept(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name='ponte_inserted')",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
 /// Opens the log of this connection, empty. Whoever opens it closes it
 /// ([`stop_log`]) on every way out that does not roll back; inside a
 /// transaction, a rollback closes it too.
 pub(crate) fn start_log(conn: &Connection) -> Result<()> {
+    if !log_kept(conn)? {
+        return Ok(());
+    }
     conn.execute_batch(&format!("DELETE FROM temp.ponte_inserted;\n{LOG_TRIGGER}"))?;
     Ok(())
 }
 
 /// The rows inserted since [`start_log`], with the identity each was given.
 pub(crate) fn logged(conn: &Connection) -> Result<Inserted> {
+    if !log_kept(conn)? {
+        return Ok(Inserted::new());
+    }
     let mut statement = conn.prepare("SELECT kind,row_id,ident FROM temp.ponte_inserted")?;
     let rows = statement
         .query_map([], |r| {
@@ -307,6 +343,9 @@ pub(crate) fn logged(conn: &Connection) -> Result<Inserted> {
 
 /// Closes the log and empties it.
 pub(crate) fn stop_log(conn: &Connection) -> Result<()> {
+    if !log_kept(conn)? {
+        return Ok(());
+    }
     conn.execute_batch(
         "DROP TRIGGER IF EXISTS temp.ponte_log_item_ident; DELETE FROM temp.ponte_inserted;",
     )
@@ -755,6 +794,37 @@ pub mod test_support {
         }
         Ok(problems)
     }
+
+    /// The invariants after every step of the F1 characterization tests
+    /// (`f1_inventory`), which run unchanged: called by the product, in
+    /// this crate's tests only, after each change queued and each exchange;
+    /// it acts on the threads of those tests alone (a test runs on a thread
+    /// named after it) and on a library of schema 22.
+    #[cfg(test)]
+    pub(crate) fn check_f1_step(conn: &Connection, step: &str) {
+        let thread = std::thread::current();
+        let Some(name) = thread.name().filter(|n| n.starts_with("f1_inventory::")) else {
+            return;
+        };
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap_or(0);
+        if version < crate::storage::LIBRARY_SCHEMA {
+            return;
+        }
+        let problems = invariant_problems(conn).unwrap();
+        assert!(
+            problems.is_empty(),
+            "{name}, depois de {step}: {problems:?}"
+        );
+        F1_STEPS_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How many F1 steps `check_f1_step` checked in this run (a test makes
+    /// sure the hook is not idle).
+    #[cfg(test)]
+    pub(crate) static F1_STEPS_CHECKED: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
 
     /// For the phone core: `user_version`, the invariant problems and the
     /// number of identities of the library at `path`.

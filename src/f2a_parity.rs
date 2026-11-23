@@ -317,75 +317,15 @@ pub(crate) fn enum_variant_count() -> usize {
         .count()
 }
 
-/// `value` with what differs from run to run (moments, random ids, the
-/// writer's identity) replaced by stable marks: moments by `<tempo>`, each
-/// random id by `<id-N>` in the order it first appears (the same id gets
-/// the same mark, so links between items stay visible).
-pub(crate) fn normalized(value: &Value) -> Value {
-    fn walk(value: &Value, ids: &mut BTreeMap<String, String>) -> Value {
-        match value {
-            Value::String(s) => Value::String(mark(s, ids)),
-            Value::Array(items) => {
-                let mut items: Vec<Value> = items.iter().map(|v| walk(v, ids)).collect();
-                // Rows keyed by the digest of a random uid (`item_versions`
-                // of uid-addressed kinds) come in the order of that digest:
-                // they are compared as a set.
-                if items.iter().any(|v| v.to_string().contains("<chave>")) {
-                    items.sort_by_key(|v| v.to_string());
-                }
-                Value::Array(items)
-            }
-            Value::Number(n) if n.as_i64().is_some_and(|n| n.unsigned_abs() >= 1 << 32) => {
-                // `work_templates::version_key` of a random uid.
-                Value::String("<chave>".into())
-            }
-            Value::Object(map) => {
-                Value::Object(
-                    map.iter()
-                        .map(|(k, v)| {
-                            let mut v = walk(v, ids);
-                            // Exported in the order of their random ids
-                            // (`ORDER BY request_id`): compared as a set.
-                            if k == "requests" {
-                                if let Value::Array(items) = &mut v {
-                                    items.sort_by_key(|i| i.to_string());
-                                }
-                            }
-                            (k.clone(), v)
-                        })
-                        .collect(),
-                )
-            }
-            other => other.clone(),
-        }
-    }
-    fn mark(s: &str, ids: &mut BTreeMap<String, String>) -> String {
-        let moment = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}").unwrap();
-        let today = {
-            let now = chrono::Utc::now().date_naive();
-            [-2i64, -1, 0, 1, 2].map(|d| (now + chrono::Duration::days(d)).to_string())
-        };
-        let random = regex::Regex::new(
-            r"^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
-        )
-        .unwrap();
-        if moment.is_match(s) {
-            "<tempo>".into()
-        } else if today.iter().any(|d| s == d) {
-            "<data>".into()
-        } else if random.is_match(s) {
-            let next = format!("<id-{}>", ids.len() + 1);
-            ids.entry(s.to_owned()).or_insert(next).clone()
-        } else {
-            s.to_owned()
-        }
-    }
-    walk(value, &mut BTreeMap::new())
-}
-
-/// The payload of the shared file at `path`, normalized: snapshot, applied
-/// uids, journal, and the files carried (by name and SHA-256).
-pub(crate) fn payload_of(path: &Path) -> Value {
+/// The content of the shared file at `path`, raw: the snapshot and the
+/// journal as they are; `applied` as the operation each applied uid stands
+/// for in the journal (`variant|label`, sorted; a uid without its entry is
+/// `<fora do diário>`); the files carried, by id and SHA-256. Checked here:
+/// the file is format 8 with content schema 21, and the exporter's order of
+/// `requests` (by `request_id`) and of `item_versions` (by kind and item)
+/// holds.
+pub(crate) fn content_of(path: &Path) -> Value {
+    use sha2::Digest;
     let copy = crate::sharedfolder::read(path, KEY).unwrap().unwrap();
     assert_eq!(
         (copy.header.format, copy.header.schema_version),
@@ -393,10 +333,30 @@ pub(crate) fn payload_of(path: &Path) -> Value {
         "{}",
         path.display()
     );
-    let digest = |bytes: &[u8]| {
-        use sha2::Digest;
-        format!("{:x}", sha2::Sha256::digest(bytes))
-    };
+    let by_uid: BTreeMap<&str, String> = copy
+        .payload
+        .journal
+        .iter()
+        .map(|e| {
+            (
+                e.uid.as_str(),
+                format!("{}|{}", variant_name(&e.mutation), e.label),
+            )
+        })
+        .collect();
+    let mut applied: Vec<String> = copy
+        .payload
+        .applied
+        .iter()
+        .map(|uid| {
+            by_uid
+                .get(uid.as_str())
+                .cloned()
+                .unwrap_or_else(|| "<fora do diário>".into())
+        })
+        .collect();
+    applied.sort();
+    let digest = |bytes: &[u8]| format!("{:x}", sha2::Sha256::digest(bytes));
     let blobs: Vec<(String, i64, String)> = copy
         .blobs
         .pdfs
@@ -409,19 +369,216 @@ pub(crate) fn payload_of(path: &Path) -> Value {
                 .map(|(id, b)| ("anexo".to_owned(), *id, digest(b))),
         )
         .collect();
-    normalized(&serde_json::json!({
-        "snapshot": serde_json::to_value(&copy.payload.snapshot).unwrap(),
-        "applied": copy.payload.applied.len(),
-        "journal": serde_json::to_value(&copy.payload.journal).unwrap(),
+    let snapshot = serde_json::to_value(&copy.payload.snapshot).unwrap();
+    let requests: Vec<String> = snapshot["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["request_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        requests.windows(2).all(|w| w[0] <= w[1]),
+        "pedidos fora da ordem de request_id"
+    );
+    let versions: Vec<(String, i64)> = snapshot["item_versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| (v[0].as_str().unwrap().to_owned(), v[1].as_i64().unwrap()))
+        .collect();
+    assert!(
+        versions.windows(2).all(|w| w[0] <= w[1]),
+        "versões fora da ordem de tipo e item"
+    );
+    serde_json::json!({
+        "applied": applied,
         "blobs": blobs,
-    }))
+        "journal": serde_json::to_value(&copy.payload.journal).unwrap(),
+        "snapshot": snapshot,
+    })
 }
 
-/// The snapshot of the shared file at `path`, alone, normalized (marks
-/// numbered within the snapshot).
-pub(crate) fn snapshot_of(path: &Path) -> Value {
-    let copy = crate::sharedfolder::read(path, KEY).unwrap().unwrap();
-    normalized(&serde_json::to_value(&copy.payload.snapshot).unwrap())
+fn strings(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => out.push(s.clone()),
+        Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+        Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+        _ => {}
+    }
+}
+
+/// `content` made comparable across runs and builds, without hiding what
+/// does not vary:
+///
+/// - a derived key (`work_templates::version_key` of a uid, the item of a
+///   uid-addressed kind in `item_versions`) is checked against its uid and
+///   written as `<chave:UID>`; any other number is kept exactly;
+/// - `requests` and `item_versions`, exported in the order of random values
+///   (the request ids, the derived keys) whose order rule `content_of`
+///   checked, are put in a canonical order that keeps every relation they
+///   encode: requests by document, version and the order their ids first
+///   appear in the content; versions by kind and the order their uid (or
+///   number) first appears;
+/// - only the strings that differ between `content` and `other` (the same
+///   script run again by the same build) are masked: a random id by `<v-N>`,
+///   numbered by first appearance, the same value always by the same mark
+///   (so every link between items stays visible); a moment of the run
+///   ("now") by `<agora>`, whose equality to another one is only timing. Every other
+///   string, a fixed moment of the script included, is compared exactly.
+pub(crate) fn comparable(content: &Value, other: &Value) -> Value {
+    fn tie_keys(value: &Value, keys: &BTreeMap<i64, String>) -> Value {
+        match value {
+            Value::Number(n) => match n.as_i64().and_then(|n| keys.get(&n)) {
+                Some(uid) => Value::String(format!("<chave:{uid}>")),
+                None => value.clone(),
+            },
+            Value::Array(items) => Value::Array(items.iter().map(|v| tie_keys(v, keys)).collect()),
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), tie_keys(v, keys)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    fn prepared(content: &Value) -> Value {
+        let mut all = Vec::new();
+        strings(content, &mut all);
+        let keys: BTreeMap<i64, String> = all
+            .iter()
+            .map(|s| (crate::work_templates::version_key(s), s.clone()))
+            .collect();
+        let mut value = content.clone();
+        // Only `item_versions` holds items by derived key.
+        let versions = tie_keys(&value["snapshot"]["item_versions"], &keys);
+        for entry in versions.as_array().unwrap() {
+            if let Some(n) = entry[1].as_i64() {
+                assert!(
+                    n < 1 << 32,
+                    "chave {n} de {} que não é de nenhum uid do conteúdo",
+                    entry[0]
+                );
+            }
+        }
+        value["snapshot"]["item_versions"] = versions;
+        // Canonical orders, by where things first appear elsewhere.
+        let mut rest = value.clone();
+        rest["snapshot"]["item_versions"] = Value::Null;
+        rest["snapshot"]["requests"] = Value::Null;
+        let mut order = Vec::new();
+        strings(&rest, &mut order);
+        let place = |s: &str| order.iter().position(|o| o == s).unwrap_or(usize::MAX);
+        let mut requests = value["snapshot"]["requests"].as_array().unwrap().clone();
+        requests.sort_by_key(|r| {
+            (
+                r["document_id"].as_i64(),
+                r["capture_id"].as_i64(),
+                place(r["request_id"].as_str().unwrap_or("")),
+            )
+        });
+        value["snapshot"]["requests"] = Value::Array(requests);
+        let mut versions = value["snapshot"]["item_versions"]
+            .as_array()
+            .unwrap()
+            .clone();
+        versions.sort_by_key(|v| {
+            let item = match &v[1] {
+                Value::String(s) => {
+                    let uid = s.trim_start_matches("<chave:").trim_end_matches('>');
+                    (1, place(uid) as i64)
+                }
+                other => (0, other.as_i64().unwrap_or(0)),
+            };
+            (v[0].as_str().unwrap_or("").to_owned(), item)
+        });
+        value["snapshot"]["item_versions"] = Value::Array(versions);
+        value
+    }
+    fn volatile(a: &Value, b: &Value, out: &mut std::collections::BTreeSet<String>) {
+        match (a, b) {
+            (Value::String(x), Value::String(y)) if x != y => {
+                let inner = |s: &str| {
+                    s.strip_prefix("<chave:")
+                        .and_then(|s| s.strip_suffix('>'))
+                        .map(str::to_owned)
+                };
+                match (inner(x), inner(y)) {
+                    (Some(x), Some(y)) if x != y => {
+                        out.insert(x);
+                    }
+                    _ => {
+                        out.insert(x.clone());
+                    }
+                }
+            }
+            (Value::Array(x), Value::Array(y)) => {
+                assert_eq!(x.len(), y.len(), "as duas execuções diferem na forma");
+                x.iter().zip(y).for_each(|(x, y)| volatile(x, y, out));
+            }
+            (Value::Object(x), Value::Object(y)) => {
+                for (k, v) in x {
+                    volatile(v, &y[k], out);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn mask(
+        value: &Value,
+        moving: &std::collections::BTreeSet<String>,
+        marks: &mut BTreeMap<String, String>,
+    ) -> Value {
+        let mut mark = |s: &str| -> String {
+            let next = format!("<v-{}>", marks.len() + 1);
+            marks.entry(s.to_owned()).or_insert(next).clone()
+        };
+        match value {
+            Value::String(s) => {
+                if let Some(uid) = s.strip_prefix("<chave:").and_then(|s| s.strip_suffix('>')) {
+                    if moving.contains(uid) {
+                        return Value::String(format!("<chave:{}>", mark(uid)));
+                    }
+                }
+                if !moving.contains(s) {
+                    value.clone()
+                } else if regex::Regex::new(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+                    .unwrap()
+                    .is_match(s)
+                {
+                    // A moment of this run ("now"): two of them being equal
+                    // or not is a coincidence of timing, not a link.
+                    Value::String("<agora>".into())
+                } else {
+                    Value::String(mark(s))
+                }
+            }
+            Value::Array(items) => {
+                Value::Array(items.iter().map(|v| mask(v, moving, marks)).collect())
+            }
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), mask(v, moving, marks)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    let (a, b) = (prepared(content), prepared(other));
+    let mut moving = std::collections::BTreeSet::new();
+    volatile(&a, &b, &mut moving);
+    mask(&a, &moving, &mut BTreeMap::new())
+}
+
+/// The script run twice by this build, made comparable (see [`comparable`]).
+pub(crate) fn scripted_content() -> Value {
+    let run = || {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Drive").join("ponte-sync.ponte");
+        scripted_file(dir.path(), &file);
+        content_of(&file)
+    };
+    let (first, second) = (run(), run());
+    comparable(&first, &second)
 }
 
 /// A library that made every variant and published them to a new shared
@@ -451,26 +608,25 @@ fn fixture(name: &str) -> PathBuf {
 fn f2a_08_write_fixtures() {
     let out = PathBuf::from(std::env::var("F2A_PARIDADE").expect("F2A_PARIDADE"));
     let name = std::env::var("F2A_NOME").expect("F2A_NOME");
+    std::fs::create_dir_all(&out).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("Drive").join("ponte-sync.ponte");
     scripted_file(dir.path(), &file);
-    std::fs::create_dir_all(&out).unwrap();
     std::fs::copy(&file, out.join(format!("paridade-{name}.ponte"))).unwrap();
     std::fs::write(
         out.join(format!("paridade-{name}.json")),
-        serde_json::to_string_pretty(&payload_of(&file)).unwrap() + "\n",
+        serde_json::to_string_pretty(&scripted_content()).unwrap() + "\n",
     )
     .unwrap();
 }
 
-/// The same script, here: the file it publishes carries the payload the
-/// build without F2a published (`paridade-0.51.json`, written by fc6342e).
+/// The same script, here: the file it publishes carries the content the
+/// build without F2a published (`paridade-0.51.json`, written by fc6342e),
+/// compared as `comparable` says (only what varies between two runs of the
+/// same build is masked).
 #[test]
 fn f2a_08_payload_is_the_one_of_0_51() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("Drive").join("ponte-sync.ponte");
-    scripted_file(dir.path(), &file);
-    let here = payload_of(&file);
+    let here = scripted_content();
     let golden: Value =
         serde_json::from_str(&std::fs::read_to_string(fixture("paridade-0.51.json")).unwrap())
             .unwrap();
@@ -491,24 +647,25 @@ fn f2a_08_payload_is_the_one_of_0_51() {
 }
 
 /// A new library joins the folder through the file written by `writer`,
-/// adopts it, changes it and publishes again in format 8; the change is in
-/// the file it wrote. Answers that file.
+/// adopts it (its snapshot, exported again, is the file's, exactly),
+/// changes it and publishes again in format 8; the change is in the file it
+/// wrote. Answers that file's content.
 fn joins_and_answers(fixture_name: &str, member: &str) -> (tempfile::TempDir, PathBuf, Value) {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("Drive").join("ponte-sync.ponte");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::copy(fixture(fixture_name), &file).unwrap();
-    let taken = snapshot_of(&file);
+    let taken = content_of(&file);
     let mut store = Store::open(&dir.path().join("novo.sqlite3")).unwrap();
     store
         .save_intranet_config(&folder_config(member, vec![file.display().to_string()]))
         .unwrap();
     sync(&mut store);
-    // Everything of the file was adopted.
-    let adopted = normalized(&serde_json::to_value(store.export_snapshot().unwrap()).unwrap());
-    assert_eq!(adopted["documents"], taken["documents"], "documentos");
-    assert_eq!(adopted["tasks"], taken["tasks"], "tarefas");
-    assert_eq!(adopted, taken, "o retrato adotado");
+    // Everything of the file was adopted, as it is.
+    let adopted = serde_json::to_value(store.export_snapshot().unwrap()).unwrap();
+    for (section, value) in taken["snapshot"].as_object().unwrap() {
+        assert_eq!(&adopted[section], value, "retrato adotado: {section}");
+    }
     let doc1 = doc(&store, &number("a", 1));
     let note = format!("Nota de {member}");
     store.save_note(doc1, &note).unwrap();
@@ -516,7 +673,7 @@ fn joins_and_answers(fixture_name: &str, member: &str) -> (tempfile::TempDir, Pa
     new.title = format!("Tarefa de {member}");
     store.save_task(&new).unwrap();
     sync(&mut store);
-    let answered = payload_of(&file);
+    let answered = content_of(&file);
     let text = serde_json::to_string(&answered).unwrap();
     assert!(
         text.contains(&format!("Tarefa de {member}")),
