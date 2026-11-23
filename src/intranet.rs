@@ -5690,6 +5690,7 @@ impl Store {
                     created: entry.created.clone(),
                     idents: entry.idents.clone(),
                     refs: entry.refs.clone(),
+                    legacy: entry.refs.is_none(),
                 });
                 processed_outbox.push((entry.id, entry.uid.clone()));
             }
@@ -5897,6 +5898,18 @@ impl Store {
             }
             applied = best.payload.applied.iter().cloned().collect();
             journal = best.payload.journal.clone();
+            // The proofs of a change are resolved in the copy being built
+            // when it carries identities (a 9): its frame is the base's epoch
+            // and, for each change, the revision right before it.
+            let use_refs = !best.payload.snapshot.idents.is_empty();
+            let epoch = best.payload.snapshot.ident_epoch.clone();
+            let framed = |refs: crate::idrefs::Refs, revision: i64| crate::idrefs::Refs {
+                frame: crate::idrefs::FrameTag {
+                    epoch: epoch.clone(),
+                    revision,
+                },
+                ..refs
+            };
             // What each change created, with the numbers of the copy being
             // built (`None` when it was refused here), by change uid.
             let mut resolved: BTreeMap<String, Option<Vec<crate::idmap::CreatedId>>> = journal
@@ -5958,8 +5971,31 @@ impl Store {
                     receipt_doc: crate::renumber::receipt_document(&entry.created),
                 };
                 let identity = crate::renumber::edit_identity(&entry.mutation, &edit_source);
-                let remapped = ids
-                    .remap(&entry.mutation, &source.payload.snapshot, Some(&store))
+                // Without proofs, only a legacy change takes the translation
+                // of numbers (adendo §3 rule 1); one written above the
+                // lineage's `refs_since` is damaged. Another copy's `Frame`
+                // number never holds here: its frame is not this one.
+                let legacy = entry.legacy
+                    || !use_refs
+                    || source.header.level < sharedfolder::LEVEL
+                    || source
+                        .payload
+                        .refs_since
+                        .is_some_and(|since| entry.revision <= since);
+                let before = store.cabinet_revision()?;
+                let routed = route_change(
+                    (&entry.mutation, entry.base.as_ref()),
+                    entry.refs.as_ref().filter(|_| use_refs),
+                    legacy,
+                    Some((&store.conn, false)),
+                    (&ids, &source.payload.snapshot, Some(&store)),
+                );
+                let (base, refs) = match &routed {
+                    Ok((_, base, refs)) => (base.clone(), refs.clone()),
+                    Err(_) => (None, None),
+                };
+                let remapped = routed
+                    .map(|(mutation, ..)| mutation)
                     .and_then(|mutation| {
                         store
                             .keep_unseen_fields(mutation, source.header.schema_version)
@@ -5980,8 +6016,8 @@ impl Store {
                 // change may have been applied stops the whole exchange.
                 let mut broken: Option<anyhow::Error> = None;
                 let outcome = match &remapped {
-                    Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &store)
-                        .and_then(|_| {
+                    Ok(mutation) => {
+                        plain_edit_conflict(mutation, base.as_ref(), &store).and_then(|_| {
                             match store.execute_carrying(
                                 &entry.actor,
                                 mutation.clone(),
@@ -5996,7 +6032,8 @@ impl Store {
                                     Err(String::new())
                                 }
                             }
-                        }),
+                        })
+                    }
                     Err(reason) => Err(reason.clone()),
                 };
                 if let Some(error) = broken {
@@ -6025,15 +6062,15 @@ impl Store {
                         let revision = store.cabinet_revision()?;
                         applied.insert(entry.uid.clone());
                         resolved.insert(entry.uid.clone(), Some(created.clone()));
-                        let base = entry.base.as_ref().map(|base| {
-                            ids.remap(base, &source.payload.snapshot, None)
-                                .unwrap_or_else(|_| base.clone())
-                        });
+                        // Republished in this copy's numbers, with the proofs
+                        // rewritten to them (frozen rule 8).
                         journal.push(JournalEntry {
                             revision,
                             mutation,
                             base,
                             created,
+                            legacy: refs.is_none(),
+                            refs: refs.map(|refs| framed(refs, before)),
                             ..entry
                         });
                     }
@@ -6119,6 +6156,15 @@ impl Store {
             ));
             let mut creation_results: BTreeMap<i64, crate::renumber::CreationOutcome> =
                 BTreeMap::new();
+            // This library's own queue keeps its `Frame` numbers only on the
+            // very copy it last matched, with nothing else replayed on it
+            // yet (frozen rule 6: its own queue in its own frame).
+            let own_tag = crate::idrefs::FrameTag {
+                epoch: epoch.clone(),
+                revision: best.payload.snapshot.revision,
+            };
+            let own_frame = store.cabinet_revision()? == own_tag.revision
+                && best.content_identity() == cfg.folder_identity;
             for entry in &outbox {
                 processed_outbox.push((entry.id, entry.uid.clone()));
                 if applied.contains(&entry.uid) {
@@ -6166,6 +6212,7 @@ impl Store {
                                 created: Vec::new(),
                                 idents: Vec::new(),
                                 refs: entry.refs.clone().map(crate::idrefs::Refs::without_base),
+                                legacy: entry.refs.is_none(),
                             });
                         }
                         applied.insert(entry.uid.clone());
@@ -6191,8 +6238,24 @@ impl Store {
                     receipt_doc: crate::renumber::receipt_document(&entry.created),
                 };
                 let identity = crate::renumber::edit_identity(&entry.mutation, &edit_source);
-                let remapped = ids
-                    .remap(&entry.mutation, &*self, Some(&store))
+                // Level 2: each site by its proof; a `Frame` number holds
+                // only in the frame it was captured in. An older Ponte's
+                // entry through the translation of numbers, as before.
+                let before = store.cabinet_revision()?;
+                let holds = own_frame && entry.refs.as_ref().is_some_and(|r| r.frame == own_tag);
+                let routed = route_change(
+                    (&entry.mutation, entry.base.as_ref()),
+                    entry.refs.as_ref().filter(|_| use_refs),
+                    true,
+                    Some((&store.conn, holds)),
+                    (&ids, &*self, Some(&store)),
+                );
+                let (base, refs) = match &routed {
+                    Ok((_, base, refs)) => (base.clone(), refs.clone()),
+                    Err(_) => (None, None),
+                };
+                let remapped = routed
+                    .map(|(mutation, ..)| mutation)
                     .and_then(|mutation| {
                         store
                             .keep_unseen_fields(mutation, crate::storage::SCHEMA_VERSION)
@@ -6214,8 +6277,8 @@ impl Store {
                 // written or adopted, and the queue stays as it is.
                 let mut broken: Option<anyhow::Error> = None;
                 let outcome = match &remapped {
-                    Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &store)
-                        .and_then(|_| {
+                    Ok(mutation) => {
+                        plain_edit_conflict(mutation, base.as_ref(), &store).and_then(|_| {
                             // The rows it inserts there take the identities
                             // it gave its rows here.
                             match store.execute_carrying(
@@ -6232,7 +6295,8 @@ impl Store {
                                     Err(String::new())
                                 }
                             }
-                        }),
+                        })
+                    }
                     Err(reason) => Err(reason.clone()),
                 };
                 if let Some(error) = broken {
@@ -6257,10 +6321,6 @@ impl Store {
                         report.pushed += 1;
                         let revision = store.cabinet_revision()?;
                         applied.insert(entry.uid.clone());
-                        let base = entry.base.as_ref().map(|base| {
-                            ids.remap(base, &*self, None)
-                                .unwrap_or_else(|_| base.clone())
-                        });
                         journal.push(JournalEntry {
                             uid: entry.uid.clone(),
                             created_at: entry.created_at.clone(),
@@ -6272,7 +6332,10 @@ impl Store {
                             revision,
                             created,
                             idents: entry.idents.clone(),
-                            refs: entry.refs.clone(),
+                            // Republished in this copy's numbers (rule 8); a
+                            // legacy entry stays legacy above `refs_since`.
+                            legacy: refs.is_none(),
+                            refs: refs.map(|refs| framed(refs, before)),
                         });
                     }
                     (remapped, outcome) => {
@@ -6368,6 +6431,7 @@ impl Store {
             for entry in journal.iter_mut() {
                 entry.idents.clear();
                 entry.refs = None;
+                entry.legacy = false;
             }
         }
         // From which revision this lineage carries the proofs: kept from the
@@ -7126,7 +7190,9 @@ impl Store {
                         base: None,
                         created,
                         idents: Vec::new(),
-                        refs: entry.refs.clone().map(crate::idrefs::Refs::without_base),
+                        // Taken by the translation of numbers: legacy.
+                        refs: None,
+                        legacy: true,
                         ..entry.clone()
                     });
                 }
@@ -17098,6 +17164,7 @@ anual 05-02 Recesso
                 created: vec![],
                 idents: Vec::new(),
                 refs: None,
+                legacy: false,
             });
         let h = &copy.header;
         let req = crate::sharedfolder::WriteRequest {

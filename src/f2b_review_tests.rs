@@ -111,6 +111,7 @@ fn entry(
         created,
         idents: Vec::new(),
         refs: None,
+        legacy: false,
     }
 }
 

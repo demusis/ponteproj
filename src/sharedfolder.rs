@@ -167,6 +167,12 @@ pub struct JournalEntry {
     /// [`Payload::refs_since`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refs: Option<crate::idrefs::Refs>,
+    /// Taken by the legacy route (no proofs: queued by an older Ponte, or an
+    /// old copy's change): legacy whatever its revision. A change replayed
+    /// in a later write lands above `refs_since`, where `None` alone would
+    /// read as damaged (F3.0a2).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub legacy: bool,
 }
 
 /// Encrypted part of the file.

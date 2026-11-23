@@ -1116,6 +1116,7 @@ fn a_change_the_donor_refused_is_replayed_not_skipped_as_applied() {
         created: Vec::new(),
         idents: Vec::new(),
         refs: None,
+        legacy: false,
     };
     std::fs::copy(&f1, &f2).unwrap();
     std::fs::copy(&f1, &f3).unwrap();
