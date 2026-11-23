@@ -261,4 +261,20 @@ class PhoneWordsTest {
         assertEquals(PhoneWords.GENERIC, PhoneWords.explain(NullPointerException()))
         assertFalse(PhoneWords.explain(e).contains("Check failed"))
     }
+
+    /** F2b: the Drive file became the stub of the new format; the person picks the new file once. */
+    @Test fun aMovedFileAsksToPickTheNewFileOnceInSettings() {
+        val core = "O arquivo da pasta foi atualizado. Escolha em Ajustes o arquivo ponte-sync-formato9.ponte, " +
+            "na mesma pasta do Drive."
+        assertEquals(
+            "O arquivo de sincronização do computador foi atualizado para o formato novo do Ponte. " +
+                "Em Ajustes, toque em Trocar arquivo e escolha ponte-sync-formato9.ponte, na mesma pasta do Drive. " +
+                "Isso só precisa ser feito uma vez; nada foi alterado neste aparelho.",
+            adapt(core),
+        )
+        assertEquals(
+            PhoneWords.movedFile("ponte-sync-formato9.ponte"),
+            adapt(core),
+        )
+    }
 }

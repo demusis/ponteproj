@@ -2231,6 +2231,8 @@ mod planning_tests {
                 replacement_notes: Default::default(),
                 accept_bad_safety_copy: false,
                 upgrade_notice: None,
+                device_dir: None,
+                folder_role: Default::default(),
             };
             partial.ensure_tasks().unwrap();
             assert!(version(&partial) < crate::storage::SCHEMA_VERSION);

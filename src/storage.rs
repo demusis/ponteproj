@@ -75,6 +75,13 @@ pub struct Store {
     /// at this opening (it opened as it was, schema 21): told to the person
     /// once ([`Store::take_upgrade_notice`]); the next opening tries again.
     pub(crate) upgrade_notice: Option<String>,
+    /// Where this device keeps what must outlive a library (the minimum
+    /// format of each shared folder, `formatfloor`); `None`: the default
+    /// (`Store::device_dir`).
+    pub(crate) device_dir: Option<std::path::PathBuf>,
+    /// Which kind of device exchanges through the folder (the phone never
+    /// promotes it to format 9).
+    pub(crate) folder_role: crate::formatfloor::FolderRole,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -565,6 +572,8 @@ impl Store {
             replacement_notes: Default::default(),
             accept_bad_safety_copy: false,
             upgrade_notice: None,
+            device_dir: None,
+            folder_role: crate::formatfloor::FolderRole::Desktop,
         };
         store.ensure_tasks()?;
         crate::tasks::backfill_task_uids(&mut store.conn)?;

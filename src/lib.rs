@@ -87,6 +87,14 @@ mod f2a_review_tests;
 mod f2a_tests;
 /// Identities of the items (library schema 22).
 pub mod idents;
+/// F2b of Frente F: acceptance tests of the shared file of format 9.
+#[cfg(test)]
+mod f2b_tests;
+/// F2b: the parity machinery of F2a extended to the shared file of format 9.
+#[cfg(test)]
+mod f2b_parity;
+/// The minimum format of each shared folder this device has seen (F2b).
+pub mod formatfloor;
 
 pub mod dossier;
 

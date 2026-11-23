@@ -50,6 +50,49 @@ pub struct SlotIdent {
     pub ident: String,
 }
 
+/// One item's identity as the shared file of format 9 carries it:
+/// `["document",12,"<32 hex>"]` (kind, row id, identity).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct IdentRow(pub String, pub i64, pub String);
+
+/// Checks the identities a snapshot carries (F2b, design §3.1): stub.
+pub fn check(
+    _snapshot: &crate::intranet::CabinetSnapshot,
+    _header: Option<&crate::sharedfolder::Header>,
+) -> Result<()> {
+    Ok(())
+}
+
+impl Store {
+    /// [`Store::export_snapshot`] with the identity of every row it projects
+    /// and `epoch` (stub).
+    pub fn export_with_idents(&self, _epoch: &str) -> Result<crate::intranet::CabinetSnapshot> {
+        self.export_snapshot()
+    }
+}
+
+/// Where the identities of this library come from (`ident_state`): the
+/// origin (`provisional` when nothing says otherwise), the lineage and the
+/// epoch.
+pub fn origin(conn: &Connection) -> Result<(String, Option<String>, Option<String>)> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='ident_state')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(("provisional".into(), None, None));
+    }
+    Ok(conn
+        .query_row(
+            "SELECT origin,lineage,epoch FROM ident_state WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?
+        .unwrap_or_else(|| ("provisional".into(), None, None)))
+}
+
 /// The rows a logged execution inserted, (ident kind, row id), with the
 /// identity each was given in the write that created it.
 pub(crate) type Inserted = std::collections::BTreeMap<(String, i64), String>;
@@ -640,7 +683,34 @@ pub mod hooks {
         pub static MIGRATION_COPY_WRITTEN: RefCell<Option<Pause>> = RefCell::new(None);
         /// What the measure of free space answers (once).
         pub static FREE_SPACE: RefCell<Option<std::io::Result<u64>>> = const { RefCell::new(None) };
+        /// Whether a folder exchange of this thread may promote the folder
+        /// to format 9. The product always may; the tests of the old
+        /// exchange (format 8) keep it off, the tests of F2b turn it on.
+        pub static PROMOTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Runs once in a promotion, after the files of format 9 were
+        /// written (and the floor raised) and before the stubs and the
+        /// local adoption.
+        pub static AFTER_NINE_WRITTEN: RefCell<Option<Pause>> = RefCell::new(None);
+        /// The next promotion stops (as a crash would) right after the
+        /// files of format 9 were written.
+        pub static CRASH_AFTER_NINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Runs once right before a transport file is renamed into place,
+        /// with its path.
+        pub static BEFORE_RENAME: RefCell<Option<Box<dyn FnOnce(&std::path::Path)>>> = RefCell::new(None);
+        /// Runs once in a folder exchange, right before the folders are
+        /// written.
+        pub static BEFORE_FOLDER_WRITE: RefCell<Option<Pause>> = RefCell::new(None);
+        /// Runs once in a folder exchange, right before the local adoption.
+        pub static BEFORE_ADOPTION: RefCell<Option<Pause>> = RefCell::new(None);
+        /// The next export of identities leaves one triple out.
+        pub static DROP_TRIPLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
+
+    /// The library file of a main computer whose next answer to a change
+    /// carries a snapshot with a broken identity (its server runs on
+    /// another thread).
+    pub static CORRUPT_MUTATED: std::sync::Mutex<Option<std::path::PathBuf>> =
+        std::sync::Mutex::new(None);
 }
 
 /// Helpers for tests of this crate and of the phone core.
@@ -654,6 +724,20 @@ pub mod test_support {
     /// `sqlite_master` of a fresh library of schema 21 (Ponte 0.51), as
     /// (type, name, table, sql), dumped from that build.
     const SCHEMA_21: &str = include_str!("../tests/fixtures/esquema-acervo-21.json");
+
+    /// Every identity of a library, by (kind, row).
+    pub fn all_idents(
+        store: &crate::storage::Store,
+    ) -> std::collections::BTreeMap<(String, i64), String> {
+        store
+            .conn
+            .prepare("SELECT kind,row_id,ident FROM item_ident")
+            .and_then(|mut s| {
+                s.query_map([], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 
     pub fn schema_21() -> Vec<(String, String, String, Option<String>)> {
         serde_json::from_str(SCHEMA_21).expect("esquema-acervo-21.json")

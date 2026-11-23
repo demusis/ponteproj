@@ -779,6 +779,7 @@ fn old_request(mutation: IntranetMutation) -> RpcRequest {
         client_schema: crate::intranet::PROJECTS_SCHEMA - 1,
         expected_generation: String::new(),
         mutation_uid: String::new(),
+        idents: Vec::new(),
     }
 }
 
@@ -820,6 +821,7 @@ fn an_older_client_saving_a_task_keeps_the_project_it_cannot_see() {
             client_schema: crate::storage::SCHEMA_VERSION,
             expected_generation: String::new(),
             mutation_uid: String::new(),
+            idents: Vec::new(),
         },
     )
     .unwrap();
@@ -1110,6 +1112,7 @@ fn a_change_the_donor_refused_is_replayed_not_skipped_as_applied() {
         base: None,
         revision,
         created: Vec::new(),
+        idents: Vec::new(),
     };
     std::fs::copy(&f1, &f2).unwrap();
     std::fs::copy(&f1, &f3).unwrap();
@@ -1344,6 +1347,7 @@ fn only_an_explicit_removal_takes_the_project_off_a_task_through_the_main_comput
                 client_schema: crate::storage::SCHEMA_VERSION,
                 expected_generation: String::new(),
                 mutation_uid: String::new(),
+                idents: Vec::new(),
             },
         )
         .unwrap();

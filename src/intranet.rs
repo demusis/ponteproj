@@ -623,6 +623,16 @@ pub struct CabinetSnapshot {
     /// and never written into a transport file.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub generation: String,
+    /// The identity of every item this copy carries (format 9 and the team
+    /// protocol V2): one triple per row actually projected above, sorted by
+    /// kind, then row. Absent from what a format 8 file or an older Ponte
+    /// carries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub idents: Vec<crate::idents::IdentRow>,
+    /// When the identities were cut (format 9: the folder's promotion; V2:
+    /// the main computer's nonce). Absent where `idents` is.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ident_epoch: String,
 }
 
 /// The first library schema that stores recursos.
@@ -1149,6 +1159,10 @@ pub enum RpcRequest {
     Ping,
     Sync {
         since_revision: Option<i64>,
+        /// The epoch of the identities this client holds (V2): the main
+        /// computer answers "up to date" only when it is its own.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        known_epoch: String,
     },
     FetchFileBytes {
         file_id: i64,
@@ -1176,6 +1190,18 @@ pub enum RpcRequest {
         /// when it is sent again. Empty from a Ponte that does not send it.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         mutation_uid: String,
+        /// The identities of the rows the change inserted on the sender
+        /// (V2): the main computer gives them to the rows it inserts.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        idents: Vec<crate::idents::SlotIdent>,
+    },
+    /// The team protocol V2 (F2b): every request of a Ponte that carries
+    /// identities. A main computer of this build answers the five requests
+    /// above, sent bare by an older Ponte, with 503 before opening its
+    /// library.
+    V2 {
+        level: u32,
+        request: Box<RpcRequest>,
     },
 }
 
@@ -1195,6 +1221,12 @@ pub enum RpcResponse {
         /// History of the main computer (empty from one that does not say).
         #[serde(default, skip_serializing_if = "String::is_empty")]
         generation: String,
+        /// The epoch of the main computer's identities (V2).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        epoch: String,
+        /// The level of format 9 the main computer speaks (V2).
+        #[serde(default)]
+        level: u32,
     },
     Snapshot(Box<CabinetSnapshot>),
     FileBytes {
@@ -1217,6 +1249,9 @@ pub enum RpcResponse {
         /// from a library that has moved on since.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         created: Option<Vec<crate::idmap::CreatedId>>,
+        /// The identities of the rows the change inserted there (V2).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        idents: Vec<crate::idents::SlotIdent>,
     },
     Error {
         message: String,
@@ -3070,6 +3105,8 @@ impl Store {
             projects: self.export_projects()?,
             schema_version: crate::storage::SCHEMA_VERSION,
             generation: String::new(),
+            idents: Vec::new(),
+            ident_epoch: String::new(),
         })
     }
 
@@ -4232,6 +4269,7 @@ impl Store {
                 &cfg,
                 &RpcRequest::Sync {
                     since_revision: None,
+                    known_epoch: String::new(),
                 },
             ) {
                 Ok(RpcResponse::Snapshot(snap)) => Some(snap),
@@ -4357,6 +4395,7 @@ impl Store {
                         client_schema: crate::storage::SCHEMA_VERSION,
                         expected_generation: cfg.host_generation.clone(),
                         mutation_uid: sent.uid.clone(),
+                        idents: Vec::new(),
                     },
                     &mut reached,
                 ) {
@@ -4441,7 +4480,10 @@ impl Store {
         };
         let ask = |store: &mut Store, since_revision: Option<i64>| match send_rpc_classified(
             &cfg,
-            &RpcRequest::Sync { since_revision },
+            &RpcRequest::Sync {
+                since_revision,
+                known_epoch: String::new(),
+            },
         ) {
             Ok(response) => {
                 store.note_host_reachability(true);
@@ -4458,6 +4500,7 @@ impl Store {
             RpcResponse::UpToDate {
                 revision,
                 generation,
+                ..
             } => self.host_history_notice(&cfg, *revision, generation),
             RpcResponse::Snapshot(snapshot) => {
                 self.host_history_notice(&cfg, snapshot.revision, &snapshot.generation)
@@ -5022,6 +5065,7 @@ impl Store {
                     base: entry.base.clone(),
                     revision: 0,
                     created: entry.created.clone(),
+                    idents: entry.idents.clone(),
                 });
                 processed_outbox.push((entry.id, entry.uid.clone()));
             }
@@ -5457,6 +5501,7 @@ impl Store {
                                 base: None,
                                 revision,
                                 created: Vec::new(),
+                                idents: Vec::new(),
                             });
                         }
                         applied.insert(entry.uid.clone());
@@ -5562,6 +5607,7 @@ impl Store {
                             base,
                             revision,
                             created,
+                            idents: entry.idents.clone(),
                         });
                     }
                     (remapped, outcome) => {
@@ -6070,6 +6116,7 @@ impl Store {
                     client_schema: crate::storage::SCHEMA_VERSION,
                     expected_generation: cfg.host_generation.clone(),
                     mutation_uid: uid.clone(),
+                    idents: Vec::new(),
                 },
                 &mut reached,
             )
@@ -9689,6 +9736,12 @@ pub struct FolderSyncReport {
     /// (found when the copy was adopted; each is also a notice kept until
     /// the person dismisses it).
     pub renumbered: Vec<crate::renumber::RenumberNotice>,
+    /// Why the folder is not moved to the shared file of format 9 yet
+    /// ("Sincronize antes de atualizar o arquivo da pasta: …"): shown until
+    /// an exchange promotes it.
+    pub promotion_wait: Option<String>,
+    /// This exchange moved the folder to the shared file of format 9.
+    pub promoted: bool,
 }
 
 impl FolderSyncReport {
@@ -10659,13 +10712,15 @@ pub(crate) fn process_rpc(
                 schema_version: crate::storage::SCHEMA_VERSION,
             })
         }
-        RpcRequest::Sync { since_revision } => {
+        RpcRequest::Sync { since_revision, .. } => {
             let generation = store.host_generation()?;
             let revision = store.cabinet_revision()?;
             if since_revision == Some(revision) && revision > 0 {
                 return Ok(RpcResponse::UpToDate {
                     revision,
                     generation,
+                    epoch: String::new(),
+                    level: 0,
                 });
             }
             let mut snapshot = store.export_snapshot()?;
@@ -10695,6 +10750,7 @@ pub(crate) fn process_rpc(
             client_schema,
             expected_generation,
             mutation_uid,
+            idents: _,
         } => {
             ensure!(
                 !actor.trim().is_empty()
@@ -10720,6 +10776,7 @@ pub(crate) fn process_rpc(
                         reply: receipt.reply,
                         snapshot: Box::new(snapshot),
                         created: receipt.created,
+                        idents: Vec::new(),
                     });
                 }
             }
@@ -10762,8 +10819,10 @@ pub(crate) fn process_rpc(
                 reply,
                 snapshot: Box::new(snapshot),
                 created,
+                idents: Vec::new(),
             })
         }
+        RpcRequest::V2 { request, .. } => process_rpc(store, host_cfg, *request),
     }
 }
 
@@ -15328,6 +15387,7 @@ anual 05-02 Recesso
                 base: None,
                 revision: copy.header.revision,
                 created: vec![],
+                idents: Vec::new(),
             });
         let h = &copy.header;
         let req = crate::sharedfolder::WriteRequest {
@@ -17010,6 +17070,7 @@ mod resources_sync_tests {
             expected_generation: String::new(),
             mutation_uid: String::new(),
             mutation: before[0].mutation.clone(),
+            idents: Vec::new(),
         };
         assert!(matches!(
             send_rpc_classified(&cfg, &request),
@@ -17114,6 +17175,7 @@ mod resources_sync_tests {
                 expected_version: None,
                 no_project: false,
             },
+            idents: Vec::new(),
         };
         assert!(
             matches!(send_rpc_classified(&cfg, &request), Err(RpcError::Rejected(message)) if message.contains("Atualize o Ponte"))
@@ -17210,6 +17272,7 @@ mod resources_sync_tests {
                     expected_generation: String::new(),
                     mutation_uid: String::new(),
                     mutation,
+                    idents: Vec::new(),
                 },
             );
             assert!(
@@ -17231,6 +17294,7 @@ mod resources_sync_tests {
                     expected_version: None,
                     no_project: false,
                 },
+                idents: Vec::new(),
             },
         );
         assert!(matches!(in_project, Err(RpcError::Rejected(_))));
@@ -17246,6 +17310,7 @@ mod resources_sync_tests {
                     expected_version: None,
                     no_project: false,
                 },
+                idents: Vec::new(),
             },
         );
         assert!(matches!(ordinary, Err(RpcError::Rejected(_))));
@@ -17347,6 +17412,7 @@ mod resources_sync_tests {
                 expected_generation: String::new(),
                 mutation_uid: String::new(),
                 mutation,
+                idents: Vec::new(),
             },
         );
         assert!(
@@ -17366,6 +17432,7 @@ mod resources_sync_tests {
                     note: "x".into(),
                     expected_version: None,
                 },
+                idents: Vec::new(),
             },
         );
         assert!(matches!(other, Err(RpcError::Rejected(_))));
@@ -17473,6 +17540,7 @@ mod resources_sync_tests {
                     expected_generation: String::new(),
                     mutation_uid: String::new(),
                     mutation,
+                    idents: Vec::new(),
                 },
             )
         };
@@ -18152,6 +18220,7 @@ mod host_history_tests {
                 client_schema: crate::storage::SCHEMA_VERSION,
                 expected_generation: String::new(),
                 mutation_uid: String::new(),
+                idents: Vec::new(),
             },
         )
         .unwrap();
@@ -18357,6 +18426,8 @@ mod host_history_tests {
         let text = serde_json::to_string(&RpcResponse::UpToDate {
             revision: 3,
             generation: String::new(),
+            epoch: String::new(),
+            level: 0,
         })
         .unwrap();
         assert_eq!(text, r#"{"UpToDate":{"revision":3}}"#);
@@ -18669,6 +18740,7 @@ Connection: close
             client_schema: crate::storage::SCHEMA_VERSION,
             expected_generation: String::new(),
             mutation_uid: "cccccccc-1".into(),
+            idents: Vec::new(),
         };
         let created_of = |response: RpcResponse| match response {
             RpcResponse::Mutated {
@@ -18850,6 +18922,7 @@ Connection: close
                 client_schema: crate::storage::SCHEMA_VERSION,
                 expected_generation: String::new(),
                 mutation_uid: uid.into(),
+                idents: Vec::new(),
             }
         };
         let id_of = |response: RpcResponse| match response {

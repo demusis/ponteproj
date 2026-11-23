@@ -5937,4 +5937,225 @@ mod tests {
         let (_, problems, _) = ponteproj::idents::test_support::check_library(&path).unwrap();
         assert!(problems.is_empty(), "{problems:?}");
     }
+
+    // ---------------------------------------------------------- F2b --
+
+    fn promote_on() {
+        ponteproj::idents::hooks::PROMOTION.with(|c| c.set(true));
+    }
+
+    fn phone_idents(store: &Store) -> std::collections::BTreeMap<(String, i64), String> {
+        ponteproj::idents::test_support::all_idents(store)
+    }
+
+    fn triples_of(path: &Path) -> std::collections::BTreeMap<(String, i64), String> {
+        match ponteproj::sharedfolder::read_any(path, KEY).unwrap() {
+            Some(ponteproj::sharedfolder::Found::Copy(copy)) => copy
+                .payload
+                .snapshot
+                .idents
+                .iter()
+                .map(|t| ((t.0.clone(), t.1), t.2.clone()))
+                .collect(),
+            _ => panic!("not a copy: {}", path.display()),
+        }
+    }
+
+    /// The computer promotes the folder; the phone had joined it at format 8
+    /// and made a task meanwhile. Returns (computer, drive, phone, the 9).
+    fn promoted_with_phone(dir: &Path) -> (Store, PathBuf, Store, PathBuf) {
+        let (mut computer, drive, _) = first_transport(dir);
+        let work = dir.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let mut phone = open(dir, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work.display().to_string(), "", KEY).unwrap();
+        create_task(&mut phone, &json!({"title": "Tarefa do celular"})).unwrap();
+        promote_on();
+        let cfg = computer.load_intranet_config().unwrap();
+        let report = computer
+            .sync_with_folders(&cfg, KEY, false, &ponteproj::ai::Reporter::silent())
+            .unwrap();
+        assert!(report.promoted, "{:?}", report.promotion_wait);
+        let nine = ponteproj::sharedfolder::nine_path(&drive);
+        assert!(nine.is_file());
+        (computer, drive, phone, nine)
+    }
+
+    #[test]
+    fn f2b_the_phone_refuses_the_stub_before_any_local_write() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (_computer, drive, mut phone, _nine) = promoted_with_phone(&dir.0);
+        let lineage = phone.load_intranet_config().unwrap().folder_lineage;
+        // The app copied the Drive file it uses, now a stub.
+        let work = dir.0.join("work-stub.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let stub = std::fs::read(&work).unwrap();
+        let before = phone_state(&phone);
+        let error = sync_paths(&mut phone, &work.display().to_string(), "", KEY)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("O arquivo da pasta foi atualizado. Escolha em Ajustes o arquivo ponte-sync-formato9.ponte, na mesma pasta do Drive."),
+            "{error}"
+        );
+        assert_eq!(phone_state(&phone), before, "nothing changed on the phone");
+        assert_eq!(std::fs::read(&work).unwrap(), stub, "the stub is left alone");
+        assert_eq!(phone.format_floor(&lineage).unwrap(), 9, "floor 9");
+        assert!(leftovers(&dir.0).is_empty());
+    }
+
+    #[test]
+    fn f2b_the_phone_chooses_the_new_file_once() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, mut phone, nine) = promoted_with_phone(&dir.0);
+        let stub_work = dir.0.join("work-stub.ponte");
+        std::fs::copy(&drive, &stub_work).unwrap();
+        assert!(sync_paths(&mut phone, &stub_work.display().to_string(), "", KEY).is_err());
+        // The person picks ponte-sync-formato9.ponte: the app copies it.
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&nine, &work).unwrap();
+        let answer = sync_paths(&mut phone, &work.display().to_string(), "", KEY).unwrap();
+        assert_eq!(answer["written"], json!(true), "{answer}");
+        assert_eq!(answer["pending_settled"], json!(true), "{answer}");
+        let header = ponteproj::sharedfolder::read_header(&work).unwrap().unwrap();
+        assert_eq!(header.format, 9, "the phone writes the 9");
+        assert_eq!(phone_idents(&phone), triples_of(&work));
+        assert_eq!(phone.list_offline_outbox().unwrap().len(), 0);
+        // Uploaded to the new file; the computer takes the phone's task.
+        std::fs::copy(&work, &nine).unwrap();
+        let cfg = computer.load_intranet_config().unwrap();
+        computer
+            .sync_with_folders(&cfg, KEY, false, &ponteproj::ai::Reporter::silent())
+            .unwrap();
+        assert!(computer
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .any(|t| t.title == "Tarefa do celular"));
+        // The next exchange of the phone uses the same file again.
+        std::fs::copy(&nine, &work).unwrap();
+        sync_paths(&mut phone, &work.display().to_string(), "", KEY).unwrap();
+        assert_eq!(phone_idents(&phone), triples_of(&nine));
+        let _ = drive;
+    }
+
+    #[test]
+    fn f2b_b23_phone_8_pendings_are_kept_after_the_floor() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (_computer, drive, mut phone, nine) = promoted_with_phone(&dir.0);
+        // Two pending copies of format 8, written before the floor: one
+        // holds a task alone (self-contained), the other an attachment to a
+        // document that exists (it may be another item now).
+        let base = match ponteproj::sharedfolder::read_any(&nine, KEY).unwrap() {
+            Some(ponteproj::sharedfolder::Found::Copy(copy)) => copy,
+            _ => panic!(),
+        };
+        let doc = base.payload.snapshot.documents[0].id;
+        let write_pending = |path: &Path, uid: &str, mutation: ponteproj::intranet::IntranetMutation, created: Vec<ponteproj::idmap::CreatedId>| {
+            let mut payload = ponteproj::sharedfolder::Payload {
+                snapshot: base.payload.snapshot.clone(),
+                applied: base.payload.applied.clone(),
+                journal: base.payload.journal.clone(),
+            };
+            payload.snapshot.idents.clear();
+            payload.snapshot.ident_epoch.clear();
+            for e in payload.journal.iter_mut() {
+                e.idents.clear();
+            }
+            payload.applied.push(uid.into());
+            payload.journal.push(ponteproj::sharedfolder::JournalEntry {
+                uid: uid.into(),
+                created_at: "2026-11-20T12:00:00Z".into(),
+                actor: "Celular de teste".into(),
+                writer: "celular".into(),
+                label: "Alteração do celular".into(),
+                mutation,
+                base: None,
+                revision: base.header.revision + 1,
+                created,
+                idents: Vec::new(),
+            });
+            ponteproj::sharedfolder::write(
+                path,
+                KEY,
+                &ponteproj::sharedfolder::WriteRequest {
+                    lineage: &base.header.lineage,
+                    revision: base.header.revision + 1,
+                    writer: "celular",
+                    writer_name: "Celular",
+                    schema_version: 21,
+                },
+                &payload,
+                &base.blobs,
+            )
+            .unwrap();
+        };
+        let mut task = ponteproj::tasks::Task::standalone();
+        task.title = "Tarefa só na pendente".into();
+        let pending = dir.0.join("pendente.ponte");
+        write_pending(
+            &pending,
+            "pendente-tarefa",
+            ponteproj::intranet::IntranetMutation::SaveTask {
+                task,
+                expected_version: None,
+                no_project: false,
+            },
+            vec![ponteproj::idmap::CreatedId {
+                kind: ponteproj::idmap::IdKind::Task,
+                slot: String::new(),
+                id: 501,
+            }],
+        );
+        let staged = dir.0.join("pendente-novo.ponte");
+        write_pending(
+            &staged,
+            "pendente-anexo",
+            ponteproj::intranet::IntranetMutation::AddAttachment {
+                owner_kind: "document".into(),
+                owner_id: doc,
+                name: "nota.txt".into(),
+                description: "Anexo do celular antigo".into(),
+                data_base64: "dGV4dG8=".into(),
+            },
+            vec![ponteproj::idmap::CreatedId {
+                kind: ponteproj::idmap::IdKind::Attachment,
+                slot: String::new(),
+                id: 502,
+            }],
+        );
+        let before = (std::fs::read(&pending).unwrap(), std::fs::read(&staged).unwrap());
+        let _ = drive;
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&nine, &work).unwrap();
+        let pendings = format!("{}\n{}", pending.display(), staged.display());
+        let answer = sync_paths(&mut phone, &work.display().to_string(), &pendings, KEY).unwrap();
+        assert_eq!(answer["pending_settled"], json!(false), "{answer}");
+        assert_eq!(
+            ponteproj::sharedfolder::read_header(&work).unwrap().unwrap().format,
+            9,
+            "the write target is the 9 work file"
+        );
+        assert_eq!(
+            (std::fs::read(&pending).unwrap(), std::fs::read(&staged).unwrap()),
+            before,
+            "the pending copies are kept as they are"
+        );
+        assert!(phone
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .any(|t| t.title == "Tarefa só na pendente"));
+        assert!(phone
+            .list_sync_conflicts()
+            .unwrap()
+            .iter()
+            .any(|c| c.reason.contains("versão anterior do Ponte")));
+    }
 }

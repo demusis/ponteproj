@@ -48,6 +48,21 @@ use std::path::{Path, PathBuf};
 /// loads with no facts, proposals or proposal ids (every new field has a
 /// default).
 pub const FORMAT: u32 = 8;
+/// Format 9 (schema 22, F2b of Frente F) carries the identity of every item
+/// (`CabinetSnapshot::idents`, sorted triples) and the epoch they were cut
+/// in. It lives in a file of its own beside the old one
+/// ([`nine_path`]), and the old name then holds a stub that points to it
+/// (`Header::points_to`): a Ponte that knows formats up to 8 refuses both
+/// with the "versão mais nova" message, before writing anything. Until a
+/// folder is promoted, this build still writes format 8 there.
+pub const FORMAT_9: u32 = 9;
+/// The newest format this build reads.
+pub const NEWEST_FORMAT: u32 = FORMAT_9;
+/// The level of the format 9 this build writes and reads (a reader refuses
+/// a higher one: "Atualize o Ponte").
+pub const LEVEL: u32 = 1;
+/// What the file of format 9 adds to the stem of the configured name.
+pub const NINE_SUFFIX: &str = "-formato9";
 /// How every transport file of a shared folder starts.
 pub const SYNC_MAGIC: &[u8] = b"PONTE-SYNC1\n";
 const MAGIC: &[u8] = SYNC_MAGIC;
@@ -79,6 +94,33 @@ pub struct Header {
     pub written_at: String,
     pub salt: String,
     pub nonce: String,
+    /// Level of format 9 (absent, 0, before it).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub level: u32,
+    /// A stub: the name of the file of format 9 beside it (empty otherwise).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub points_to: String,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// Where the file of format 9 of the configured path `path` lives: beside
+/// it, `<stem>-formato9.ponte`.
+pub fn nine_path(path: &Path) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ponte-sync");
+    path.with_file_name(format!("{stem}{NINE_SUFFIX}.ponte"))
+}
+
+/// What a transport file holds: a copy, or a stub saying the folder moved
+/// to the file of format 9 (`moved_to`, a bare file name beside it).
+pub enum Found {
+    Copy(Copy),
+    Moved { header: Header, moved_to: String },
 }
 
 /// One change carried along so that a diverged copy can be reconciled.
@@ -99,6 +141,10 @@ pub struct JournalEntry {
     /// can translate later changes.
     #[serde(default)]
     pub created: Vec<crate::idmap::CreatedId>,
+    /// The identities of the rows the change inserted, by slot (format 9
+    /// only), so that a replay gives them to the rows it inserts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub idents: Vec<crate::idents::SlotIdent>,
 }
 
 /// Encrypted part of the file.
@@ -286,10 +332,36 @@ pub fn read_header(path: &Path) -> Result<Option<Header>> {
     read_header_up_to(path, FORMAT)
 }
 
+/// Reads a copy or a stub. `None` when the file does not exist.
+pub fn read_any(path: &Path, password: &str) -> Result<Option<Found>> {
+    Ok(read(path, password)?.map(Found::Copy))
+}
+
+/// [`write`] of a copy of format 9 (stub).
+pub fn write_nine(
+    path: &Path,
+    password: &str,
+    request: &WriteRequest<'_>,
+    payload: &Payload,
+    blobs: &Blobs,
+) -> Result<Header> {
+    write(path, password, request, payload, blobs)
+}
+
+/// Writes a stub at `path` that points to `moved_to` (a file name beside it).
+pub fn write_stub(
+    _path: &Path,
+    _password: &str,
+    _request: &WriteRequest<'_>,
+    _moved_to: &str,
+) -> Result<Header> {
+    anyhow::bail!("ainda não implementado")
+}
+
 /// [`read_header`] for a reader that knows the formats up to `newest`: this
 /// is how every build refuses the file of a newer one (and how the tests
 /// stand in for an older build).
-fn read_header_up_to(path: &Path, newest: u32) -> Result<Option<Header>> {
+pub(crate) fn read_header_up_to(path: &Path, newest: u32) -> Result<Option<Header>> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -426,6 +498,8 @@ pub(crate) fn write_stamped(
         written_at: written_at.to_owned(),
         salt: STANDARD.encode(&salt),
         nonce: STANDARD.encode(&nonce_bytes),
+        level: 0,
+        points_to: String::new(),
     };
     let header_bytes = serde_json::to_vec(&header)?;
     ensure!(!header_bytes.contains(&b'\n'), "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.");

@@ -243,4 +243,22 @@ class SyncIoTest {
             assertEquals(listOf("novo", "pendente.ponte"), dir.list()!!.sorted())
         } finally { dir.deleteRecursively() }
     }
+
+    /**
+     * F2b (B15): before EVERY write to the Drive file, retries included, the file there must
+     * still be the one that was read, or what this phone's own earlier attempt left there:
+     * anything else is another writer (an older Ponte over the stub) and nothing is written.
+     */
+    @Test fun theDestinationIsCheckedAgainBeforeEveryAttemptRetriesIncluded() {
+        val original = SyncIo.Digest(hex(bytes(10)), 10)
+        val ours = SyncIo.Digest(hex(bytes(12)), 12)
+        val other = SyncIo.Digest(hex(bytes(14)), 14)
+        // First attempt: only the file that was read.
+        assertTrue(SyncIo.mayWrite(original, null, original))
+        assertFalse(SyncIo.mayWrite(original, null, other))
+        // A retry: the file read, or what our own failed attempt left.
+        assertTrue(SyncIo.mayWrite(original, ours, original))
+        assertTrue(SyncIo.mayWrite(original, ours, ours))
+        assertFalse(SyncIo.mayWrite(original, ours, other))
+    }
 }
