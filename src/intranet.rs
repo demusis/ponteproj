@@ -119,6 +119,12 @@ pub struct IntranetConfig {
     /// first exchange of this build.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub folder_identity: String,
+    /// Shared folder: the level of format 9 of the copy this library last
+    /// matched in the folders (adopted or written), recorded with
+    /// `synced_revision`. 0: not recorded (an 8, or a Ponte before F3, which
+    /// drops this field when it saves: its 9 is at most level 1).
+    #[serde(default, skip_serializing_if = "is_zero_level")]
+    pub synced_level: u32,
     /// Client: this library already had content of its own when it was
     /// pointed at a main computer it never exchanged with (a restored
     /// library, a computer that worked alone). The first exchange then asks
@@ -146,6 +152,7 @@ impl std::fmt::Debug for IntranetConfig {
             .field("folder_writer", &self.folder_writer)
             .field("folder_lineage", &self.folder_lineage)
             .field("host_generation", &self.host_generation)
+            .field("synced_level", &self.synced_level)
             .finish()
     }
 }
@@ -210,6 +217,7 @@ impl Default for IntranetConfig {
             folder_lineage: String::new(),
             host_generation: String::new(),
             folder_identity: String::new(),
+            synced_level: 0,
             join_replaces_items: false,
         }
     }
@@ -5289,8 +5297,34 @@ impl Store {
             // Only before this library took any 9 of this folder: after that,
             // an older 9 (of another epoch too) is refused like any older copy.
             let first_nine = completing;
+            // Nor a base of a higher level than the copy this library last
+            // matched (a proven move from 9/1 to 9/2, adendo §1): the 9/1
+            // copies went on in revisions of their own, and are donors now
+            // (Q6). The level is the one recorded with the revision; for a
+            // library a Ponte before F3 matched, its guard proves it, read
+            // authenticated, at the very revision and content recorded.
+            let matched_level = if cfg.synced_level > 0 {
+                Some(cfg.synced_level)
+            } else {
+                donors
+                    .iter()
+                    .find(|c| {
+                        guard_path.as_deref() == Some(c.path.as_path())
+                            && c.header.format >= sharedfolder::FORMAT_9
+                            && c.header.lineage == lineage
+                            && c.header.writer == cfg.folder_writer
+                            && c.header.revision == cfg.synced_revision
+                            && !cfg.folder_identity.is_empty()
+                            && c.content_identity() == cfg.folder_identity
+                    })
+                    .map(|c| c.header.level)
+            };
+            let level_up = nine_mode && matched_level.is_some_and(|l| best.header.level > l);
             ensure!(
-                best.header.revision >= cfg.synced_revision || overwritten || first_nine,
+                best.header.revision >= cfg.synced_revision
+                    || overwritten
+                    || first_nine
+                    || level_up,
                 "A pasta ainda não recebeu a versão mais recente (revisão {} na pasta, {} neste computador). Espere a nuvem terminar de sincronizar e tente de novo.",
                 best.header.revision,
                 cfg.synced_revision
@@ -6932,6 +6966,7 @@ impl Store {
         updated.last_sync_at = now_iso();
         updated.folder_lineage = lineage.to_owned();
         updated.folder_identity = sharedfolder::snapshot_identity(&final_snapshot);
+        updated.synced_level = if nine_out { sharedfolder::LEVEL } else { 0 };
         let replaced = temp.is_some();
         let promoted = promote.is_some();
         let epoch = final_snapshot.ident_epoch.clone();
@@ -12934,6 +12969,7 @@ impl IntranetPanel {
             self.draft.folder_lineage = stored.folder_lineage;
             self.draft.host_generation = stored.host_generation;
             self.draft.folder_identity = stored.folder_identity;
+            self.draft.synced_level = stored.synced_level;
             if self.draft.folder_writer.trim().is_empty() {
                 self.draft.folder_writer = stored.folder_writer;
             }
@@ -12949,6 +12985,7 @@ impl IntranetPanel {
             self.draft.folder_lineage = stored.folder_lineage;
             self.draft.host_generation = stored.host_generation;
             self.draft.folder_identity = stored.folder_identity;
+            self.draft.synced_level = stored.synced_level;
         }
     }
 
