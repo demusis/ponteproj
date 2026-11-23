@@ -961,6 +961,37 @@ pub struct SyncConflict {
     /// library, like the whole conflict.
     #[serde(default)]
     pub identity: Vec<String>,
+    /// The `uid` of the change the card holds (empty on cards of older
+    /// versions): a change already held by a card here is not carded again
+    /// (the same older copy merged twice, or seen again from a cloud cache).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mutation_uid: String,
+}
+
+/// Stores a conflict card, unless one for the same change (`mutation_uid`)
+/// is already here. Answers whether it was stored.
+fn insert_conflict(conn: &Connection, conflict: &SyncConflict) -> Result<bool> {
+    if !conflict.mutation_uid.is_empty() {
+        let mut statement = conn.prepare("SELECT payload FROM offline_conflicts")?;
+        let rows = statement.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        for row in rows {
+            let held: SyncConflict = match unseal(&row?)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+            {
+                Some(held) => held,
+                None => continue,
+            };
+            if held.mutation_uid == conflict.mutation_uid {
+                return Ok(false);
+            }
+        }
+    }
+    conn.execute(
+        "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
+        params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
+    )?;
+    Ok(true)
 }
 
 /// One field that differs between the host and the offline edit.
@@ -4374,10 +4405,7 @@ impl Store {
                         for entry in &replaced_queue {
                             let mut conflict = build_sync_conflict(entry, &reason, Some(&snapshot));
                             conflict.unresolved = true;
-                            tx.execute(
-                                "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                                params![conflict.created_at, seal(&serde_json::to_vec(&conflict)?)?],
-                            )?;
+                            insert_conflict(tx, &conflict)?;
                         }
                         delete_sent_outboxes(tx, &moved)
                     },
@@ -5559,10 +5587,7 @@ impl Store {
         let replaced = temp.is_some();
         let finish = |tx: &rusqlite::Transaction| -> Result<()> {
             for conflict in &conflicts {
-                tx.execute(
-                    "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                    params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
-                )?;
+                insert_conflict(tx, conflict)?;
             }
             ensure_queue_settled(tx, &processed_outbox)?;
             delete_sent_outboxes(tx, &processed_outbox)?;
@@ -5634,10 +5659,7 @@ impl Store {
         }
         let tx = self.conn.transaction()?;
         for conflict in conflicts {
-            tx.execute(
-                "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
-            )?;
+            insert_conflict(&tx, conflict)?;
         }
         tx.commit()?;
         Ok(())
@@ -5656,10 +5678,7 @@ impl Store {
         let tx = self.conn.transaction()?;
         crate::idmap::save(&tx, learned)?;
         if let Some(conflict) = conflict {
-            tx.execute(
-                "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
-            )?;
+            insert_conflict(&tx, conflict)?;
         }
         delete_sent_outbox(&tx, entry_id, entry_uid)?;
         tx.commit()?;
@@ -9736,6 +9755,7 @@ fn build_sync_conflict(
         mutation: entry.mutation.clone(),
         unresolved: false,
         identity: Vec::new(),
+        mutation_uid: entry.uid.clone(),
     }
 }
 
@@ -14408,6 +14428,7 @@ mod tests {
             }),
             unresolved: false,
             identity: Vec::new(),
+            mutation_uid: String::new(),
         };
         let diffs = store.conflict_differences(&conflict);
         let by_label = |label: &str| {
@@ -15236,6 +15257,7 @@ mod conflict_card_tests {
             base: None,
             unresolved: false,
             identity: Vec::new(),
+            mutation_uid: String::new(),
         }
     }
 
@@ -16237,6 +16259,7 @@ mod resources_sync_tests {
             base: None,
             unresolved: false,
             identity: Vec::new(),
+            mutation_uid: String::new(),
         };
         let save_use = |item: &ResourceUse| {
             conflict(IntranetMutation::SaveResourceUse {
@@ -17364,6 +17387,7 @@ mod resources_sync_tests {
             base: None,
             unresolved: false,
             identity: Vec::new(),
+            mutation_uid: String::new(),
         };
         // Same thing but for the kind: equal, with nothing to compare.
         let mut other_kind = held.clone();

@@ -1635,6 +1635,16 @@ fn r2_b7_a_purge_leaves_no_version_row_for_the_purged_id() {
         rows.is_empty(),
         "version row left for purged task {id}: {rows:?}"
     );
+    // The library itself keeps no row either (not only the copy it exports).
+    let in_table: i64 = store
+        .conn
+        .query_row(
+            "SELECT count(*) FROM item_versions WHERE kind='task' AND item_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_table, 0, "version row left in the table for task {id}");
 }
 
 /// R2-B7, refused change marked applied: B's note goes only to the pen
@@ -2619,4 +2629,34 @@ fn f0_a_recorded_removal_keeps_nothing_aside() {
         .unwrap()
         .iter()
         .any(|d| d.document_number == number("a", 1)));
+}
+
+// ------------------------------------------- F0, review round (revisao-f0) --
+
+/// Review 5: the same older copy merged twice (here, put back in the pen
+/// drive as a cloud cache would) does not give the merging computer a second
+/// card for the change it already refused.
+#[test]
+fn f0r_a_refused_change_merged_again_does_not_make_a_second_card() {
+    let mut f = Folders::new();
+    let doc = f.a.list_documents("").unwrap()[0].id;
+    f.b.save_note(doc, "Nota de B, só no pendrive").unwrap();
+    f.sync_b(Where::Pen);
+    let stale = std::fs::read(&f.pen).unwrap();
+    f.a.save_note(doc, "Nota de A, no Drive").unwrap();
+    for n in 0..5 {
+        let mut task = crate::tasks::Task::new(doc);
+        task.title = format!("enchimento {n}");
+        f.a.save_task(&task).unwrap();
+    }
+    f.sync_a(Where::Drive);
+    f.sync_a(Where::Both);
+    assert_eq!(f.a.list_sync_conflicts().unwrap().len(), 1);
+    std::fs::write(&f.pen, &stale).unwrap();
+    f.sync_a(Where::Both);
+    assert_eq!(
+        f.a.list_sync_conflicts().unwrap().len(),
+        1,
+        "a second card for the same refused change"
+    );
 }
