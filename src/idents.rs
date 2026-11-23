@@ -104,13 +104,17 @@ fn analysis_time(column: &str) -> String {
     )
 }
 
-/// The current analysis of the document `document` (an SQL expression):
-/// the one made last by its own time, unreadable times first, ties by
-/// number, as `storage::current_analysis`.
+/// The current analysis of the document `document` (an SQL expression), as
+/// `storage::current_analysis_id`: of the analyses of its current version
+/// (`documents.latest_capture_id`), the one made last by its own time,
+/// unreadable times first, ties by number; only when the current version
+/// has none, the same choice among all of them.
 fn current_analysis_sql(document: &str) -> String {
     let at = analysis_time("a.created_at");
     format!(
-        "(SELECT a.id FROM analyses a WHERE a.document_id={document} ORDER BY {at} IS NULL, {at} DESC, a.id DESC LIMIT 1)"
+        "(SELECT a.id FROM analyses a WHERE a.document_id={document} \
+         ORDER BY coalesce(a.capture_id=(SELECT d.latest_capture_id FROM documents d WHERE d.id={document}),0) DESC, \
+         {at} IS NULL, {at} DESC, a.id DESC LIMIT 1)"
     )
 }
 
@@ -227,8 +231,19 @@ pub(crate) fn triggers() -> Vec<(String, String)> {
         &mut out,
         "ponte_pointer_analyses_update",
         format!(
-            "AFTER UPDATE OF id,document_id,created_at ON analyses BEGIN UPDATE current_pointer SET analysis_id={} WHERE document_id IN (OLD.document_id,NEW.document_id); END;",
+            "AFTER UPDATE OF id,document_id,capture_id,created_at ON analyses BEGIN UPDATE current_pointer SET analysis_id={} WHERE document_id IN (OLD.document_id,NEW.document_id); END;",
             current_analysis_sql("current_pointer.document_id")
+        ),
+    );
+    // A new current version (an import, or the current one sent to the
+    // Lixeira) can change the current analysis. Only `current_pointer` is
+    // written: `documents` keeps its own guards untouched.
+    push(
+        &mut out,
+        "ponte_pointer_documents_version",
+        format!(
+            "AFTER UPDATE OF latest_capture_id ON documents WHEN NEW.latest_capture_id IS NOT OLD.latest_capture_id BEGIN UPDATE current_pointer SET analysis_id={} WHERE document_id=NEW.id; END;",
+            current_analysis_sql("NEW.id")
         ),
     );
     out
@@ -538,25 +553,16 @@ pub mod test_support {
         Ok(raw(path)?.pragma_query_value(None, "user_version", |r| r.get(0))?)
     }
 
-    /// The current analysis of a document as the product chooses it
-    /// (`storage::current_analysis`): the one made last by its own time,
-    /// unreadable times first, ties by number.
-    fn current_analysis(conn: &Connection, document: i64) -> Result<Option<i64>> {
-        let rows: Vec<(i64, String)> = conn
-            .prepare("SELECT id,created_at FROM analyses WHERE document_id=?1")?
-            .query_map([document], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(rows
-            .into_iter()
-            .max_by_key(|(id, at)| {
-                (
-                    chrono::DateTime::parse_from_rfc3339(at.trim())
-                        .ok()
-                        .map(|t| t.timestamp_micros()),
-                    *id,
-                )
-            })
-            .map(|(id, _)| id))
+    /// The current analysis of a document as the product chooses it, by the
+    /// product's own function (`storage::current_analysis_id`, with the
+    /// document's current version).
+    pub fn current_analysis(conn: &Connection, document: i64) -> Result<Option<i64>> {
+        let current: Option<i64> = conn.query_row(
+            "SELECT latest_capture_id FROM documents WHERE id=?1",
+            [document],
+            |r| r.get(0),
+        )?;
+        crate::storage::current_analysis_id(conn, document, current.unwrap_or(0))
     }
 
     /// Every way the library breaks the F2a invariants, in words: each row

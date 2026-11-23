@@ -687,6 +687,124 @@ fn f2a_b6_trashed_document_with_note_and_analysis_migrates() {
     assert_invariants(&store, "depois de apagar");
 }
 
+/// The analysis pointer follows F0's rule (`storage::current_analysis_id`):
+/// the newest analysis, by its own time, of the CURRENT version; the newest
+/// of any version only when the current one has none. Checked after a new
+/// analysis, a version change, sending the current version to the Lixeira
+/// and restoring it.
+#[test]
+fn f2a_the_analysis_pointer_follows_the_current_version() {
+    use crate::trash::{Kind, Target};
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+    let mut v1 = capture(&number(1), "Primeira versão.");
+    v1.captured_at = "2026-11-01T10:00:00Z".into();
+    let first = store.import_capture(&v1).unwrap();
+    let doc = first.document_id;
+    let analyse = |store: &mut Store, capture_id: i64, summary: &str, at: &str| -> i64 {
+        store
+            .save_analysis(
+                doc,
+                &crate::model::Analysis {
+                    capture_id,
+                    summary: summary.into(),
+                    reason: "r".into(),
+                    model: "modelo-de-teste".into(),
+                    created_at: at.into(),
+                    priority: "normal".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        one(
+            &store.conn,
+            "SELECT max(id) FROM analyses WHERE document_id=?1",
+            doc,
+        )
+        .unwrap()
+    };
+    let pointer = |store: &Store| -> Option<i64> {
+        store
+            .conn
+            .query_row(
+                "SELECT analysis_id FROM current_pointer WHERE document_id=?1",
+                [doc],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let check = |store: &Store, expected: Option<i64>, step: &str| {
+        let rule = test_support::current_analysis(&store.conn, doc).unwrap();
+        assert_eq!(rule, expected, "{step}: a regra do produto");
+        assert_eq!(pointer(store), rule, "{step}: o ponteiro");
+        assert_invariants(store, step);
+    };
+    check(&store, None, "sem análise");
+    let a1 = analyse(
+        &mut store,
+        first.capture_id,
+        "A1 da v1",
+        "2026-11-10T10:00:00.000Z",
+    );
+    check(&store, Some(a1), "análise nova");
+
+    let current = |store: &Store| {
+        one(
+            &store.conn,
+            "SELECT latest_capture_id FROM documents WHERE id=?1",
+            doc,
+        )
+        .unwrap()
+    };
+    let version = |store: &mut Store, text: &str, at: &str| {
+        let mut v = capture(&number(1), text);
+        v.captured_at = at.into();
+        let receipt = store.import_capture(&v).unwrap();
+        assert_eq!(receipt.document_id, doc);
+        assert_eq!(current(store), receipt.capture_id, "{text} é a atual");
+        receipt.capture_id
+    };
+
+    // A newer version without analysis: the newest of any version (A1).
+    let v2 = version(&mut store, "Segunda versão.", "2026-11-03T10:00:00Z");
+    check(&store, Some(a1), "versão nova sem análise");
+    // An analysis of the current version wins, though made earlier.
+    let a2 = analyse(&mut store, v2, "A2 da v2", "2026-11-05T10:00:00.000Z");
+    check(&store, Some(a2), "análise nova da versão atual");
+    // Another version without analysis: the newest of any again (A1).
+    let v3 = version(&mut store, "Terceira versão.", "2026-11-07T10:00:00Z");
+    check(&store, Some(a1), "outra versão nova sem análise");
+
+    // The current version to the Lixeira: v2 is current again, and its
+    // analysis with it (A2).
+    let v3_target = || Target {
+        kind: Kind::Capture,
+        id: v3,
+    };
+    store.trash_item(v3_target()).unwrap();
+    assert_eq!(current(&store), v2);
+    check(&store, Some(a2), "versão atual na Lixeira");
+    // Restored: the product's rule, whatever version is current now.
+    store.restore_item(v3_target()).unwrap();
+    let expected = if current(&store) == v3 { a1 } else { a2 };
+    check(&store, Some(expected), "versão restaurada");
+    assert_eq!(
+        store
+            .load_document(doc)
+            .unwrap()
+            .analysis
+            .map(|a| a.summary),
+        Some(
+            if expected == a1 {
+                "A1 da v1"
+            } else {
+                "A2 da v2"
+            }
+            .to_owned()
+        )
+    );
+}
+
 /// A6. Restore routes: product recovery of a 22 library keeps the
 /// identities and drops `ident_state`; a portable import gives every row
 /// one identity; a role change keeps the identities.

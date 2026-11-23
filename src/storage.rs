@@ -1695,27 +1695,41 @@ fn current_analysis(
     document_id: i64,
     current_capture: i64,
 ) -> Result<Option<Analysis>> {
-    let rows: Vec<(i64, i64, String, Vec<u8>)> = conn
-        .prepare("SELECT id,capture_id,created_at,payload FROM analyses WHERE document_id=?1")?
-        .query_map([document_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?
+    let Some(id) = current_analysis_id(conn, document_id, current_capture)? else {
+        return Ok(None);
+    };
+    let blob: Vec<u8> = conn.query_row("SELECT payload FROM analyses WHERE id=?1", [id], |r| {
+        r.get(0)
+    })?;
+    decode(&blob).map(Some)
+}
+
+/// The row of [`current_analysis`] (the rule `current_pointer` keeps since
+/// schema 22, `idents::current_analysis_sql`).
+pub(crate) fn current_analysis_id(
+    conn: &Connection,
+    document_id: i64,
+    current_capture: i64,
+) -> Result<Option<i64>> {
+    let rows: Vec<(i64, i64, String)> = conn
+        .prepare("SELECT id,capture_id,created_at FROM analyses WHERE document_id=?1")?
+        .query_map([document_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let of_current = rows
         .iter()
-        .any(|(_, capture, _, _)| *capture == current_capture);
-    let newest = rows
+        .any(|(_, capture, _)| *capture == current_capture);
+    Ok(rows
         .into_iter()
-        .filter(|(_, capture, _, _)| !of_current || *capture == current_capture)
-        .max_by_key(|(id, _, at, _)| {
+        .filter(|(_, capture, _)| !of_current || *capture == current_capture)
+        .max_by_key(|(id, _, at)| {
             (
                 chrono::DateTime::parse_from_rfc3339(at.trim())
                     .ok()
                     .map(|t| t.timestamp_micros()),
                 *id,
             )
-        });
-    newest.map(|(_, _, _, blob)| decode(&blob)).transpose()
+        })
+        .map(|(id, _, _)| id))
 }
 
 fn require_document(conn: &Connection, id: i64) -> Result<()> {
