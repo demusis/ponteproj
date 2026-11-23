@@ -2,9 +2,15 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (versão 0.26.0)
+## O que faz (versão 0.27.0)
 
 Cada item abaixo traz a versão em que entrou; vale o que está aqui, e a versão instalada aparece no aplicativo.
+
+- **Tamanho do arquivo e aviso (0.27.0):** em **Ajustes ▸ Sincronização**, abaixo do nome do arquivo, o celular mostra o tamanho do arquivo no Drive e quanto cabe até o limite de 512 MB (*Tamanho do arquivo: 120 MB de 512 MB (23%). Cabem mais 392 MB.*). A partir de 70% aparece um aviso (*O arquivo do Drive está com … Perto do limite, o que for acrescentado pode não caber.*). Um acervo que passa de 512 MB não é gravado, e o celular diz *O acervo passa de 512 MB e não cabe no arquivo de sincronização… Nada foi gravado.* O conselho é esvaziar a Lixeira e remover anexos grandes, no Ponte do computador: o celular não tem Lixeira nem tela de anexos.
+
+- **O que não sincroniza (0.27.0):** uma linha em **Ajustes ▸ Sincronização** lembra o que fica só no celular: as contas de e-mail, os avisos de prazos e os lembretes deste aparelho, a ligação com a agenda do celular, o bloqueio do aplicativo, o seu nome nas tarefas e os filtros guardados.
+
+- **Cópias criadas pela nuvem (0.27.0):** o celular **não** detecta arquivos como `ponte-sync (1).ponte` ou "cópia em conflito" ao lado do arquivo do Drive, porque só tem permissão para o arquivo escolhido, não para a pasta. Quem avisa dessas cópias é o Ponte do computador (README principal, seção 8.7).
 
 - **Sincronizar ao voltar (0.26.0):** ao voltar para o aplicativo, o celular sincroniza sozinho se a última sincronização boa tem 5 minutos ou mais. Isso respeita o bloqueio (só depois de desbloquear), o aviso de dados móveis e uma sincronização em andamento. Não pede a digital por conta própria, e uma tentativa que falhou, como sem rede, não se repete antes de 5 minutos. Com um formulário aberto (tarefa, nota, projeto, compartilhar, Ajustes) a volta não sincroniza, para não mexer no que está sendo digitado; a sincronização vem depois de salvar ou na próxima volta.
 
