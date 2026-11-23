@@ -1573,7 +1573,6 @@ fn r2_b4_a_losing_mirror_with_an_item_in_no_journal_is_kept_aside() {
 /// that no longer exists. The row travels in the snapshot and is inherited by
 /// whatever item takes the id next (see the reuse test of C2).
 #[test]
-#[ignore = "R2-B7: apagar de vez grava a versão depois de apagar o alvo (defeito do código atual)"]
 fn r2_b7_a_purge_leaves_no_version_row_for_the_purged_id() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("s.sqlite3")).unwrap();
@@ -1728,4 +1727,172 @@ R2-B8 cards on B: {cards:#?}"
             .all(|t| !plan.tasks.iter().any(|pt| pt.title == *t)),
         "plan tasks written on X: {on_x:?}"
     );
+}
+
+// ---------------------------------------------------------------- F0 fixes --
+
+/// The `item_versions` kinds keyed by a row id, with the table of that id
+/// (the same list as the product's `ROW_VERSION_KINDS`, kept here so the walk
+/// does not trust the code it checks).
+const ROW_KINDS: &[(&str, &str)] = &[
+    ("document", "documents"),
+    ("note", "documents"),
+    ("work_context", "documents"),
+    ("capture", "captures"),
+    ("draft", "drafts"),
+    ("analysis", "analyses"),
+    ("page_text", "files"),
+    ("task", "tasks"),
+    ("attachment", "attachments"),
+    ("attachment_text", "attachments"),
+    ("document_link", "document_links"),
+    ("saiop", "saiop_attendances"),
+    ("saiop_batch", "saiop_batches"),
+];
+
+/// The `item_versions` kinds keyed by something that is never given to
+/// another item (a uid hash, a setting key, the library counter).
+const KEY_VERSION_KINDS: &[&str] = &[
+    "cabinet",
+    "setting",
+    "project",
+    "category",
+    "resource",
+    "resource_use",
+    "template",
+    "block",
+    "example",
+    "generation",
+];
+
+/// Every version row of `store` (the table and the snapshot it exports)
+/// describes an item that exists; a kind this walk does not know fails, so
+/// a new kind must be classified here.
+fn assert_no_orphan_versions(store: &Store, who: &str) {
+    let rows: Vec<(String, i64)> = store
+        .conn
+        .prepare("SELECT kind,item_id FROM item_versions")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let exported: Vec<(String, i64)> = store
+        .export_snapshot()
+        .unwrap()
+        .item_versions
+        .into_iter()
+        .map(|(k, i, _)| (k, i))
+        .collect();
+    for (place, rows) in [("tabela", rows), ("cópia", exported)] {
+        for (kind, id) in rows {
+            if let Some((_, table)) = ROW_KINDS.iter().find(|(k, _)| *k == kind) {
+                let exists: bool = store
+                    .conn
+                    .query_row(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE id=?1)"),
+                        [id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(
+                    exists,
+                    "{who} ({place}): version row ({kind}, {id}) without its item"
+                );
+            } else {
+                assert!(
+                    KEY_VERSION_KINDS.contains(&kind.as_str()),
+                    "{who}: kind {kind} not classified in the orphan walk"
+                );
+            }
+        }
+    }
+}
+
+/// F0 (R2-B7a): removing an item for good, by every path that removes one
+/// (purge from the Lixeira of a document, a version, a task, an attachment;
+/// deleting an atendimento, undoing a batch, deleting an attachment, an
+/// example, a template), leaves no version row behind, here, in the copy and
+/// on the other device. Walks every kind `fill` makes.
+#[test]
+fn f0_no_version_row_outlives_its_item_of_any_kind() {
+    use crate::trash::{Kind, Target};
+    let mut p = pair();
+    let made = fill(&mut p.a, "a");
+    let ids = locate(&p.a, &made);
+    let _ = p.a.extract_attachment_text(ids["attachment(document)"]);
+    sync(&mut p.a);
+    sync(&mut p.b);
+    let kinds: std::collections::BTreeSet<String> =
+        p.a.export_snapshot()
+            .unwrap()
+            .item_versions
+            .into_iter()
+            .map(|(k, _, _)| k)
+            .collect();
+    eprintln!("F0 version kinds before removing: {kinds:?}");
+    for (kind, _) in ROW_KINDS {
+        // A version gets its row when it goes to the Lixeira; a text when
+        // it is extracted (not possible from this fake PDF).
+        if !["attachment_text", "capture"].contains(kind) {
+            assert!(kinds.contains(*kind), "fill makes no {kind}");
+        }
+    }
+    let purge = |store: &mut Store, kind: Kind, id: i64| {
+        store.trash_item(Target { kind, id }).unwrap();
+        store.purge_trash_item(Target { kind, id }).unwrap();
+    };
+    p.a.purge_trash_item(Target {
+        kind: Kind::Task,
+        id: ids["task(trash)"],
+    })
+    .unwrap();
+    purge(&mut p.a, Kind::Capture, ids["capture(older)"]);
+    purge(&mut p.a, Kind::Attachment, ids["attachment(document)"]);
+    purge(&mut p.a, Kind::Task, ids["task(alone)"]);
+    p.a.delete_saiop_attendance(ids["saiop"]).unwrap();
+    p.a.undo_saiop_batch(ids["saiop_batch"]).unwrap();
+    p.a.delete_attachment(ids["attachment(task)"]).unwrap();
+    p.a.delete_example(&made.example).unwrap();
+    p.a.delete_template(&made.template).unwrap();
+    purge(&mut p.a, Kind::Document, ids["document(pdf)"]);
+    purge(&mut p.a, Kind::Document, ids["document"]);
+    assert_no_orphan_versions(&p.a, "A antes de sincronizar");
+    sync(&mut p.a);
+    sync(&mut p.b);
+    assert_no_orphan_versions(&p.a, "A");
+    assert_no_orphan_versions(&p.b, "B");
+}
+
+/// The product cleans exactly the kinds the walk checks.
+#[test]
+fn f0_the_orphan_walk_and_the_product_know_the_same_row_kinds() {
+    assert_eq!(ROW_KINDS, crate::intranet::ROW_VERSION_KINDS);
+}
+
+/// F0 (R2-B7a): a version row left behind by 0.50.0 (written straight into
+/// the table here) never travels in the copy, so the next item given the id
+/// does not inherit it.
+#[test]
+fn f0_an_orphan_version_row_from_an_older_release_does_not_travel() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("s.sqlite3")).unwrap();
+    let meta = crate::intranet::VersionMeta {
+        version: 7,
+        updated_by: "antigo".into(),
+        updated_at: "2026-11-01T00:00:00Z".into(),
+    };
+    store
+        .conn
+        .execute(
+            "INSERT INTO item_versions(kind,item_id,version,payload) VALUES('task',99,7,?1)",
+            [crate::protection::seal(&serde_json::to_vec(&meta).unwrap()).unwrap()],
+        )
+        .unwrap();
+    assert!(!store
+        .export_snapshot()
+        .unwrap()
+        .item_versions
+        .iter()
+        .any(|(k, i, _)| k == "task" && *i == 99));
 }

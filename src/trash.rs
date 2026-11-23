@@ -755,6 +755,7 @@ impl Store {
             },
             &format!("Apagou de vez da lixeira: {text}"),
         )?;
+        crate::intranet::forget_orphan_versions(&tx)?;
         tx.commit()?;
         Ok(document)
     }

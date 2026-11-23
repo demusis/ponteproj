@@ -1294,6 +1294,7 @@ impl Store {
             Some(id),
             &format!("Removeu documento #{id}"),
         )?;
+        crate::intranet::forget_orphan_versions(&tx)?;
         tx.commit()?;
         Ok(())
     }

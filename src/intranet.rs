@@ -1890,6 +1890,51 @@ pub(crate) fn record_mutation(
     Ok(next_version)
 }
 
+/// The kinds of `item_versions` keyed by a row id, with the table whose `id`
+/// that row id names. A row id can be given again to another item (a shared
+/// folder rebuilds the library from the copy, so a purged top id is reused):
+/// a version row left behind for a removed item would describe the next one.
+/// Kinds keyed by a uid or a setting key (`version_key`) are not here: those
+/// keys are never given to another item.
+pub(crate) const ROW_VERSION_KINDS: &[(&str, &str)] = &[
+    ("document", "documents"),
+    ("note", "documents"),
+    ("work_context", "documents"),
+    ("capture", "captures"),
+    ("draft", "drafts"),
+    ("analysis", "analyses"),
+    ("page_text", "files"),
+    ("task", "tasks"),
+    ("attachment", "attachments"),
+    ("attachment_text", "attachments"),
+    ("document_link", "document_links"),
+    ("saiop", "saiop_attendances"),
+    ("saiop_batch", "saiop_batches"),
+];
+
+/// SQL condition, over `item_versions`, of a version row whose item is gone.
+fn orphan_version_condition() -> String {
+    ROW_VERSION_KINDS
+        .iter()
+        .map(|(kind, table)| format!("(kind='{kind}' AND item_id NOT IN (SELECT id FROM {table}))"))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+/// Removes the version rows of items that no longer exist (the item and
+/// everything that went with it: notes, versions, files, tasks,
+/// attachments...). Runs in the transaction that removed them, after
+/// `record_mutation`, which writes a version row for the removed item too.
+pub(crate) fn forget_orphan_versions(tx: &Connection) -> Result<usize> {
+    Ok(tx.execute(
+        &format!(
+            "DELETE FROM item_versions WHERE {}",
+            orphan_version_condition()
+        ),
+        [],
+    )?)
+}
+
 fn insert_outbox_row(conn: &Connection, entry: &OutboxEntry) -> Result<()> {
     conn.execute(
         "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
@@ -2753,7 +2798,12 @@ impl Store {
         let raw_versions = self
             .conn
             .prepare(
-                "SELECT kind,item_id,version,payload FROM item_versions ORDER BY kind,item_id",
+                // A version row of an item that is gone never travels: the
+                // next item given that id would inherit it.
+                &format!(
+                    "SELECT kind,item_id,version,payload FROM item_versions WHERE NOT ({}) ORDER BY kind,item_id",
+                    orphan_version_condition()
+                ),
             )?
             .query_map([], |r| {
                 Ok((
