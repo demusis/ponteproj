@@ -81,15 +81,45 @@ pub(crate) trait IdentFrame {
 }
 
 impl IdentFrame for Connection {
+    /// The row holding `ident`; else the row holding the identity a late
+    /// receipt bound it to (`idents::bind_inserted`).
     fn row_of(&self, kind: IdKind, ident: &str) -> Result<Option<i64>> {
         use rusqlite::OptionalExtension;
-        Ok(self
-            .query_row(
-                "SELECT row_id FROM item_ident WHERE kind=?1 AND ident=?2",
-                [crate::idents::kind_of(kind), ident],
-                |r| r.get(0),
-            )
-            .optional()?)
+        let holder = |ident: &str| -> Result<Option<i64>> {
+            Ok(self
+                .query_row(
+                    "SELECT row_id FROM item_ident WHERE kind=?1 AND ident=?2",
+                    [crate::idents::kind_of(kind), ident],
+                    |r| r.get(0),
+                )
+                .optional()?)
+        };
+        match holder(ident)? {
+            Some(row) => Ok(Some(row)),
+            None => match crate::idents::alias_of(self, crate::idents::kind_of(kind), ident)? {
+                Some(bound) => holder(&bound),
+                None => Ok(None),
+            },
+        }
+    }
+}
+
+/// The main computer's frame seen by a sender that keeps the bindings of
+/// late receipts (`idents::learn_bindings`) in `aliases`.
+pub(crate) struct Aliased<'a> {
+    pub frame: &'a dyn IdentFrame,
+    pub aliases: &'a Connection,
+}
+
+impl IdentFrame for Aliased<'_> {
+    fn row_of(&self, kind: IdKind, ident: &str) -> Result<Option<i64>> {
+        if let Some(row) = self.frame.row_of(kind, ident)? {
+            return Ok(Some(row));
+        }
+        match crate::idents::alias_of(self.aliases, crate::idents::kind_of(kind), ident)? {
+            Some(bound) => self.frame.row_of(kind, &bound),
+            None => Ok(None),
+        }
     }
 }
 

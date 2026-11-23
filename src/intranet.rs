@@ -4496,9 +4496,24 @@ impl Store {
                     };
                     match send_rpc_tracked(&cfg, &asked, &mut reached) {
                         Ok(RpcResponse::Mutated {
-                            snapshot, created, ..
+                            snapshot,
+                            created,
+                            idents,
+                            proof,
+                            ..
                         }) => {
                             crate::idents::check(&snapshot, None)?;
+                            // Its rows there kept their own identities: what
+                            // depends here on the ones they had here follows
+                            // them (review F3.0a2, finding 3).
+                            if idents.is_empty() {
+                                crate::idents::learn_bindings(
+                                    &self.conn,
+                                    &entry.idents,
+                                    created.as_deref().unwrap_or_default(),
+                                    &proof,
+                                )?;
+                            }
                             let learned = ids.learn(&entry.created, created.as_deref());
                             self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
                             host_frame = Some(snapshot);
@@ -4555,11 +4570,17 @@ impl Store {
                     .refs
                     .as_ref()
                     .is_some_and(|r| Some(&r.frame) == tag.as_ref());
+                let aliased = host.map(|s| crate::idrefs::Aliased {
+                    frame: s,
+                    aliases: &self.conn,
+                });
                 let routed = route_change(
                     (&entry.mutation, entry.base.as_ref()),
                     entry.refs.as_ref(),
                     true,
-                    host.map(|s| (s as &dyn crate::idrefs::IdentFrame, holds)),
+                    aliased
+                        .as_ref()
+                        .map(|a| (a as &dyn crate::idrefs::IdentFrame, holds)),
                     (&ids, &*self, host.map(|s| s as &dyn crate::idmap::Frame)),
                 )
                 .and_then(|(mutation, base, refs)| {
@@ -12878,9 +12899,11 @@ fn known_mutation(
     epoch: &str,
 ) -> Result<Option<RpcResponse>> {
     if let Some(receipt) = store.mutation_receipt(uid)? {
+        // The rows it inserted keep the identities they have here (they may
+        // be published already); the sender's are bound to them.
         if receipt.idents.is_empty() {
             let created = receipt.created.as_deref().unwrap_or_default();
-            crate::idents::rekey_inserted(&store.conn, carried, created, &receipt.proof)?;
+            crate::idents::bind_inserted(&store.conn, carried, created, &receipt.proof)?;
         }
         let mut snapshot = served_snapshot(store, v2, epoch)?;
         snapshot.generation = store.host_generation()?;

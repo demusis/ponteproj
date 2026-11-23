@@ -811,43 +811,123 @@ pub(crate) fn complete_carry(conn: &Connection, uid: &str) -> Result<()> {
     end_carry(conn, uid)
 }
 
-/// Gives the rows a receipted change inserted here (its `proof`: their
-/// identities, by row; `created`: their slots) the identities `carried`
-/// for those slots, when a row still holds its own and no row holds the
-/// carried one: the change was sent before its rows existed on the sender
-/// (its answer was lost there), so it carried none then.
-pub(crate) fn rekey_inserted(
+/// What a receipted change says of the rows it inserted on the main
+/// computer: for each identity `carried` by the sender (given there to its
+/// own copy of a row, after the answer was lost), the row of the same slot
+/// in `created` and the identity that row got there, from the receipt's
+/// `proof`, as (kind, row, carried identity, identity there).
+pub(crate) fn receipt_bindings(
+    carried: &[SlotIdent],
+    created: &[crate::idmap::CreatedId],
+    proof: &[crate::idrefs::Ref],
+) -> Vec<(&'static str, i64, String, String)> {
+    carried
+        .iter()
+        .filter_map(|slot| {
+            let made = created
+                .iter()
+                .find(|c| kind_of(c.kind) == slot.kind && c.slot == slot.slot)?;
+            match proof
+                .iter()
+                .find(|r| r.kind == made.kind && r.row == made.id)?
+            {
+                crate::idrefs::Ref {
+                    row,
+                    proof: crate::idrefs::Proof::Ident(there),
+                    ..
+                } if *there != slot.ident => {
+                    Some((kind_of(made.kind), *row, slot.ident.clone(), there.clone()))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The durable aliases: a carried identity bound to the identity a row
+/// already had (and may have published) when its change's receipt came.
+fn ensure_aliases(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ident_alias(kind TEXT NOT NULL, alias TEXT NOT NULL, ident TEXT NOT NULL, PRIMARY KEY(kind,alias));",
+    )?;
+    Ok(())
+}
+
+/// Binds, on the main computer, each identity a late receipt carried to the
+/// identity its row already holds there, never replacing it (another
+/// device may have taken it since: review F3.0a2, finding 3). Only when
+/// the row still holds that identity, no row holds the carried one, and the
+/// carried one is not bound to anything else yet (the first binding stays):
+/// otherwise nothing, and what depends on it becomes a card.
+pub(crate) fn bind_inserted(
     conn: &Connection,
     carried: &[SlotIdent],
     created: &[crate::idmap::CreatedId],
     proof: &[crate::idrefs::Ref],
 ) -> Result<()> {
-    for slot in carried {
-        let row = created
-            .iter()
-            .find(|c| kind_of(c.kind) == slot.kind && c.slot == slot.slot)
-            .and_then(|c| proof.iter().find(|r| r.kind == c.kind && r.row == c.id));
-        let Some(crate::idrefs::Ref {
-            row,
-            proof: crate::idrefs::Proof::Ident(own),
-            ..
-        }) = row
-        else {
-            continue;
-        };
-        let held: bool = conn.query_row(
+    let bindings = receipt_bindings(carried, created, proof);
+    if bindings.is_empty() {
+        return Ok(());
+    }
+    ensure_aliases(conn)?;
+    for (kind, row, alias, there) in bindings {
+        let holds = ident_of(conn, kind, row)?.as_deref() == Some(there.as_str());
+        let taken: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM item_ident WHERE ident=?1)",
-            [&slot.ident],
+            [&alias],
             |r| r.get(0),
         )?;
-        if !held {
+        if holds && !taken {
             conn.execute(
-                "UPDATE item_ident SET ident=?1 WHERE kind=?2 AND row_id=?3 AND ident=?4",
-                params![slot.ident, slot.kind, row, own],
+                "INSERT OR IGNORE INTO ident_alias(kind,alias,ident) VALUES(?1,?2,?3)",
+                params![kind, alias, there],
             )?;
         }
     }
     Ok(())
+}
+
+/// Keeps, on the sender, the bindings a late receipt names (the same the
+/// main computer made): its queued changes that prove the carried identity
+/// are resolved, in the main computer's frame, to the row holding the one
+/// bound to it (the first binding stays).
+pub(crate) fn learn_bindings(
+    conn: &Connection,
+    carried: &[SlotIdent],
+    created: &[crate::idmap::CreatedId],
+    proof: &[crate::idrefs::Ref],
+) -> Result<()> {
+    let bindings = receipt_bindings(carried, created, proof);
+    if bindings.is_empty() {
+        return Ok(());
+    }
+    ensure_aliases(conn)?;
+    for (kind, _, alias, there) in bindings {
+        conn.execute(
+            "INSERT OR IGNORE INTO ident_alias(kind,alias,ident) VALUES(?1,?2,?3)",
+            params![kind, alias, there],
+        )?;
+    }
+    Ok(())
+}
+
+/// The identity `alias` is bound to for `kind`, if any.
+pub(crate) fn alias_of(conn: &Connection, kind: &str, alias: &str) -> Result<Option<String>> {
+    let kept: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='ident_alias')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !kept {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT ident FROM ident_alias WHERE kind=?1 AND alias=?2",
+            [kind, alias],
+            |r| r.get(0),
+        )
+        .optional()?)
 }
 
 /// The ident kind of an id-map kind.
