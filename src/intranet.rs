@@ -5843,6 +5843,11 @@ impl Store {
         // (this computer's own changes) and by the copy they came from.
         let mut cards_here = crate::coverage::Removed::default();
         let mut cards_from: BTreeMap<usize, crate::coverage::Removed> = BTreeMap::new();
+        // The items a replayed change was carded for in this exchange (by
+        // the copy it came from; `None`: this library's queue), and whether
+        // that card was unresolved: every later change of the same item
+        // from there is carded too, never applied over another version.
+        let mut carded_items: BTreeMap<(Option<usize>, String), bool> = BTreeMap::new();
         // What the replays made of this library's items and of each copy's.
         let mut replayed_here = crate::coverage::Replayed::default();
         let mut replayed_from: BTreeMap<usize, crate::coverage::Replayed> = BTreeMap::new();
@@ -6159,6 +6164,38 @@ impl Store {
                     receipt_doc: crate::renumber::receipt_document(&entry.created),
                 };
                 let identity = crate::renumber::edit_identity(&entry.mutation, &edit_source);
+                let item = mutation_target_key(&entry.mutation).map(|k| (Some(index), k));
+                if let Some(unresolved) = item.as_ref().and_then(|i| carded_items.get(i)).copied() {
+                    resolved.insert(entry.uid.clone(), None);
+                    cards_from
+                        .entry(index)
+                        .or_default()
+                        .kept_in_card(&entry.mutation, &entry.created);
+                    let as_entry = OutboxEntry {
+                        id: 0,
+                        created_at: entry.created_at.clone(),
+                        actor: entry.actor.clone(),
+                        label: format!("[{}] {}", from, entry.label),
+                        mutation: entry.mutation.clone(),
+                        base: entry.base.clone(),
+                        uid: entry.uid.clone(),
+                        created: Vec::new(),
+                        attempted: false,
+                        idents: Vec::new(),
+                        refs: entry.refs.clone(),
+                    };
+                    let mut conflict = conflict_for(
+                        &as_entry,
+                        &format!("{AFTER_A_CARD} (alteração vinda de {from})"),
+                        base_snapshot,
+                        unresolved,
+                    );
+                    conflict.identity = identity;
+                    conflicts.push(conflict);
+                    // Not incorporated either (see the refusal below).
+                    report.conflicts += 1;
+                    continue;
+                }
                 // Without proofs, only a legacy change takes the translation
                 // of numbers (adendo §3 rule 1); one written above the
                 // lineage's `refs_since` is damaged. Another copy's `Frame`
@@ -6264,6 +6301,9 @@ impl Store {
                     }
                     (remapped, outcome) => {
                         let unresolved = remapped.is_err();
+                        if let Some(item) = item {
+                            *carded_items.entry(item).or_default() |= unresolved;
+                        }
                         let error = outcome.err().unwrap_or_default();
                         resolved.insert(entry.uid.clone(), None);
                         cards_from
@@ -6426,6 +6466,17 @@ impl Store {
                     receipt_doc: crate::renumber::receipt_document(&entry.created),
                 };
                 let identity = crate::renumber::edit_identity(&entry.mutation, &edit_source);
+                let item = mutation_target_key(&entry.mutation).map(|k| (None, k));
+                if let Some(unresolved) = item.as_ref().and_then(|i| carded_items.get(i)).copied() {
+                    ids.learn(&entry.created, None);
+                    cards_here.kept_in_card(&entry.mutation, &entry.created);
+                    let mut conflict = conflict_for(entry, AFTER_A_CARD, base_snapshot, unresolved);
+                    conflict.identity = identity;
+                    conflicts.push(conflict);
+                    applied.insert(entry.uid.clone());
+                    report.conflicts += 1;
+                    continue;
+                }
                 // Level 2: each site by its proof; a `Frame` number holds
                 // only in the frame it was captured in. An older Ponte's
                 // entry through the translation of numbers, as before.
@@ -6535,6 +6586,9 @@ impl Store {
                             creation_results.insert(doc, crate::renumber::CreationOutcome::Refused);
                         }
                         let unresolved = remapped.is_err();
+                        if let Some(item) = item {
+                            *carded_items.entry(item).or_default() |= unresolved;
+                        }
                         let error = outcome.err().unwrap_or_default();
                         let sent = OutboxEntry {
                             mutation: remapped.unwrap_or_else(|_| entry.mutation.clone()),
