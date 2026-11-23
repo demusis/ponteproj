@@ -5472,6 +5472,27 @@ impl Store {
                 uncovered.insert(copy.path.clone(), lost);
             }
         }
+        // The guard copy holds what only it may have: it is kept aside,
+        // verified, BEFORE anything is written or adopted. If that cannot be
+        // done the exchange stops here, so the guard stays as it is, still
+        // trusted (the recorded revision does not move), for the next one.
+        if let Some((path, lost)) = guard_path.and_then(|p| uncovered.get(p).map(|l| (p, l))) {
+            match sharedfolder::keep_aside(path) {
+                Ok(aside) => report.notes.push(format!(
+                    "A cópia de segurança deste computador tinha {} que não {} no resultado desta sincronização: {}. Ela foi guardada em {}; nada foi reinserido no acervo.",
+                    plural(lost.len(), "item", "itens"),
+                    if lost.len() == 1 { "está" } else { "estão" },
+                    crate::coverage::describe(lost),
+                    aside.display()
+                )),
+                Err(error) => bail!(
+                    "A cópia de segurança deste computador tem {} que não {} no resultado desta sincronização ({}), e não foi possível guardá-la à parte: {error} Nada foi gravado nem substituído. Libere espaço ou remova o arquivo que ocupa esse nome e sincronize de novo.",
+                    plural(lost.len(), "item", "itens"),
+                    if lost.len() == 1 { "está" } else { "estão" },
+                    crate::coverage::describe(lost)
+                ),
+            }
+        }
         if temp.is_some() && !joining && !pure {
             let here = self.export_snapshot()?;
             let lost = crate::coverage::dropped(&here, &result_keys, &[&removed, &cards_here]);
@@ -5541,26 +5562,7 @@ impl Store {
         report.notes.extend(failures);
         // Only now, with the folders written, does this become this
         // computer's last write.
-        let mut write_guard = true;
-        if let Some((path, lost)) = guard_path.and_then(|p| uncovered.get(p).map(|l| (p, l))) {
-            match sharedfolder::keep_aside(path) {
-                Ok(aside) => report.notes.push(format!(
-                    "A cópia de segurança deste computador tinha {} que não {} no resultado desta sincronização: {}. Ela foi guardada em {}; nada foi reinserido no acervo.",
-                    plural(lost.len(), "item", "itens"),
-                    if lost.len() == 1 { "está" } else { "estão" },
-                    crate::coverage::describe(lost),
-                    aside.display()
-                )),
-                Err(error) => {
-                    write_guard = false;
-                    report.notes.push(format!(
-                        "A cópia de segurança deste computador não foi regravada, para não perder o que só ela tem ({}): {error}",
-                        crate::coverage::describe(lost)
-                    ));
-                }
-            }
-        }
-        if let Some(path) = guard_path.filter(|_| write_guard) {
+        if let Some(path) = guard_path {
             if let Err(error) = sharedfolder::write(path, key, &request, &payload, &blobs) {
                 report.notes.push(format!(
                     "A cópia de segurança deste computador não foi gravada: {error}"

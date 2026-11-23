@@ -2645,7 +2645,7 @@ fn f0_a_library_that_would_lose_an_item_keeps_a_copy_and_says_which() {
     let note = report
         .notes
         .iter()
-        .find(|n| n.contains(&number("c", 1)))
+        .find(|n| n.contains(&number("c", 1)) && n.contains("copias-antes-da-substituicao"))
         .unwrap_or_else(|| panic!("Y not named: {:?}", report.notes));
     assert!(note.contains("copias-antes-da-substituicao"), "{note}");
     let backups: Vec<_> = std::fs::read_dir(dir.join("copias-antes-da-substituicao"))
@@ -2869,4 +2869,77 @@ fn f0r_the_current_analysis_is_one_of_the_current_version() {
         let materials = store.draft_materials(doc).unwrap();
         assert_eq!(materials.facts.len(), 1, "{who}: facts of C2 for drafts");
     }
+}
+
+/// Review 2: the forked library's guard copy holds Y, which the result
+/// lacks, and keeping it aside fails (its archive name is taken). The
+/// exchange stops before anything is written or adopted: the guard and the
+/// recorded revision stay as they were, and once the name is free the next
+/// exchange keeps the guard aside and goes on.
+#[test]
+fn f0r_a_guard_that_cannot_be_kept_aside_stops_the_exchange() {
+    let mut f = Folders::new();
+    let lineage = crate::sharedfolder::read_header(&f.drive)
+        .unwrap()
+        .unwrap()
+        .lineage;
+    let dir = f.dir.path().join("forked");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut forked = Store::open(&dir.join("c.sqlite3")).unwrap();
+    forked
+        .import_capture(&capture(
+            &number("c", 1),
+            "Documento Y só do acervo bifurcado",
+        ))
+        .unwrap();
+    std::fs::remove_file(&f.pen).unwrap();
+    let mut cfg = folder_config("Bifurcado", f.files(Where::Pen));
+    cfg.folder_lineage = lineage;
+    forked.save_intranet_config(&cfg).unwrap();
+    sync(&mut forked);
+    let doc = f.a.list_documents("").unwrap()[0].id;
+    for n in 0..8 {
+        let mut task = crate::tasks::Task::new(doc);
+        task.title = format!("enchimento {n}");
+        f.a.save_task(&task).unwrap();
+    }
+    f.sync_a(Where::Drive);
+    let files = f.files(Where::Both);
+    sync_in_raw(&mut f.a, files);
+    let guard = dir.join("c.sqlite3-guarda.ponte");
+    assert!(guard.is_file(), "the forked library's guard copy");
+    let guard_bytes = std::fs::read(&guard).unwrap();
+    let revision = forked.load_intranet_config().unwrap().synced_revision;
+    let blocker = crate::sharedfolder::aside_path(&guard).unwrap();
+    std::fs::create_dir(&blocker).unwrap();
+    let cfg = forked.load_intranet_config().unwrap();
+    let error = forked
+        .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        error.contains("Nada foi gravado"),
+        "the exchange went on: {error:?}"
+    );
+    assert_eq!(
+        std::fs::read(&guard).unwrap(),
+        guard_bytes,
+        "guard untouched"
+    );
+    assert_eq!(
+        forked.load_intranet_config().unwrap().synced_revision,
+        revision,
+        "revision advanced"
+    );
+    std::fs::remove_dir(&blocker).unwrap();
+    let report = sync_raw(&mut forked);
+    assert!(blocker.is_file(), "guard kept aside: {:?}", report.notes);
+    let kept = crate::sharedfolder::read(&blocker, KEY).unwrap().unwrap();
+    assert!(kept
+        .payload
+        .snapshot
+        .captures
+        .iter()
+        .any(|c| c.capture.document_number == number("c", 1)));
 }
