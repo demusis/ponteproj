@@ -937,6 +937,11 @@ pub struct OutboxEntry {
     /// edits of the same item are queued after it, not merged into it.
     #[serde(default)]
     pub attempted: bool,
+    /// The identities (`item_ident`) of the rows this change inserted here,
+    /// by slot, so that a replay gives the same identity to the row it
+    /// inserts for that slot. Local only: never written to a shared file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub idents: Vec<crate::idents::SlotIdent>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2155,6 +2160,7 @@ pub(crate) fn queue_import_locally(
                 uid: uuid::Uuid::new_v4().simple().to_string(),
                 created,
                 attempted: false,
+                idents: Vec::new(),
             },
         )?;
     }
@@ -2196,6 +2202,7 @@ pub(crate) fn queue_attachment_locally(
             uid: uuid::Uuid::new_v4().simple().to_string(),
             created,
             attempted: false,
+            idents: Vec::new(),
         },
     )
 }
@@ -5329,6 +5336,7 @@ impl Store {
                             uid: entry.uid.clone(),
                             created: Vec::new(),
                             attempted: false,
+                            idents: Vec::new(),
                         };
                         let mut conflict = conflict_for(
                             &as_entry,
@@ -6607,6 +6615,7 @@ impl Store {
                     // Edits create nothing: what the first one recorded stays.
                     created: prev.created,
                     attempted: false,
+                    idents: Vec::new(),
                 };
                 let payload = seal(&serde_json::to_vec(&updated)?)?;
                 if must_move {
@@ -6649,6 +6658,7 @@ impl Store {
             uid,
             created,
             attempted,
+            idents: Vec::new(),
         };
         insert_outbox_row(&self.conn, &entry)
     }

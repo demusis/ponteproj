@@ -1,0 +1,1922 @@
+[
+  [
+    "index",
+    "analyses_document",
+    "analyses",
+    "CREATE INDEX analyses_document ON analyses(document_id,id)"
+  ],
+  [
+    "index",
+    "applied_mutations_by_time",
+    "applied_mutations",
+    "CREATE INDEX applied_mutations_by_time ON applied_mutations(created_at)"
+  ],
+  [
+    "index",
+    "attachments_owner",
+    "attachments",
+    "CREATE INDEX attachments_owner ON attachments(owner_kind,owner_id)"
+  ],
+  [
+    "index",
+    "captures_document",
+    "captures",
+    "CREATE INDEX captures_document ON captures(document_id,id)"
+  ],
+  [
+    "index",
+    "draft_generations_document",
+    "draft_generations",
+    "CREATE INDEX draft_generations_document ON draft_generations(document_id)"
+  ],
+  [
+    "index",
+    "draft_generations_template",
+    "draft_generations",
+    "CREATE INDEX draft_generations_template ON draft_generations(template_uid)"
+  ],
+  [
+    "index",
+    "drafts_document",
+    "drafts",
+    "CREATE INDEX drafts_document ON drafts(document_id,id)"
+  ],
+  [
+    "index",
+    "files_capture",
+    "files",
+    "CREATE INDEX files_capture ON files(capture_id)"
+  ],
+  [
+    "index",
+    "idx_saiop_attendances_batch",
+    "saiop_attendances",
+    "CREATE INDEX idx_saiop_attendances_batch ON saiop_attendances(batch_id)"
+  ],
+  [
+    "index",
+    "idx_saiop_attendances_ref",
+    "saiop_attendances",
+    "CREATE INDEX idx_saiop_attendances_ref ON saiop_attendances(reference_norm)"
+  ],
+  [
+    "index",
+    "links_source",
+    "document_links",
+    "CREATE INDEX links_source ON document_links(source_id)"
+  ],
+  [
+    "index",
+    "links_target",
+    "document_links",
+    "CREATE INDEX links_target ON document_links(target_id)"
+  ],
+  [
+    "index",
+    "links_unique_active",
+    "document_links",
+    "CREATE UNIQUE INDEX links_unique_active ON document_links(source_id,target_id,kind_hash) WHERE active=1"
+  ],
+  [
+    "index",
+    "mutation_receipts_by_time",
+    "mutation_receipts",
+    "CREATE INDEX mutation_receipts_by_time ON mutation_receipts(created_at)"
+  ],
+  [
+    "index",
+    "notes_document",
+    "notes",
+    "CREATE INDEX notes_document ON notes(document_id,id)"
+  ],
+  [
+    "index",
+    "resource_uses_resource",
+    "resource_uses",
+    "CREATE INDEX resource_uses_resource ON resource_uses(resource_uid)"
+  ],
+  [
+    "index",
+    "tasks_document",
+    "tasks",
+    "CREATE INDEX tasks_document ON tasks(document_id)"
+  ],
+  [
+    "index",
+    "tasks_uid",
+    "tasks",
+    "CREATE INDEX tasks_uid ON tasks(uid)"
+  ],
+  [
+    "index",
+    "trash_document",
+    "trash",
+    "CREATE INDEX trash_document ON trash(document_id)"
+  ],
+  [
+    "table",
+    "ai_config",
+    "ai_config",
+    "CREATE TABLE ai_config(\n                id INTEGER PRIMARY KEY CHECK(id=1),\n                payload BLOB NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "ai_consent",
+    "ai_consent",
+    "CREATE TABLE ai_consent(\n                identity TEXT NOT NULL,\n                destination TEXT NOT NULL,\n                at TEXT NOT NULL,\n                PRIMARY KEY(identity, destination)\n            )"
+  ],
+  [
+    "table",
+    "analyses",
+    "analyses",
+    "CREATE TABLE analyses (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n                    capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,\n                    payload BLOB NOT NULL,\n                    created_at TEXT NOT NULL\n                )"
+  ],
+  [
+    "table",
+    "applied_mutations",
+    "applied_mutations",
+    "CREATE TABLE applied_mutations(\n                uid TEXT PRIMARY KEY,\n                created_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "attachment_texts",
+    "attachment_texts",
+    "CREATE TABLE attachment_texts(\n            attachment_id INTEGER PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,\n            sha256 TEXT NOT NULL,\n            extractor TEXT NOT NULL,\n            extractor_version INTEGER NOT NULL,\n            status TEXT NOT NULL CHECK(status IN ('extracted','empty','failed','reviewed')),\n            payload BLOB NOT NULL,\n            created_at TEXT NOT NULL\n        )"
+  ],
+  [
+    "table",
+    "attachments",
+    "attachments",
+    "CREATE TABLE attachments(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                owner_kind TEXT NOT NULL CHECK(owner_kind IN ('document','task','saiop','example')),\n                owner_id INTEGER NOT NULL,\n                document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,\n                metadata BLOB NOT NULL,\n                payload BLOB NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "capture_refs",
+    "capture_refs",
+    "CREATE TABLE capture_refs(capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('draft','analysis')),owner_id INTEGER NOT NULL,owner_document INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,PRIMARY KEY(capture_id,owner_kind,owner_id))"
+  ],
+  [
+    "table",
+    "captures",
+    "captures",
+    "CREATE TABLE captures (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n                    content_hash BLOB NOT NULL,\n                    payload BLOB NOT NULL,\n                    created_at TEXT NOT NULL,\n                    UNIQUE(document_id,content_hash)\n                )"
+  ],
+  [
+    "table",
+    "categories",
+    "categories",
+    "CREATE TABLE categories(\n                id INTEGER PRIMARY KEY,\n                uid TEXT NOT NULL UNIQUE,\n                payload BLOB NOT NULL,\n                updated_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "client_cache",
+    "client_cache",
+    "CREATE TABLE client_cache(\n                id INTEGER PRIMARY KEY CHECK (id = 1),\n                schema INTEGER NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "document_links",
+    "document_links",
+    "CREATE TABLE document_links(id INTEGER PRIMARY KEY AUTOINCREMENT,source_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,target_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL,kind_hash BLOB NOT NULL,active INTEGER NOT NULL DEFAULT 1,CHECK(source_id<>target_id))"
+  ],
+  [
+    "table",
+    "documents",
+    "documents",
+    "CREATE TABLE documents (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    identity_hash BLOB NOT NULL UNIQUE,\n                    latest_capture_id INTEGER,\n                    last_seen_at TEXT NOT NULL\n                )"
+  ],
+  [
+    "table",
+    "draft_conferences",
+    "draft_conferences",
+    "CREATE TABLE draft_conferences(\n                text_sha256 TEXT NOT NULL,\n                document_identity TEXT NOT NULL,\n                payload BLOB NOT NULL,\n                at TEXT NOT NULL,\n                PRIMARY KEY(text_sha256, document_identity)\n            )"
+  ],
+  [
+    "table",
+    "draft_generations",
+    "draft_generations",
+    "CREATE TABLE draft_generations(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                uid TEXT NOT NULL UNIQUE,\n                document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n                capture_id INTEGER NOT NULL,\n                draft_id INTEGER,\n                template_uid TEXT,\n                payload BLOB NOT NULL,\n                created_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "drafts",
+    "drafts",
+    "CREATE TABLE drafts (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n                    capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,\n                    payload BLOB NOT NULL,\n                    created_at TEXT NOT NULL\n                )"
+  ],
+  [
+    "table",
+    "files",
+    "files",
+    "CREATE TABLE files(id INTEGER PRIMARY KEY AUTOINCREMENT,capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,metadata BLOB NOT NULL,payload BLOB NOT NULL)"
+  ],
+  [
+    "table",
+    "host_generation",
+    "host_generation",
+    "CREATE TABLE host_generation(\n                id INTEGER PRIMARY KEY CHECK(id=1),\n                value TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "import_receipts",
+    "import_receipts",
+    "CREATE TABLE import_receipts(\n                request_id TEXT PRIMARY KEY,\n                manifest TEXT NOT NULL,\n                completed_at TEXT NOT NULL,\n                state TEXT NOT NULL DEFAULT 'done'\n            )"
+  ],
+  [
+    "table",
+    "instruction_block_versions",
+    "instruction_block_versions",
+    "CREATE TABLE instruction_block_versions(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                block_id INTEGER NOT NULL REFERENCES instruction_blocks(id) ON DELETE CASCADE,\n                version INTEGER NOT NULL,\n                published INTEGER NOT NULL DEFAULT 0,\n                payload BLOB NOT NULL,\n                created_at TEXT NOT NULL,\n                UNIQUE(block_id, version)\n            )"
+  ],
+  [
+    "table",
+    "instruction_blocks",
+    "instruction_blocks",
+    "CREATE TABLE instruction_blocks(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                uid TEXT NOT NULL UNIQUE,\n                scope TEXT NOT NULL CHECK(scope IN ('personal','shared')),\n                status TEXT NOT NULL CHECK(status IN ('draft','published','archived')),\n                owner_hash BLOB,\n                current_version INTEGER NOT NULL DEFAULT 0,\n                payload BLOB NOT NULL,\n                updated_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "intranet_config",
+    "intranet_config",
+    "CREATE TABLE intranet_config(\n                id INTEGER PRIMARY KEY CHECK(id=1),\n                payload BLOB NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "item_versions",
+    "item_versions",
+    "CREATE TABLE item_versions(\n                kind TEXT NOT NULL,\n                item_id INTEGER NOT NULL,\n                version INTEGER NOT NULL,\n                payload BLOB NOT NULL,\n                PRIMARY KEY(kind,item_id)\n            )"
+  ],
+  [
+    "table",
+    "library_settings",
+    "library_settings",
+    "CREATE TABLE library_settings(\n                key TEXT PRIMARY KEY,\n                payload BLOB NOT NULL,\n                updated_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "mail_accounts",
+    "mail_accounts",
+    "CREATE TABLE mail_accounts(uid TEXT PRIMARY KEY, payload BLOB NOT NULL)"
+  ],
+  [
+    "table",
+    "mutation_receipts",
+    "mutation_receipts",
+    "CREATE TABLE mutation_receipts(\n                uid TEXT PRIMARY KEY,\n                created_at TEXT NOT NULL,\n                reply BLOB NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "notes",
+    "notes",
+    "CREATE TABLE notes (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n                    payload BLOB NOT NULL,\n                    created_at TEXT NOT NULL\n                )"
+  ],
+  [
+    "table",
+    "offline_conflicts",
+    "offline_conflicts",
+    "CREATE TABLE offline_conflicts(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                created_at TEXT NOT NULL,\n                payload BLOB NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "offline_frame_journal",
+    "offline_frame_journal",
+    "CREATE TABLE offline_frame_journal(\n            uid TEXT PRIMARY KEY,\n            created BLOB NOT NULL\n        )"
+  ],
+  [
+    "table",
+    "offline_id_map",
+    "offline_id_map",
+    "CREATE TABLE offline_id_map(\n            kind TEXT NOT NULL,\n            local_id INTEGER NOT NULL,\n            target_id INTEGER,\n            PRIMARY KEY(kind,local_id)\n        )"
+  ],
+  [
+    "table",
+    "offline_outbox",
+    "offline_outbox",
+    "CREATE TABLE offline_outbox(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                created_at TEXT NOT NULL,\n                payload BLOB NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "offline_watermark",
+    "offline_watermark",
+    "CREATE TABLE offline_watermark(\n            kind TEXT PRIMARY KEY,\n            max_id INTEGER NOT NULL\n        )"
+  ],
+  [
+    "table",
+    "page_text",
+    "page_text",
+    "CREATE TABLE page_text(file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,page INTEGER NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(file_id,page))"
+  ],
+  [
+    "table",
+    "personal_templates",
+    "personal_templates",
+    "CREATE TABLE personal_templates(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL)"
+  ],
+  [
+    "table",
+    "phone_operations",
+    "phone_operations",
+    "CREATE TABLE phone_operations(\n                operation_id TEXT PRIMARY KEY,\n                kind TEXT NOT NULL,\n                document_id INTEGER NOT NULL,\n                attachment_id INTEGER,\n                size INTEGER,\n                created_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "projects",
+    "projects",
+    "CREATE TABLE projects(\n                id INTEGER PRIMARY KEY,\n                uid TEXT NOT NULL UNIQUE,\n                payload BLOB NOT NULL,\n                updated_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "renumber_notices",
+    "renumber_notices",
+    "CREATE TABLE renumber_notices(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                dedup BLOB NOT NULL UNIQUE,\n                dismissed INTEGER NOT NULL DEFAULT 0,\n                payload BLOB NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "requests",
+    "requests",
+    "CREATE TABLE requests (\n                    request_id TEXT PRIMARY KEY,\n                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n                    capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE\n                )"
+  ],
+  [
+    "table",
+    "resource_uses",
+    "resource_uses",
+    "CREATE TABLE resource_uses(\n                id INTEGER PRIMARY KEY,\n                uid TEXT NOT NULL UNIQUE,\n                resource_uid TEXT NOT NULL,\n                status TEXT NOT NULL CHECK(status IN ('reservado','em_uso','devolvido','cancelado')),\n                document_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,\n                payload BLOB NOT NULL,\n                updated_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "resources",
+    "resources",
+    "CREATE TABLE resources(\n                id INTEGER PRIMARY KEY,\n                uid TEXT NOT NULL UNIQUE,\n                status TEXT NOT NULL CHECK(status IN ('ativo','fora_de_uso')),\n                payload BLOB NOT NULL,\n                updated_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "saiop_attendances",
+    "saiop_attendances",
+    "CREATE TABLE saiop_attendances (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                batch_id INTEGER REFERENCES saiop_batches(id) ON DELETE SET NULL,\n                source_row INTEGER,\n                document_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,\n                reference_norm TEXT NOT NULL,\n                payload BLOB NOT NULL,\n                raw_import BLOB,\n                updated_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "saiop_auto_failures",
+    "saiop_auto_failures",
+    "CREATE TABLE saiop_auto_failures (\n                document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,\n                payload BLOB NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "saiop_batches",
+    "saiop_batches",
+    "CREATE TABLE saiop_batches (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                file_sha256 TEXT NOT NULL UNIQUE,\n                payload BLOB NOT NULL,\n                imported_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "saiop_settings",
+    "saiop_settings",
+    "CREATE TABLE saiop_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+  ],
+  [
+    "table",
+    "tasks",
+    "tasks",
+    "CREATE TABLE tasks(id INTEGER PRIMARY KEY AUTOINCREMENT,document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL, uid TEXT)"
+  ],
+  [
+    "table",
+    "team_events",
+    "team_events",
+    "CREATE TABLE team_events(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                created_at TEXT NOT NULL,\n                payload BLOB NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "template_examples",
+    "template_examples",
+    "CREATE TABLE template_examples(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                uid TEXT NOT NULL UNIQUE,\n                template_id INTEGER NOT NULL REFERENCES work_templates(id) ON DELETE CASCADE,\n                status TEXT NOT NULL CHECK(status IN ('unverified','approved','rejected')),\n                payload BLOB NOT NULL,\n                created_at TEXT NOT NULL,\n                updated_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "table",
+    "trash",
+    "trash",
+    "CREATE TABLE trash(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task','attachment')),item_id INTEGER NOT NULL,document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id))"
+  ],
+  [
+    "table",
+    "trash_settings",
+    "trash_settings",
+    "CREATE TABLE trash_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
+  ],
+  [
+    "table",
+    "work_context",
+    "work_context",
+    "CREATE TABLE work_context(document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL)"
+  ],
+  [
+    "table",
+    "work_template_settings",
+    "work_template_settings",
+    "CREATE TABLE work_template_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+  ],
+  [
+    "table",
+    "work_template_versions",
+    "work_template_versions",
+    "CREATE TABLE work_template_versions(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                template_id INTEGER NOT NULL REFERENCES work_templates(id) ON DELETE CASCADE,\n                version INTEGER NOT NULL,\n                published INTEGER NOT NULL DEFAULT 0,\n                payload BLOB NOT NULL,\n                created_at TEXT NOT NULL,\n                UNIQUE(template_id, version)\n            )"
+  ],
+  [
+    "table",
+    "work_templates",
+    "work_templates",
+    "CREATE TABLE work_templates(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                uid TEXT NOT NULL UNIQUE,\n                scope TEXT NOT NULL CHECK(scope IN ('personal','shared')),\n                status TEXT NOT NULL CHECK(status IN ('draft','published','archived')),\n                owner_hash BLOB,\n                current_version INTEGER NOT NULL DEFAULT 0,\n                payload BLOB NOT NULL,\n                updated_at TEXT NOT NULL\n            )"
+  ],
+  [
+    "trigger",
+    "ponte_active_analyses_insert",
+    "analyses",
+    "CREATE TRIGGER ponte_active_analyses_insert BEFORE INSERT ON analyses WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_analyses_update",
+    "analyses",
+    "CREATE TRIGGER ponte_active_analyses_update BEFORE UPDATE ON analyses WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_attachments_insert",
+    "attachments",
+    "CREATE TRIGGER ponte_active_attachments_insert BEFORE INSERT ON attachments WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_attachments_update",
+    "attachments",
+    "CREATE TRIGGER ponte_active_attachments_update BEFORE UPDATE ON attachments WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_capture_refs_insert",
+    "capture_refs",
+    "CREATE TRIGGER ponte_active_capture_refs_insert BEFORE INSERT ON capture_refs WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.owner_document) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_capture_refs_update",
+    "capture_refs",
+    "CREATE TRIGGER ponte_active_capture_refs_update BEFORE UPDATE ON capture_refs WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.owner_document) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_captures_insert",
+    "captures",
+    "CREATE TRIGGER ponte_active_captures_insert BEFORE INSERT ON captures WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_captures_update",
+    "captures",
+    "CREATE TRIGGER ponte_active_captures_update BEFORE UPDATE ON captures WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_drafts_insert",
+    "drafts",
+    "CREATE TRIGGER ponte_active_drafts_insert BEFORE INSERT ON drafts WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_drafts_update",
+    "drafts",
+    "CREATE TRIGGER ponte_active_drafts_update BEFORE UPDATE ON drafts WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_notes_insert",
+    "notes",
+    "CREATE TRIGGER ponte_active_notes_insert BEFORE INSERT ON notes WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_notes_update",
+    "notes",
+    "CREATE TRIGGER ponte_active_notes_update BEFORE UPDATE ON notes WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_requests_insert",
+    "requests",
+    "CREATE TRIGGER ponte_active_requests_insert BEFORE INSERT ON requests WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_requests_update",
+    "requests",
+    "CREATE TRIGGER ponte_active_requests_update BEFORE UPDATE ON requests WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_tasks_insert",
+    "tasks",
+    "CREATE TRIGGER ponte_active_tasks_insert BEFORE INSERT ON tasks WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_tasks_update",
+    "tasks",
+    "CREATE TRIGGER ponte_active_tasks_update BEFORE UPDATE ON tasks WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_work_context_insert",
+    "work_context",
+    "CREATE TRIGGER ponte_active_work_context_insert BEFORE INSERT ON work_context WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_active_work_context_update",
+    "work_context",
+    "CREATE TRIGGER ponte_active_work_context_update BEFORE UPDATE ON work_context WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.document_id) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_ai_config_delete",
+    "ai_config",
+    "CREATE TRIGGER ponte_guard_ai_config_delete BEFORE DELETE ON ai_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_ai_config_insert",
+    "ai_config",
+    "CREATE TRIGGER ponte_guard_ai_config_insert BEFORE INSERT ON ai_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_ai_config_update",
+    "ai_config",
+    "CREATE TRIGGER ponte_guard_ai_config_update BEFORE UPDATE ON ai_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_analyses_delete",
+    "analyses",
+    "CREATE TRIGGER ponte_guard_analyses_delete BEFORE DELETE ON analyses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_analyses_insert",
+    "analyses",
+    "CREATE TRIGGER ponte_guard_analyses_insert BEFORE INSERT ON analyses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_analyses_update",
+    "analyses",
+    "CREATE TRIGGER ponte_guard_analyses_update BEFORE UPDATE ON analyses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_attachment_texts_delete",
+    "attachment_texts",
+    "CREATE TRIGGER ponte_guard_attachment_texts_delete BEFORE DELETE ON attachment_texts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_attachment_texts_insert",
+    "attachment_texts",
+    "CREATE TRIGGER ponte_guard_attachment_texts_insert BEFORE INSERT ON attachment_texts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_attachment_texts_update",
+    "attachment_texts",
+    "CREATE TRIGGER ponte_guard_attachment_texts_update BEFORE UPDATE ON attachment_texts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_attachments_delete",
+    "attachments",
+    "CREATE TRIGGER ponte_guard_attachments_delete BEFORE DELETE ON attachments BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_attachments_insert",
+    "attachments",
+    "CREATE TRIGGER ponte_guard_attachments_insert BEFORE INSERT ON attachments BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_attachments_update",
+    "attachments",
+    "CREATE TRIGGER ponte_guard_attachments_update BEFORE UPDATE ON attachments BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_capture_refs_delete",
+    "capture_refs",
+    "CREATE TRIGGER ponte_guard_capture_refs_delete BEFORE DELETE ON capture_refs BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_capture_refs_insert",
+    "capture_refs",
+    "CREATE TRIGGER ponte_guard_capture_refs_insert BEFORE INSERT ON capture_refs BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_capture_refs_update",
+    "capture_refs",
+    "CREATE TRIGGER ponte_guard_capture_refs_update BEFORE UPDATE ON capture_refs BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_captures_delete",
+    "captures",
+    "CREATE TRIGGER ponte_guard_captures_delete BEFORE DELETE ON captures BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_captures_insert",
+    "captures",
+    "CREATE TRIGGER ponte_guard_captures_insert BEFORE INSERT ON captures BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_captures_update",
+    "captures",
+    "CREATE TRIGGER ponte_guard_captures_update BEFORE UPDATE ON captures BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_categories_delete",
+    "categories",
+    "CREATE TRIGGER ponte_guard_categories_delete BEFORE DELETE ON categories BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_categories_insert",
+    "categories",
+    "CREATE TRIGGER ponte_guard_categories_insert BEFORE INSERT ON categories BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_categories_update",
+    "categories",
+    "CREATE TRIGGER ponte_guard_categories_update BEFORE UPDATE ON categories BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_document_links_delete",
+    "document_links",
+    "CREATE TRIGGER ponte_guard_document_links_delete BEFORE DELETE ON document_links BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_document_links_insert",
+    "document_links",
+    "CREATE TRIGGER ponte_guard_document_links_insert BEFORE INSERT ON document_links BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_document_links_update",
+    "document_links",
+    "CREATE TRIGGER ponte_guard_document_links_update BEFORE UPDATE ON document_links BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_documents_delete",
+    "documents",
+    "CREATE TRIGGER ponte_guard_documents_delete BEFORE DELETE ON documents BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_documents_insert",
+    "documents",
+    "CREATE TRIGGER ponte_guard_documents_insert BEFORE INSERT ON documents BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_documents_update",
+    "documents",
+    "CREATE TRIGGER ponte_guard_documents_update BEFORE UPDATE ON documents BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_draft_generations_delete",
+    "draft_generations",
+    "CREATE TRIGGER ponte_guard_draft_generations_delete BEFORE DELETE ON draft_generations BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_draft_generations_insert",
+    "draft_generations",
+    "CREATE TRIGGER ponte_guard_draft_generations_insert BEFORE INSERT ON draft_generations BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_draft_generations_update",
+    "draft_generations",
+    "CREATE TRIGGER ponte_guard_draft_generations_update BEFORE UPDATE ON draft_generations BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_drafts_delete",
+    "drafts",
+    "CREATE TRIGGER ponte_guard_drafts_delete BEFORE DELETE ON drafts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_drafts_insert",
+    "drafts",
+    "CREATE TRIGGER ponte_guard_drafts_insert BEFORE INSERT ON drafts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_drafts_update",
+    "drafts",
+    "CREATE TRIGGER ponte_guard_drafts_update BEFORE UPDATE ON drafts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_files_delete",
+    "files",
+    "CREATE TRIGGER ponte_guard_files_delete BEFORE DELETE ON files BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_files_insert",
+    "files",
+    "CREATE TRIGGER ponte_guard_files_insert BEFORE INSERT ON files BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_files_update",
+    "files",
+    "CREATE TRIGGER ponte_guard_files_update BEFORE UPDATE ON files BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_instruction_block_versions_delete",
+    "instruction_block_versions",
+    "CREATE TRIGGER ponte_guard_instruction_block_versions_delete BEFORE DELETE ON instruction_block_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_instruction_block_versions_insert",
+    "instruction_block_versions",
+    "CREATE TRIGGER ponte_guard_instruction_block_versions_insert BEFORE INSERT ON instruction_block_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_instruction_block_versions_update",
+    "instruction_block_versions",
+    "CREATE TRIGGER ponte_guard_instruction_block_versions_update BEFORE UPDATE ON instruction_block_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_instruction_blocks_delete",
+    "instruction_blocks",
+    "CREATE TRIGGER ponte_guard_instruction_blocks_delete BEFORE DELETE ON instruction_blocks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_instruction_blocks_insert",
+    "instruction_blocks",
+    "CREATE TRIGGER ponte_guard_instruction_blocks_insert BEFORE INSERT ON instruction_blocks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_instruction_blocks_update",
+    "instruction_blocks",
+    "CREATE TRIGGER ponte_guard_instruction_blocks_update BEFORE UPDATE ON instruction_blocks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_intranet_config_delete",
+    "intranet_config",
+    "CREATE TRIGGER ponte_guard_intranet_config_delete BEFORE DELETE ON intranet_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_intranet_config_insert",
+    "intranet_config",
+    "CREATE TRIGGER ponte_guard_intranet_config_insert BEFORE INSERT ON intranet_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_intranet_config_update",
+    "intranet_config",
+    "CREATE TRIGGER ponte_guard_intranet_config_update BEFORE UPDATE ON intranet_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_item_versions_delete",
+    "item_versions",
+    "CREATE TRIGGER ponte_guard_item_versions_delete BEFORE DELETE ON item_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_item_versions_insert",
+    "item_versions",
+    "CREATE TRIGGER ponte_guard_item_versions_insert BEFORE INSERT ON item_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_item_versions_update",
+    "item_versions",
+    "CREATE TRIGGER ponte_guard_item_versions_update BEFORE UPDATE ON item_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_library_settings_delete",
+    "library_settings",
+    "CREATE TRIGGER ponte_guard_library_settings_delete BEFORE DELETE ON library_settings BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_library_settings_insert",
+    "library_settings",
+    "CREATE TRIGGER ponte_guard_library_settings_insert BEFORE INSERT ON library_settings BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_library_settings_update",
+    "library_settings",
+    "CREATE TRIGGER ponte_guard_library_settings_update BEFORE UPDATE ON library_settings BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_mail_accounts_delete",
+    "mail_accounts",
+    "CREATE TRIGGER ponte_guard_mail_accounts_delete BEFORE DELETE ON mail_accounts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_mail_accounts_insert",
+    "mail_accounts",
+    "CREATE TRIGGER ponte_guard_mail_accounts_insert BEFORE INSERT ON mail_accounts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_mail_accounts_update",
+    "mail_accounts",
+    "CREATE TRIGGER ponte_guard_mail_accounts_update BEFORE UPDATE ON mail_accounts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_notes_delete",
+    "notes",
+    "CREATE TRIGGER ponte_guard_notes_delete BEFORE DELETE ON notes BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_notes_insert",
+    "notes",
+    "CREATE TRIGGER ponte_guard_notes_insert BEFORE INSERT ON notes BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_notes_update",
+    "notes",
+    "CREATE TRIGGER ponte_guard_notes_update BEFORE UPDATE ON notes BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_offline_conflicts_delete",
+    "offline_conflicts",
+    "CREATE TRIGGER ponte_guard_offline_conflicts_delete BEFORE DELETE ON offline_conflicts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_offline_conflicts_insert",
+    "offline_conflicts",
+    "CREATE TRIGGER ponte_guard_offline_conflicts_insert BEFORE INSERT ON offline_conflicts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_offline_conflicts_update",
+    "offline_conflicts",
+    "CREATE TRIGGER ponte_guard_offline_conflicts_update BEFORE UPDATE ON offline_conflicts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_offline_outbox_delete",
+    "offline_outbox",
+    "CREATE TRIGGER ponte_guard_offline_outbox_delete BEFORE DELETE ON offline_outbox BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_offline_outbox_insert",
+    "offline_outbox",
+    "CREATE TRIGGER ponte_guard_offline_outbox_insert BEFORE INSERT ON offline_outbox BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_offline_outbox_update",
+    "offline_outbox",
+    "CREATE TRIGGER ponte_guard_offline_outbox_update BEFORE UPDATE ON offline_outbox BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_page_text_delete",
+    "page_text",
+    "CREATE TRIGGER ponte_guard_page_text_delete BEFORE DELETE ON page_text BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_page_text_insert",
+    "page_text",
+    "CREATE TRIGGER ponte_guard_page_text_insert BEFORE INSERT ON page_text BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_page_text_update",
+    "page_text",
+    "CREATE TRIGGER ponte_guard_page_text_update BEFORE UPDATE ON page_text BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_personal_templates_delete",
+    "personal_templates",
+    "CREATE TRIGGER ponte_guard_personal_templates_delete BEFORE DELETE ON personal_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_personal_templates_insert",
+    "personal_templates",
+    "CREATE TRIGGER ponte_guard_personal_templates_insert BEFORE INSERT ON personal_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_personal_templates_update",
+    "personal_templates",
+    "CREATE TRIGGER ponte_guard_personal_templates_update BEFORE UPDATE ON personal_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_projects_delete",
+    "projects",
+    "CREATE TRIGGER ponte_guard_projects_delete BEFORE DELETE ON projects BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_projects_insert",
+    "projects",
+    "CREATE TRIGGER ponte_guard_projects_insert BEFORE INSERT ON projects BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_projects_update",
+    "projects",
+    "CREATE TRIGGER ponte_guard_projects_update BEFORE UPDATE ON projects BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_requests_delete",
+    "requests",
+    "CREATE TRIGGER ponte_guard_requests_delete BEFORE DELETE ON requests BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_requests_insert",
+    "requests",
+    "CREATE TRIGGER ponte_guard_requests_insert BEFORE INSERT ON requests BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_requests_update",
+    "requests",
+    "CREATE TRIGGER ponte_guard_requests_update BEFORE UPDATE ON requests BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_resource_uses_delete",
+    "resource_uses",
+    "CREATE TRIGGER ponte_guard_resource_uses_delete BEFORE DELETE ON resource_uses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_resource_uses_insert",
+    "resource_uses",
+    "CREATE TRIGGER ponte_guard_resource_uses_insert BEFORE INSERT ON resource_uses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_resource_uses_update",
+    "resource_uses",
+    "CREATE TRIGGER ponte_guard_resource_uses_update BEFORE UPDATE ON resource_uses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_resources_delete",
+    "resources",
+    "CREATE TRIGGER ponte_guard_resources_delete BEFORE DELETE ON resources BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_resources_insert",
+    "resources",
+    "CREATE TRIGGER ponte_guard_resources_insert BEFORE INSERT ON resources BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_resources_update",
+    "resources",
+    "CREATE TRIGGER ponte_guard_resources_update BEFORE UPDATE ON resources BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_saiop_attendances_delete",
+    "saiop_attendances",
+    "CREATE TRIGGER ponte_guard_saiop_attendances_delete BEFORE DELETE ON saiop_attendances BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_saiop_attendances_insert",
+    "saiop_attendances",
+    "CREATE TRIGGER ponte_guard_saiop_attendances_insert BEFORE INSERT ON saiop_attendances BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_saiop_attendances_update",
+    "saiop_attendances",
+    "CREATE TRIGGER ponte_guard_saiop_attendances_update BEFORE UPDATE ON saiop_attendances BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_saiop_batches_delete",
+    "saiop_batches",
+    "CREATE TRIGGER ponte_guard_saiop_batches_delete BEFORE DELETE ON saiop_batches BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_saiop_batches_insert",
+    "saiop_batches",
+    "CREATE TRIGGER ponte_guard_saiop_batches_insert BEFORE INSERT ON saiop_batches BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_saiop_batches_update",
+    "saiop_batches",
+    "CREATE TRIGGER ponte_guard_saiop_batches_update BEFORE UPDATE ON saiop_batches BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_tasks_delete",
+    "tasks",
+    "CREATE TRIGGER ponte_guard_tasks_delete BEFORE DELETE ON tasks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_tasks_insert",
+    "tasks",
+    "CREATE TRIGGER ponte_guard_tasks_insert BEFORE INSERT ON tasks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_tasks_update",
+    "tasks",
+    "CREATE TRIGGER ponte_guard_tasks_update BEFORE UPDATE ON tasks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_team_events_delete",
+    "team_events",
+    "CREATE TRIGGER ponte_guard_team_events_delete BEFORE DELETE ON team_events BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_team_events_insert",
+    "team_events",
+    "CREATE TRIGGER ponte_guard_team_events_insert BEFORE INSERT ON team_events BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_team_events_update",
+    "team_events",
+    "CREATE TRIGGER ponte_guard_team_events_update BEFORE UPDATE ON team_events BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_template_examples_delete",
+    "template_examples",
+    "CREATE TRIGGER ponte_guard_template_examples_delete BEFORE DELETE ON template_examples BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_template_examples_insert",
+    "template_examples",
+    "CREATE TRIGGER ponte_guard_template_examples_insert BEFORE INSERT ON template_examples BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_template_examples_update",
+    "template_examples",
+    "CREATE TRIGGER ponte_guard_template_examples_update BEFORE UPDATE ON template_examples BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_trash_delete",
+    "trash",
+    "CREATE TRIGGER ponte_guard_trash_delete BEFORE DELETE ON trash BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_trash_insert",
+    "trash",
+    "CREATE TRIGGER ponte_guard_trash_insert BEFORE INSERT ON trash BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_trash_update",
+    "trash",
+    "CREATE TRIGGER ponte_guard_trash_update BEFORE UPDATE ON trash BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_ai_config_delete",
+    "ai_config",
+    "CREATE TRIGGER ponte_guard_v21_ai_config_delete BEFORE DELETE ON ai_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_ai_config_insert",
+    "ai_config",
+    "CREATE TRIGGER ponte_guard_v21_ai_config_insert BEFORE INSERT ON ai_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_ai_config_update",
+    "ai_config",
+    "CREATE TRIGGER ponte_guard_v21_ai_config_update BEFORE UPDATE ON ai_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_analyses_delete",
+    "analyses",
+    "CREATE TRIGGER ponte_guard_v21_analyses_delete BEFORE DELETE ON analyses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_analyses_insert",
+    "analyses",
+    "CREATE TRIGGER ponte_guard_v21_analyses_insert BEFORE INSERT ON analyses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_analyses_update",
+    "analyses",
+    "CREATE TRIGGER ponte_guard_v21_analyses_update BEFORE UPDATE ON analyses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_attachment_texts_delete",
+    "attachment_texts",
+    "CREATE TRIGGER ponte_guard_v21_attachment_texts_delete BEFORE DELETE ON attachment_texts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_attachment_texts_insert",
+    "attachment_texts",
+    "CREATE TRIGGER ponte_guard_v21_attachment_texts_insert BEFORE INSERT ON attachment_texts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_attachment_texts_update",
+    "attachment_texts",
+    "CREATE TRIGGER ponte_guard_v21_attachment_texts_update BEFORE UPDATE ON attachment_texts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_attachments_delete",
+    "attachments",
+    "CREATE TRIGGER ponte_guard_v21_attachments_delete BEFORE DELETE ON attachments BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_attachments_insert",
+    "attachments",
+    "CREATE TRIGGER ponte_guard_v21_attachments_insert BEFORE INSERT ON attachments BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_attachments_update",
+    "attachments",
+    "CREATE TRIGGER ponte_guard_v21_attachments_update BEFORE UPDATE ON attachments BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_capture_refs_delete",
+    "capture_refs",
+    "CREATE TRIGGER ponte_guard_v21_capture_refs_delete BEFORE DELETE ON capture_refs BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_capture_refs_insert",
+    "capture_refs",
+    "CREATE TRIGGER ponte_guard_v21_capture_refs_insert BEFORE INSERT ON capture_refs BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_capture_refs_update",
+    "capture_refs",
+    "CREATE TRIGGER ponte_guard_v21_capture_refs_update BEFORE UPDATE ON capture_refs BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_captures_delete",
+    "captures",
+    "CREATE TRIGGER ponte_guard_v21_captures_delete BEFORE DELETE ON captures BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_captures_insert",
+    "captures",
+    "CREATE TRIGGER ponte_guard_v21_captures_insert BEFORE INSERT ON captures BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_captures_update",
+    "captures",
+    "CREATE TRIGGER ponte_guard_v21_captures_update BEFORE UPDATE ON captures BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_categories_delete",
+    "categories",
+    "CREATE TRIGGER ponte_guard_v21_categories_delete BEFORE DELETE ON categories BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_categories_insert",
+    "categories",
+    "CREATE TRIGGER ponte_guard_v21_categories_insert BEFORE INSERT ON categories BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_categories_update",
+    "categories",
+    "CREATE TRIGGER ponte_guard_v21_categories_update BEFORE UPDATE ON categories BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_document_links_delete",
+    "document_links",
+    "CREATE TRIGGER ponte_guard_v21_document_links_delete BEFORE DELETE ON document_links BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_document_links_insert",
+    "document_links",
+    "CREATE TRIGGER ponte_guard_v21_document_links_insert BEFORE INSERT ON document_links BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_document_links_update",
+    "document_links",
+    "CREATE TRIGGER ponte_guard_v21_document_links_update BEFORE UPDATE ON document_links BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_documents_delete",
+    "documents",
+    "CREATE TRIGGER ponte_guard_v21_documents_delete BEFORE DELETE ON documents BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_documents_insert",
+    "documents",
+    "CREATE TRIGGER ponte_guard_v21_documents_insert BEFORE INSERT ON documents BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_documents_update",
+    "documents",
+    "CREATE TRIGGER ponte_guard_v21_documents_update BEFORE UPDATE ON documents BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_draft_generations_delete",
+    "draft_generations",
+    "CREATE TRIGGER ponte_guard_v21_draft_generations_delete BEFORE DELETE ON draft_generations BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_draft_generations_insert",
+    "draft_generations",
+    "CREATE TRIGGER ponte_guard_v21_draft_generations_insert BEFORE INSERT ON draft_generations BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_draft_generations_update",
+    "draft_generations",
+    "CREATE TRIGGER ponte_guard_v21_draft_generations_update BEFORE UPDATE ON draft_generations BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_drafts_delete",
+    "drafts",
+    "CREATE TRIGGER ponte_guard_v21_drafts_delete BEFORE DELETE ON drafts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_drafts_insert",
+    "drafts",
+    "CREATE TRIGGER ponte_guard_v21_drafts_insert BEFORE INSERT ON drafts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_drafts_update",
+    "drafts",
+    "CREATE TRIGGER ponte_guard_v21_drafts_update BEFORE UPDATE ON drafts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_files_delete",
+    "files",
+    "CREATE TRIGGER ponte_guard_v21_files_delete BEFORE DELETE ON files BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_files_insert",
+    "files",
+    "CREATE TRIGGER ponte_guard_v21_files_insert BEFORE INSERT ON files BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_files_update",
+    "files",
+    "CREATE TRIGGER ponte_guard_v21_files_update BEFORE UPDATE ON files BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_instruction_block_versions_delete",
+    "instruction_block_versions",
+    "CREATE TRIGGER ponte_guard_v21_instruction_block_versions_delete BEFORE DELETE ON instruction_block_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_instruction_block_versions_insert",
+    "instruction_block_versions",
+    "CREATE TRIGGER ponte_guard_v21_instruction_block_versions_insert BEFORE INSERT ON instruction_block_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_instruction_block_versions_update",
+    "instruction_block_versions",
+    "CREATE TRIGGER ponte_guard_v21_instruction_block_versions_update BEFORE UPDATE ON instruction_block_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_instruction_blocks_delete",
+    "instruction_blocks",
+    "CREATE TRIGGER ponte_guard_v21_instruction_blocks_delete BEFORE DELETE ON instruction_blocks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_instruction_blocks_insert",
+    "instruction_blocks",
+    "CREATE TRIGGER ponte_guard_v21_instruction_blocks_insert BEFORE INSERT ON instruction_blocks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_instruction_blocks_update",
+    "instruction_blocks",
+    "CREATE TRIGGER ponte_guard_v21_instruction_blocks_update BEFORE UPDATE ON instruction_blocks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_intranet_config_delete",
+    "intranet_config",
+    "CREATE TRIGGER ponte_guard_v21_intranet_config_delete BEFORE DELETE ON intranet_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_intranet_config_insert",
+    "intranet_config",
+    "CREATE TRIGGER ponte_guard_v21_intranet_config_insert BEFORE INSERT ON intranet_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_intranet_config_update",
+    "intranet_config",
+    "CREATE TRIGGER ponte_guard_v21_intranet_config_update BEFORE UPDATE ON intranet_config BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_item_versions_delete",
+    "item_versions",
+    "CREATE TRIGGER ponte_guard_v21_item_versions_delete BEFORE DELETE ON item_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_item_versions_insert",
+    "item_versions",
+    "CREATE TRIGGER ponte_guard_v21_item_versions_insert BEFORE INSERT ON item_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_item_versions_update",
+    "item_versions",
+    "CREATE TRIGGER ponte_guard_v21_item_versions_update BEFORE UPDATE ON item_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_library_settings_delete",
+    "library_settings",
+    "CREATE TRIGGER ponte_guard_v21_library_settings_delete BEFORE DELETE ON library_settings BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_library_settings_insert",
+    "library_settings",
+    "CREATE TRIGGER ponte_guard_v21_library_settings_insert BEFORE INSERT ON library_settings BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_library_settings_update",
+    "library_settings",
+    "CREATE TRIGGER ponte_guard_v21_library_settings_update BEFORE UPDATE ON library_settings BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_mail_accounts_delete",
+    "mail_accounts",
+    "CREATE TRIGGER ponte_guard_v21_mail_accounts_delete BEFORE DELETE ON mail_accounts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_mail_accounts_insert",
+    "mail_accounts",
+    "CREATE TRIGGER ponte_guard_v21_mail_accounts_insert BEFORE INSERT ON mail_accounts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_mail_accounts_update",
+    "mail_accounts",
+    "CREATE TRIGGER ponte_guard_v21_mail_accounts_update BEFORE UPDATE ON mail_accounts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_notes_delete",
+    "notes",
+    "CREATE TRIGGER ponte_guard_v21_notes_delete BEFORE DELETE ON notes BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_notes_insert",
+    "notes",
+    "CREATE TRIGGER ponte_guard_v21_notes_insert BEFORE INSERT ON notes BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_notes_update",
+    "notes",
+    "CREATE TRIGGER ponte_guard_v21_notes_update BEFORE UPDATE ON notes BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_offline_conflicts_delete",
+    "offline_conflicts",
+    "CREATE TRIGGER ponte_guard_v21_offline_conflicts_delete BEFORE DELETE ON offline_conflicts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_offline_conflicts_insert",
+    "offline_conflicts",
+    "CREATE TRIGGER ponte_guard_v21_offline_conflicts_insert BEFORE INSERT ON offline_conflicts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_offline_conflicts_update",
+    "offline_conflicts",
+    "CREATE TRIGGER ponte_guard_v21_offline_conflicts_update BEFORE UPDATE ON offline_conflicts BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_offline_outbox_delete",
+    "offline_outbox",
+    "CREATE TRIGGER ponte_guard_v21_offline_outbox_delete BEFORE DELETE ON offline_outbox BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_offline_outbox_insert",
+    "offline_outbox",
+    "CREATE TRIGGER ponte_guard_v21_offline_outbox_insert BEFORE INSERT ON offline_outbox BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_offline_outbox_update",
+    "offline_outbox",
+    "CREATE TRIGGER ponte_guard_v21_offline_outbox_update BEFORE UPDATE ON offline_outbox BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_page_text_delete",
+    "page_text",
+    "CREATE TRIGGER ponte_guard_v21_page_text_delete BEFORE DELETE ON page_text BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_page_text_insert",
+    "page_text",
+    "CREATE TRIGGER ponte_guard_v21_page_text_insert BEFORE INSERT ON page_text BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_page_text_update",
+    "page_text",
+    "CREATE TRIGGER ponte_guard_v21_page_text_update BEFORE UPDATE ON page_text BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_personal_templates_delete",
+    "personal_templates",
+    "CREATE TRIGGER ponte_guard_v21_personal_templates_delete BEFORE DELETE ON personal_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_personal_templates_insert",
+    "personal_templates",
+    "CREATE TRIGGER ponte_guard_v21_personal_templates_insert BEFORE INSERT ON personal_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_personal_templates_update",
+    "personal_templates",
+    "CREATE TRIGGER ponte_guard_v21_personal_templates_update BEFORE UPDATE ON personal_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_projects_delete",
+    "projects",
+    "CREATE TRIGGER ponte_guard_v21_projects_delete BEFORE DELETE ON projects BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_projects_insert",
+    "projects",
+    "CREATE TRIGGER ponte_guard_v21_projects_insert BEFORE INSERT ON projects BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_projects_update",
+    "projects",
+    "CREATE TRIGGER ponte_guard_v21_projects_update BEFORE UPDATE ON projects BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_requests_delete",
+    "requests",
+    "CREATE TRIGGER ponte_guard_v21_requests_delete BEFORE DELETE ON requests BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_requests_insert",
+    "requests",
+    "CREATE TRIGGER ponte_guard_v21_requests_insert BEFORE INSERT ON requests BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_requests_update",
+    "requests",
+    "CREATE TRIGGER ponte_guard_v21_requests_update BEFORE UPDATE ON requests BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_resource_uses_delete",
+    "resource_uses",
+    "CREATE TRIGGER ponte_guard_v21_resource_uses_delete BEFORE DELETE ON resource_uses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_resource_uses_insert",
+    "resource_uses",
+    "CREATE TRIGGER ponte_guard_v21_resource_uses_insert BEFORE INSERT ON resource_uses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_resource_uses_update",
+    "resource_uses",
+    "CREATE TRIGGER ponte_guard_v21_resource_uses_update BEFORE UPDATE ON resource_uses BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_resources_delete",
+    "resources",
+    "CREATE TRIGGER ponte_guard_v21_resources_delete BEFORE DELETE ON resources BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_resources_insert",
+    "resources",
+    "CREATE TRIGGER ponte_guard_v21_resources_insert BEFORE INSERT ON resources BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_resources_update",
+    "resources",
+    "CREATE TRIGGER ponte_guard_v21_resources_update BEFORE UPDATE ON resources BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_saiop_attendances_delete",
+    "saiop_attendances",
+    "CREATE TRIGGER ponte_guard_v21_saiop_attendances_delete BEFORE DELETE ON saiop_attendances BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_saiop_attendances_insert",
+    "saiop_attendances",
+    "CREATE TRIGGER ponte_guard_v21_saiop_attendances_insert BEFORE INSERT ON saiop_attendances BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_saiop_attendances_update",
+    "saiop_attendances",
+    "CREATE TRIGGER ponte_guard_v21_saiop_attendances_update BEFORE UPDATE ON saiop_attendances BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_saiop_batches_delete",
+    "saiop_batches",
+    "CREATE TRIGGER ponte_guard_v21_saiop_batches_delete BEFORE DELETE ON saiop_batches BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_saiop_batches_insert",
+    "saiop_batches",
+    "CREATE TRIGGER ponte_guard_v21_saiop_batches_insert BEFORE INSERT ON saiop_batches BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_saiop_batches_update",
+    "saiop_batches",
+    "CREATE TRIGGER ponte_guard_v21_saiop_batches_update BEFORE UPDATE ON saiop_batches BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_tasks_delete",
+    "tasks",
+    "CREATE TRIGGER ponte_guard_v21_tasks_delete BEFORE DELETE ON tasks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_tasks_insert",
+    "tasks",
+    "CREATE TRIGGER ponte_guard_v21_tasks_insert BEFORE INSERT ON tasks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_tasks_update",
+    "tasks",
+    "CREATE TRIGGER ponte_guard_v21_tasks_update BEFORE UPDATE ON tasks BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_team_events_delete",
+    "team_events",
+    "CREATE TRIGGER ponte_guard_v21_team_events_delete BEFORE DELETE ON team_events BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_team_events_insert",
+    "team_events",
+    "CREATE TRIGGER ponte_guard_v21_team_events_insert BEFORE INSERT ON team_events BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_team_events_update",
+    "team_events",
+    "CREATE TRIGGER ponte_guard_v21_team_events_update BEFORE UPDATE ON team_events BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_template_examples_delete",
+    "template_examples",
+    "CREATE TRIGGER ponte_guard_v21_template_examples_delete BEFORE DELETE ON template_examples BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_template_examples_insert",
+    "template_examples",
+    "CREATE TRIGGER ponte_guard_v21_template_examples_insert BEFORE INSERT ON template_examples BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_template_examples_update",
+    "template_examples",
+    "CREATE TRIGGER ponte_guard_v21_template_examples_update BEFORE UPDATE ON template_examples BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_trash_delete",
+    "trash",
+    "CREATE TRIGGER ponte_guard_v21_trash_delete BEFORE DELETE ON trash BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_trash_insert",
+    "trash",
+    "CREATE TRIGGER ponte_guard_v21_trash_insert BEFORE INSERT ON trash BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_trash_update",
+    "trash",
+    "CREATE TRIGGER ponte_guard_v21_trash_update BEFORE UPDATE ON trash BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_work_context_delete",
+    "work_context",
+    "CREATE TRIGGER ponte_guard_v21_work_context_delete BEFORE DELETE ON work_context BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_work_context_insert",
+    "work_context",
+    "CREATE TRIGGER ponte_guard_v21_work_context_insert BEFORE INSERT ON work_context BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_work_context_update",
+    "work_context",
+    "CREATE TRIGGER ponte_guard_v21_work_context_update BEFORE UPDATE ON work_context BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_work_template_versions_delete",
+    "work_template_versions",
+    "CREATE TRIGGER ponte_guard_v21_work_template_versions_delete BEFORE DELETE ON work_template_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_work_template_versions_insert",
+    "work_template_versions",
+    "CREATE TRIGGER ponte_guard_v21_work_template_versions_insert BEFORE INSERT ON work_template_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_work_template_versions_update",
+    "work_template_versions",
+    "CREATE TRIGGER ponte_guard_v21_work_template_versions_update BEFORE UPDATE ON work_template_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_work_templates_delete",
+    "work_templates",
+    "CREATE TRIGGER ponte_guard_v21_work_templates_delete BEFORE DELETE ON work_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_work_templates_insert",
+    "work_templates",
+    "CREATE TRIGGER ponte_guard_v21_work_templates_insert BEFORE INSERT ON work_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_v21_work_templates_update",
+    "work_templates",
+    "CREATE TRIGGER ponte_guard_v21_work_templates_update BEFORE UPDATE ON work_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_work_context_delete",
+    "work_context",
+    "CREATE TRIGGER ponte_guard_work_context_delete BEFORE DELETE ON work_context BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_work_context_insert",
+    "work_context",
+    "CREATE TRIGGER ponte_guard_work_context_insert BEFORE INSERT ON work_context BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_work_context_update",
+    "work_context",
+    "CREATE TRIGGER ponte_guard_work_context_update BEFORE UPDATE ON work_context BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_work_template_versions_delete",
+    "work_template_versions",
+    "CREATE TRIGGER ponte_guard_work_template_versions_delete BEFORE DELETE ON work_template_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_work_template_versions_insert",
+    "work_template_versions",
+    "CREATE TRIGGER ponte_guard_work_template_versions_insert BEFORE INSERT ON work_template_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_work_template_versions_update",
+    "work_template_versions",
+    "CREATE TRIGGER ponte_guard_work_template_versions_update BEFORE UPDATE ON work_template_versions BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_work_templates_delete",
+    "work_templates",
+    "CREATE TRIGGER ponte_guard_work_templates_delete BEFORE DELETE ON work_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_work_templates_insert",
+    "work_templates",
+    "CREATE TRIGGER ponte_guard_work_templates_insert BEFORE INSERT ON work_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_guard_work_templates_update",
+    "work_templates",
+    "CREATE TRIGGER ponte_guard_work_templates_update BEFORE UPDATE ON work_templates BEGIN SELECT CASE WHEN ponte_client_schema() < 21 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END"
+  ],
+  [
+    "trigger",
+    "ponte_item_active_analyses",
+    "analyses",
+    "CREATE TRIGGER ponte_item_active_analyses BEFORE UPDATE ON analyses WHEN EXISTS(SELECT 1 FROM trash WHERE kind='capture' AND item_id=NEW.capture_id) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_item_active_captures",
+    "captures",
+    "CREATE TRIGGER ponte_item_active_captures BEFORE UPDATE ON captures WHEN EXISTS(SELECT 1 FROM trash WHERE kind='capture' AND item_id=NEW.id) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_item_active_documents",
+    "documents",
+    "CREATE TRIGGER ponte_item_active_documents BEFORE UPDATE ON documents WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.id) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_item_active_drafts",
+    "drafts",
+    "CREATE TRIGGER ponte_item_active_drafts BEFORE UPDATE ON drafts WHEN EXISTS(SELECT 1 FROM trash WHERE kind='capture' AND item_id=NEW.capture_id) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_item_active_files",
+    "files",
+    "CREATE TRIGGER ponte_item_active_files BEFORE UPDATE ON files WHEN EXISTS(SELECT 1 FROM trash WHERE kind='capture' AND item_id=NEW.capture_id) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_item_active_requests",
+    "requests",
+    "CREATE TRIGGER ponte_item_active_requests BEFORE UPDATE ON requests WHEN EXISTS(SELECT 1 FROM trash WHERE kind='capture' AND item_id=NEW.capture_id) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_item_active_tasks",
+    "tasks",
+    "CREATE TRIGGER ponte_item_active_tasks BEFORE UPDATE ON tasks WHEN EXISTS(SELECT 1 FROM trash WHERE kind='task' AND item_id=NEW.id) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_parent_active_document_links_insert",
+    "document_links",
+    "CREATE TRIGGER ponte_parent_active_document_links_insert BEFORE INSERT ON document_links WHEN EXISTS(SELECT 1 FROM trash t WHERE t.kind='document' AND t.item_id IN (NEW.source_id,NEW.target_id)) BEGIN SELECT RAISE(ABORT,'Item ou documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_parent_active_document_links_update",
+    "document_links",
+    "CREATE TRIGGER ponte_parent_active_document_links_update BEFORE UPDATE ON document_links WHEN EXISTS(SELECT 1 FROM trash t WHERE t.kind='document' AND t.item_id IN (NEW.source_id,NEW.target_id)) BEGIN SELECT RAISE(ABORT,'Item ou documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_parent_active_files_insert",
+    "files",
+    "CREATE TRIGGER ponte_parent_active_files_insert BEFORE INSERT ON files WHEN EXISTS(SELECT 1 FROM captures c JOIN trash t ON (t.kind='document' AND t.item_id=c.document_id) OR (t.kind='capture' AND t.item_id=c.id) WHERE c.id=NEW.capture_id) BEGIN SELECT RAISE(ABORT,'Item ou documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_parent_active_files_update",
+    "files",
+    "CREATE TRIGGER ponte_parent_active_files_update BEFORE UPDATE ON files WHEN EXISTS(SELECT 1 FROM captures c JOIN trash t ON (t.kind='document' AND t.item_id=c.document_id) OR (t.kind='capture' AND t.item_id=c.id) WHERE c.id=NEW.capture_id) BEGIN SELECT RAISE(ABORT,'Item ou documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_parent_active_page_text_insert",
+    "page_text",
+    "CREATE TRIGGER ponte_parent_active_page_text_insert BEFORE INSERT ON page_text WHEN EXISTS(SELECT 1 FROM files f JOIN captures c ON c.id=f.capture_id JOIN trash t ON (t.kind='document' AND t.item_id=c.document_id) OR (t.kind='capture' AND t.item_id=c.id) WHERE f.id=NEW.file_id) BEGIN SELECT RAISE(ABORT,'Item ou documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_parent_active_page_text_update",
+    "page_text",
+    "CREATE TRIGGER ponte_parent_active_page_text_update BEFORE UPDATE ON page_text WHEN EXISTS(SELECT 1 FROM files f JOIN captures c ON c.id=f.capture_id JOIN trash t ON (t.kind='document' AND t.item_id=c.document_id) OR (t.kind='capture' AND t.item_id=c.id) WHERE f.id=NEW.file_id) BEGIN SELECT RAISE(ABORT,'Item ou documento na lixeira; restaure antes de editar.'); END"
+  ],
+  [
+    "trigger",
+    "ponte_refs_cleanup_analyses",
+    "analyses",
+    "CREATE TRIGGER ponte_refs_cleanup_analyses AFTER DELETE ON analyses BEGIN DELETE FROM capture_refs WHERE owner_kind='analysis' AND owner_id=OLD.id; END"
+  ],
+  [
+    "trigger",
+    "ponte_refs_cleanup_drafts",
+    "drafts",
+    "CREATE TRIGGER ponte_refs_cleanup_drafts AFTER DELETE ON drafts BEGIN DELETE FROM capture_refs WHERE owner_kind='draft' AND owner_id=OLD.id; END"
+  ]
+]

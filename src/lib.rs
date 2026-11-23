@@ -75,6 +75,11 @@ pub mod workload;
 /// F1 of Frente F: characterization tests of row ids (tests only).
 #[cfg(test)]
 mod f1_inventory;
+/// F2a of Frente F: acceptance tests of the library schema 22 (tests only).
+#[cfg(test)]
+mod f2a_tests;
+/// Identities of the items (library schema 22).
+pub mod idents;
 
 pub mod dossier;
 

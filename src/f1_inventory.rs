@@ -363,7 +363,7 @@ fn one(store: &Store, sql: &str, value: rusqlite::types::Value) -> Option<i64> {
 
 /// What `fill` made that is addressed by a uid (row ids are found by it).
 #[derive(Clone, Debug, Default)]
-struct Made {
+pub(crate) struct Made {
     tag: String,
     resource: String,
     resource_use: String,
@@ -378,7 +378,7 @@ struct Made {
 /// Creates one item of every kind the snapshot carries, through the public
 /// API (in shared-folder mode each one is applied here and queued). `tag`
 /// keeps two fills apart.
-fn fill(store: &mut Store, tag: &str) -> Made {
+pub(crate) fn fill(store: &mut Store, tag: &str) -> Made {
     use crate::attachments::Owner;
     use base64::Engine;
     let pdf_url = format!("https://www.sigadoc.mt.gov.br/arquivos/{tag}.pdf");
