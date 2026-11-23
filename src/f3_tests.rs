@@ -773,3 +773,66 @@ fn f3_0a1_refs_check_per_site() {
     let back: Refs = serde_json::from_value(json(&proofs)).unwrap();
     assert_eq!(back, proofs);
 }
+
+// ------------------------------------------------- review of F3.0a1 --
+
+fn guard_of(t: &Mirrors, who: &str) -> PathBuf {
+    PathBuf::from(format!(
+        "{}-guarda.ponte",
+        t.dir.path().join(format!("{who}.sqlite3")).display()
+    ))
+}
+
+/// Review F3.0a1, finding 2. The computer opens 9/2 mirrors and its guard
+/// is a 9/1 of the same lineage holding a task no copy and no journal has
+/// (the library itself was restored without it). The guard is demoted to a
+/// donor; before it is replaced by the 9/2 just written, it is kept aside
+/// byte for byte, as a guard of format 8 is.
+///
+/// Red on 5553b64: the demoted guard is skipped by the donors' archive (it
+/// is the guard) and the guard's own archive only covers format 8: it is
+/// overwritten and the task is gone.
+#[test]
+fn f3_0a_demoted_9_1_guard_is_kept_aside_before_it_is_replaced() {
+    let mut t = mirrors();
+    let mut task = crate::tasks::Task::blank(None);
+    task.title = "Tarefa comum".into();
+    t.a.save_task(&task).unwrap();
+    sync(&mut t.a);
+    let guard = guard_of(&t, "a");
+    assert_eq!(level(&guard), F3_LEVEL);
+    sharedfolder::reseal_for_test(&guard, KEY, 1, |_, payload| {
+        let snapshot = &mut payload.snapshot;
+        let mut only = snapshot.tasks[0].clone();
+        only.id = snapshot.tasks.iter().map(|t| t.id).max().unwrap() + 1000;
+        only.uid = uuid::Uuid::new_v4().to_string();
+        only.title = "Só na guarda 9/1".into();
+        snapshot.idents.push(crate::idents::IdentRow(
+            "task".into(),
+            only.id,
+            uuid::Uuid::new_v4().simple().to_string(),
+        ));
+        snapshot.tasks.push(only);
+    })
+    .unwrap();
+    let before = std::fs::read(&guard).unwrap();
+    // (Kept aside earlier: the guard of format 8 the promotion replaced.)
+    let earlier = aside_in(t.dir.path());
+    let report = sync(&mut t.a);
+    assert_eq!(level(&guard), F3_LEVEL, "the guard is rewritten at 9/2");
+    let kept: Vec<String> = aside_in(t.dir.path())
+        .into_iter()
+        .filter(|n| !earlier.contains(n))
+        .collect();
+    assert_eq!(
+        kept.len(),
+        1,
+        "the demoted guard was kept aside: {kept:?} {:?}",
+        report.notes
+    );
+    assert_eq!(
+        std::fs::read(t.dir.path().join(&kept[0])).unwrap(),
+        before,
+        "byte for byte"
+    );
+}
