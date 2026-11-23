@@ -1647,6 +1647,10 @@ const HOST_TOO_OLD: &str = "Formato de mensagem incompatível com o anfitrião."
 /// Ponte, which cannot read the team protocol V2: it waits, its queue kept.
 pub(crate) const HOST_WITHOUT_IDENTS: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda a identidade dos itens. Atualize o Ponte no computador principal; as alterações continuam guardadas aqui.";
 
+/// What a main computer of this build answers (503, before changing
+/// anything) while its own library is still at schema 21.
+pub(crate) const HOST_NOT_UPDATED: &str = "O computador principal ainda não terminou de atualizar o acervo dele (falta espaço ou a atualização parou; o aviso aparece na janela dele). Aguarde o computador principal concluir a atualização; as alterações continuam guardadas aqui.";
+
 /// What a main computer of this build answers (503, before opening its
 /// library) to a request of an older Ponte, sent without the protocol V2.
 pub(crate) const LEGACY_REFUSED: &str = "O computador principal foi atualizado para uma versão nova do Ponte. Atualize o Ponte neste computador para voltar a sincronizar; as alterações continuam guardadas aqui.";
@@ -4839,12 +4843,10 @@ impl Store {
         let mut nines: Vec<sharedfolder::Copy> = Vec::new();
         let mut stubs: Vec<(PathBuf, sharedfolder::Header, String)> = Vec::new();
         let mut absent = Vec::new();
-        // On a computer, for each configured path that is not itself a file
-        // of format 9: (the path, its file of format 9, whether that one is
-        // a 9 of this folder).
-        let mut entries: Vec<(PathBuf, PathBuf, bool)> = Vec::new();
-        // A name of format 9 already taken by something that is not one.
-        let mut nine_blocked: Vec<String> = Vec::new();
+        // The lineages the configured paths hold, in the order of the list.
+        let mut seen_lineages: Vec<String> = Vec::new();
+        // First the configured paths themselves.
+        let mut reachable: Vec<(PathBuf, bool)> = Vec::new();
         for path in &paths {
             let folder = path.parent().context("Caminho de pasta inválido.")?;
             if !folder.is_dir() {
@@ -4854,43 +4856,72 @@ impl Store {
             expected.insert(path.clone(), sharedfolder::header_line(path)?);
             let mut is_nine = false;
             match sharedfolder::read_any(path, key) {
-                Ok(Some(Found::Copy(copy))) if copy.header.format >= sharedfolder::FORMAT_9 => {
-                    is_nine = true;
-                    nines.push(copy);
+                Ok(Some(Found::Copy(copy))) => {
+                    seen_lineages.push(copy.header.lineage.clone());
+                    if copy.header.format >= sharedfolder::FORMAT_9 {
+                        is_nine = true;
+                        nines.push(copy);
+                    } else {
+                        copies.push(copy);
+                    }
                 }
-                Ok(Some(Found::Copy(copy))) => copies.push(copy),
                 Ok(Some(Found::Moved { header, moved_to })) => {
+                    seen_lineages.push(header.lineage.clone());
                     stubs.push((path.clone(), header, moved_to))
                 }
                 Ok(None) => absent.push(path.clone()),
                 Err(error) => bail!("{}: {error}", path.display()),
             }
-            if phone || is_nine {
+            reachable.push((path.clone(), is_nine));
+        }
+        // The lineage of this folder: the one this computer knows, else the
+        // one the first configured path holds (list order), else the one of
+        // the first file of format 9 beside a configured path (the old name
+        // gone), else a new one.
+        let mut lineage = if !cfg.folder_lineage.trim().is_empty() {
+            Some(cfg.folder_lineage.clone())
+        } else {
+            seen_lineages.first().cloned()
+        };
+        // On a computer, for each configured path that is not itself a file
+        // of format 9: (the path, its file of format 9, whether that one is
+        // a 9 of this folder). Classified by what the file says, never by
+        // its name.
+        let mut entries: Vec<(PathBuf, PathBuf, bool)> = Vec::new();
+        // A name of format 9 taken by something that is not a 9 of this
+        // folder: it postpones the promotion, never the exchange.
+        let mut nine_blocked: Vec<String> = Vec::new();
+        for (path, is_nine) in &reachable {
+            if phone || *is_nine {
                 continue;
             }
-            // Classified by what the file says, never by its name: the file
-            // of format 9 of this path is the one beside it.
             let nine = sharedfolder::nine_path(path);
-            let line = sharedfolder::header_line(&nine).unwrap_or(None);
+            expected.insert(
+                nine.clone(),
+                sharedfolder::header_line(&nine).unwrap_or(None),
+            );
             let read = if nine.exists() {
                 sharedfolder::read_any(&nine, key)
             } else {
                 Ok(None)
             };
-            expected.insert(nine.clone(), line);
             let name = nine
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let mut good = false;
             match read {
-                Ok(Some(Found::Copy(copy))) if copy.header.format >= sharedfolder::FORMAT_9 => {
+                Ok(Some(Found::Copy(copy)))
+                    if copy.header.format >= sharedfolder::FORMAT_9
+                        && lineage.as_ref().is_none_or(|l| *l == copy.header.lineage) =>
+                {
+                    lineage.get_or_insert_with(|| copy.header.lineage.clone());
                     good = true;
                     nines.push(copy);
                 }
                 Ok(None) => {}
                 _ => nine_blocked.push(format!(
-                    "Já existe {name} nesta pasta e não é do formato novo; renomeie-o ou retire-o para continuar a atualização"
+                    "Já existe {name} nesta pasta e não é do formato novo deste acervo; renomeie-o ou retire-o para continuar a atualização"
                 )),
             }
             entries.push((path.clone(), nine, good));
@@ -4900,6 +4931,7 @@ impl Store {
             "Nenhuma pasta está acessível agora ({}). Conecte o pendrive ou espere a nuvem ficar disponível.",
             report.unreachable.join("; ")
         );
+        let lineage = lineage.unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
         // This computer's own last written copy, kept beside the library:
         // if another member overwrites the folder copy from an old base
         // (a phone whose Drive app served a cached file, two computers
@@ -4908,17 +4940,18 @@ impl Store {
         let mut guard_header = guard_path
             .as_ref()
             .and_then(|path| sharedfolder::read_header(path).ok().flatten());
-        let lineage = if !cfg.folder_lineage.trim().is_empty() {
-            cfg.folder_lineage.clone()
-        } else {
-            nines
-                .iter()
-                .map(|c| c.header.lineage.clone())
-                .chain(copies.iter().map(|c| c.header.lineage.clone()))
-                .chain(stubs.iter().map(|(_, h, _)| h.lineage.clone()))
-                .next()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string())
-        };
+        // The minimum format this device has seen of this folder: every 9
+        // or stub of it read now raises it at once, before anything else can
+        // stop the exchange (it never goes down).
+        let guard_is_nine = guard_header
+            .as_ref()
+            .is_some_and(|h| h.lineage == lineage && h.format >= sharedfolder::FORMAT_9);
+        if nines.iter().any(|c| c.header.lineage == lineage)
+            || stubs.iter().any(|(_, h, _)| h.lineage == lineage)
+            || guard_is_nine
+        {
+            self.raise_floor_to_nine(&lineage)?;
+        }
         for (path, header) in nines
             .iter()
             .chain(copies.iter())
@@ -4941,14 +4974,6 @@ impl Store {
             crate::idents::check(&copy.payload.snapshot, Some(&copy.header))
                 .with_context(|| copy.path.display().to_string())?;
         }
-        // The minimum format this device has seen of this folder: a 9 or a
-        // stub read now raises it (it never goes down).
-        let guard_is_nine = guard_header
-            .as_ref()
-            .is_some_and(|h| h.lineage == lineage && h.format >= sharedfolder::FORMAT_9);
-        if !nines.is_empty() || !stubs.is_empty() || guard_is_nine {
-            self.raise_floor_to_nine(&lineage)?;
-        }
         let nine_mode = self.format_floor(&lineage)? >= sharedfolder::FORMAT_9;
         if phone && (!stubs.is_empty() || (nine_mode && nines.is_empty())) {
             // The phone never follows a stub by itself: the person picks
@@ -4965,23 +4990,17 @@ impl Store {
         // Paths that get the stub back, pointing to their file of format 9.
         let mut stub_targets: Vec<(PathBuf, String)> = Vec::new();
         if nine_mode {
-            if let Some((path, nine, _)) = entries
-                .iter()
-                .find(|(_, _, good)| !good)
-                .filter(|_| nines.is_empty())
-            {
-                let _ = path;
+            if nines.is_empty() {
+                let name = entries
+                    .iter()
+                    .find(|(_, _, good)| !good)
+                    .and_then(|(_, nine, _)| nine.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "o arquivo do formato novo".to_owned());
                 bail!(
-                    "A pasta foi atualizada, mas {} ainda não chegou a este computador. Espere a nuvem sincronizar e tente de novo.",
-                    nine.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default()
+                    "A pasta foi atualizada, mas {name} ainda não chegou a este computador. Espere a nuvem sincronizar e tente de novo."
                 );
             }
-            ensure!(
-                !nines.is_empty(),
-                "A pasta foi atualizada, mas o arquivo do formato novo ainda não chegou a este computador. Espere a nuvem sincronizar e tente de novo."
-            );
             if let Some(blocked) = nine_blocked.first() {
                 bail!("{blocked}.");
             }
@@ -4990,7 +5009,7 @@ impl Store {
             // The paths with nothing get their file of format 9 beside them
             // (and the stub); on the phone, a pending path with nothing is
             // simply not there.
-            absent.retain(|_| false);
+            absent.clear();
             for (path, nine, good) in &entries {
                 let name = nine
                     .file_name()
@@ -5007,7 +5026,8 @@ impl Store {
                 }
             }
             // The guard is this computer's last write; one of format 8 is
-            // an old copy now.
+            // an old copy now (kept aside before it is rewritten, readable
+            // or not).
             if let (Some(path), Some(header)) = (&guard_path, &guard_header) {
                 if header.lineage == lineage && header.format < sharedfolder::FORMAT_9 {
                     if let Ok(Some(copy)) = sharedfolder::read(path, key) {
@@ -5021,11 +5041,8 @@ impl Store {
         // The guard copy counts only as this computer's last write: same
         // library, written by this computer, not older than the last
         // exchange (a guard whose write failed is stale and would roll
-        // changes back). Anything else is removed and written again.
-        let guard_donor = nine_mode
-            && guard_path
-                .as_ref()
-                .is_some_and(|g| donors.iter().any(|d| &d.path == g));
+        // changes back). Anything else is removed and written again; in a
+        // folder of format 9, an old one is kept aside instead.
         let guard_trusted = guard_header.as_ref().is_some_and(|h| {
             h.lineage == lineage
                 && h.writer == cfg.folder_writer
@@ -5033,7 +5050,7 @@ impl Store {
                 && sharedfolder::schema_readable(h)
                 && (h.format >= sharedfolder::FORMAT_9) == nine_mode
         });
-        if guard_header.is_some() && !guard_trusted && !guard_donor {
+        if guard_header.is_some() && !guard_trusted && !nine_mode {
             if let Some(path) = &guard_path {
                 let _ = std::fs::remove_file(path);
             }
@@ -5073,8 +5090,15 @@ impl Store {
                     .iter()
                     .any(|uid| !g.payload.applied.contains(uid))
             });
+            // The first file of format 9 this library takes may carry a
+            // lower revision than the last 8 it exchanged (another device
+            // went on in 8 for a while): the format decides then, not the
+            // revision (design F2b §3.5).
+            let first_nine = nine_mode
+                && crate::idents::origin(&self.conn)?.2.as_deref()
+                    != Some(best.payload.snapshot.ident_epoch.as_str());
             ensure!(
-                best.header.revision >= cfg.synced_revision || overwritten,
+                best.header.revision >= cfg.synced_revision || overwritten || first_nine,
                 "A pasta ainda não recebeu a versão mais recente (revisão {} na pasta, {} neste computador). Espere a nuvem terminar de sincronizar e tente de novo.",
                 best.header.revision,
                 cfg.synced_revision
@@ -5121,11 +5145,18 @@ impl Store {
         // still provisional, on a folder still at format 8. Conditions P2-P4
         // and P6 are read here; P5 after the queue was replayed.
         let mut promote: Option<Vec<(PathBuf, PathBuf)>> = None;
+        // Eligibility is the state of THIS folder: identities that came from
+        // another folder or served a team (origin `host`) never stop it; only
+        // a library that already took or cut a 9 of this very lineage does
+        // (its 9 is out there: never cut again).
+        let (origin, origin_lineage, _) = crate::idents::origin(&self.conn)?;
+        let cut_here = matches!(origin.as_str(), "stamped" | "adopted")
+            && origin_lineage.as_deref() == Some(lineage.as_str());
         let p1 = !phone
             && !nine_mode
             && promotion_on()
             && crate::idents::has_idents(&self.conn)?
-            && crate::idents::origin(&self.conn)?.0 == "provisional";
+            && !cut_here;
         if p1 && !first_write && !joining && !pure {
             let reason = self.promotion_obstacle(
                 key,
@@ -5150,7 +5181,7 @@ impl Store {
         // The guard copy joins the copies read (never as a folder, never in
         // place of an empty folder): its changes missing from the newest
         // copy are merged like any other.
-        let guard_missing = guard_path.is_some() && !guard_trusted && !guard_donor;
+        let guard_missing = guard_path.is_some() && !guard_trusted;
         if let Some(copy) = guard {
             copies.push(copy);
             sharedfolder::sort_newest_first(&mut copies);
@@ -5268,7 +5299,6 @@ impl Store {
         let plan = FolderPlan {
             nine: nine_mode,
             donors,
-            guard_donor,
             stub_targets,
             promote,
             expected,
@@ -5400,7 +5430,6 @@ impl Store {
         let FolderPlan {
             nine: nine_mode,
             donors,
-            guard_donor,
             stub_targets,
             mut promote,
             expected,
@@ -6316,51 +6345,18 @@ impl Store {
         }
         let mut failures = Vec::new();
         let mut archived: Vec<PathBuf> = Vec::new();
-        // Every old copy is kept aside, verified, before its path gets the
-        // stub back or the guard is rewritten; one that cannot be kept stops
-        // the exchange. A pending copy of the phone is never rewritten: it
-        // stays unsettled, and the phone keeps it.
-        for donor in &donors {
-            let at_folder = stub_targets.iter().any(|(p, _)| *p == donor.path);
-            let is_guard = guard_donor && guard_path == Some(donor.path.as_path());
-            if !at_folder && !is_guard {
-                report.unsettled.push(donor.path.display().to_string());
-                continue;
-            }
-            let aside = sharedfolder::keep_aside(&donor.path).with_context(|| {
-                format!(
-                    "A cópia antiga em {} não pôde ser guardada à parte; nada foi gravado nem substituído.",
-                    donor.path.display()
-                )
-            })?;
-            archived.push(donor.path.clone());
-            report.notes.push(if is_guard {
-                format!(
-                    "A cópia de segurança deste computador ainda era do formato anterior do Ponte; ela foi guardada em {} e agora é gravada no formato novo.",
-                    aside.display()
-                )
-            } else {
-                format!(
-                    "A cópia de {} foi gravada por uma versão anterior do Ponte depois que a pasta foi atualizada. Ela foi guardada em {}; o que dela pôde ser reaplicado está no acervo, e o resto ficou em avisos.",
-                    donor.path.display(),
-                    aside.display()
-                )
-            });
-        }
         #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) =
             crate::idents::hooks::BEFORE_FOLDER_WRITE.with(|h| h.borrow_mut().take())
         {
             hook();
         }
+        // 1. The copies. A file of format 9 at a new name is published
+        //    without replacing anything (another promoter's 9 is never
+        //    overwritten) and read back; an 8 is written only under the
+        //    floor's lock, the floor read again right before it.
+        let mut published_nine = false;
         for path in &targets {
-            // An 8 is never written once this device has seen a 9 of the
-            // folder (another window or process may have raised the floor
-            // since the folders were read): read again before each one.
-            ensure!(
-                nine_out || !floor_is_nine()?,
-                "Esta pasta já foi atualizada para o formato novo do Ponte; a cópia no formato anterior não foi gravada. Sincronize de novo."
-            );
             // What the rewrite would drop is kept first, beside it; if that
             // cannot be done, the copy is left as it is.
             if preserve.contains(path) {
@@ -6393,17 +6389,44 @@ impl Store {
                     }
                 }
             }
-            match sharedfolder::write_checked(
-                path,
-                key,
-                &request,
-                &payload,
-                &blobs,
-                format,
-                expected.get(path),
-                Some(&written_at),
-            ) {
-                Ok(_) => report.written_to.push(path.display().to_string()),
+            let write = || {
+                sharedfolder::write_checked(
+                    path,
+                    key,
+                    &request,
+                    &payload,
+                    &blobs,
+                    format,
+                    expected.get(path),
+                    Some(&written_at),
+                )
+            };
+            let written = if nine_out {
+                write().and_then(|_| {
+                    // Read back, authenticated: the very result is there.
+                    match sharedfolder::read_any(path, key)? {
+                        Some(sharedfolder::Found::Copy(copy))
+                            if copy.header.revision == revision
+                                && copy.content_identity() == final_identity =>
+                        {
+                            Ok(())
+                        }
+                        _ => bail!("{} não confere depois de gravado.", path.display()),
+                    }
+                })
+            } else {
+                self.under_floor_lock(lineage, write).map(|_| ())
+            };
+            match written {
+                Ok(()) => {
+                    report.written_to.push(path.display().to_string());
+                    if nine_out && !published_nine {
+                        // A 9 of this folder is out: this device never
+                        // writes an 8 of it again, whatever happens next.
+                        published_nine = true;
+                        self.raise_floor_to_nine(lineage)?;
+                    }
+                }
                 Err(error) if error.is::<sharedfolder::ChangedMeanwhile>() => {
                     // Another writer in between: stop here, adopt nothing.
                     self.keep_conflicts(&conflicts)?;
@@ -6418,6 +6441,16 @@ impl Store {
                 }
             }
         }
+        if promote.is_some() && !report.unwritten.is_empty() {
+            // A promotion is all its files of format 9 or nothing more: it
+            // stops here (the old names stay as they are, nothing is
+            // adopted) and the next exchange goes on from what is there.
+            self.keep_conflicts(&conflicts)?;
+            bail!(
+                "A atualização do arquivo da pasta parou: {}. Os arquivos antigos ficaram como estavam e as alterações continuam guardadas neste computador; a próxima sincronização continua de onde parou.",
+                failures.join("; ")
+            );
+        }
         if changed_content {
             ensure!(
                 !report.written_to.is_empty(),
@@ -6426,11 +6459,6 @@ impl Store {
             );
         }
         report.notes.extend(failures);
-        if nine_out && !report.written_to.is_empty() {
-            // A 9 of this folder is out: this device never writes an 8 of it
-            // again.
-            self.raise_floor_to_nine(lineage)?;
-        }
         if promote.is_some() {
             #[cfg(any(test, feature = "test-support"))]
             {
@@ -6444,10 +6472,19 @@ impl Store {
                 }
             }
         }
-        // The old names: a stub that points to the file of format 9 beside
-        // them, where that file is now. A promotion keeps the copy of format
-        // 8 aside first; a copy changed meanwhile (an older writer in
-        // flight) is left as it is and taken in as an old copy next time.
+        // 2. The cards of this exchange are recorded now, with the copies
+        //    that refused them written, and before any old copy they came
+        //    from is replaced. A change already carded here (waiting or
+        //    resolved) is not carded or counted again.
+        let carded = carded_uids(&self.conn)?;
+        let before = conflicts.len();
+        conflicts.retain(|c| c.mutation_uid.is_empty() || !carded.contains(&c.mutation_uid));
+        report.conflicts -= before - conflicts.len();
+        self.keep_conflicts(&conflicts)?;
+        // 3. The old copies (format 8) this exchange took changes from: each
+        //    is kept aside, verified, and then its path gets the stub (a
+        //    folder), it is rewritten (the guard, below), or it is let go (a
+        //    pending copy of the phone, now settled).
         let mut stub_plan: Vec<(PathBuf, String)> = stub_targets.clone();
         if let Some(entries) = &promote {
             stub_plan = entries
@@ -6462,6 +6499,29 @@ impl Store {
                 })
                 .collect();
         }
+        for donor in &donors {
+            let at_folder = stub_plan.iter().any(|(p, _)| *p == donor.path);
+            if at_folder || guard_path == Some(donor.path.as_path()) {
+                continue;
+            }
+            let aside = sharedfolder::keep_aside(&donor.path).with_context(|| {
+                format!(
+                    "A cópia antiga em {} não pôde ser guardada à parte; nada foi substituído.",
+                    donor.path.display()
+                )
+            })?;
+            archived.push(donor.path.clone());
+            report.notes.push(format!(
+                "A cópia pendente {} era do formato anterior do Ponte. Ela foi guardada em {}; o que dela pôde ser reaplicado está no acervo, e o resto ficou em avisos.",
+                donor.path.display(),
+                aside.display()
+            ));
+        }
+        // 4. The old names: each gets the stub that points to its file of
+        //    format 9 (when that one is there), the file it holds moved
+        //    aside first and kept; a file another writer put there meanwhile
+        //    is put back (or kept aside) and taken in next time.
+        let mut stubbed_all = true;
         for (path, name) in &stub_plan {
             let nine = path.with_file_name(name);
             let nine_there = sharedfolder::read_header(&nine)
@@ -6469,41 +6529,45 @@ impl Store {
                 .flatten()
                 .is_some_and(|h| h.format >= sharedfolder::FORMAT_9 && h.lineage == lineage);
             if !nine_there {
+                stubbed_all = false;
                 continue;
             }
             let start = expected.get(path).cloned().unwrap_or(None);
-            if sharedfolder::header_line(path).ok() != Some(start.clone()) {
-                continue;
-            }
-            if promote.is_some() && start.is_some() {
-                match sharedfolder::keep_aside(path) {
-                    Ok(aside) => {
-                        archived.push(path.clone());
-                        report.notes.push(format!(
-                            "A pasta passou para o arquivo {name}, no formato novo do Ponte. A cópia anterior foi guardada em {}, e {} agora só avisa as versões anteriores de que é preciso atualizar.",
-                            aside.display(),
-                            path.display()
-                        ));
-                    }
-                    Err(error) => {
-                        report.notes.push(format!(
-                            "{} não foi substituída pelo aviso do formato novo: {error}",
-                            path.display()
-                        ));
-                        continue;
-                    }
-                }
-            }
-            match sharedfolder::write_stub(path, key, &request, name, Some(&start)) {
-                Ok(_) => {
+            match sharedfolder::install_stub(path, key, &request, name, &start) {
+                Ok(sharedfolder::Stubbed::Installed(aside)) => {
+                    archived.push(path.clone());
                     if !report.written_to.contains(&path.display().to_string()) {
                         report.written_to.push(path.display().to_string());
                     }
+                    if let Some(aside) = aside {
+                        report.notes.push(format!(
+                            "{} agora só avisa as versões anteriores de que é preciso atualizar o Ponte (o arquivo da pasta passou para {name}). O que havia nele foi guardado em {}.",
+                            path.display(),
+                            aside.display()
+                        ));
+                    }
                 }
-                Err(error) => report.notes.push(format!(
-                    "{} não recebeu o aviso do formato novo: {error}",
-                    path.display()
-                )),
+                Ok(sharedfolder::Stubbed::Changed(aside)) => {
+                    stubbed_all = false;
+                    report.notes.push(match aside {
+                        Some(aside) => format!(
+                            "{} mudou durante a sincronização; o que outro aparelho gravou nele foi guardado em {} e entra na próxima sincronização.",
+                            path.display(),
+                            aside.display()
+                        ),
+                        None => format!(
+                            "{} mudou durante a sincronização e ficou como está; ele entra na próxima sincronização.",
+                            path.display()
+                        ),
+                    });
+                }
+                Err(error) => {
+                    stubbed_all = false;
+                    report.notes.push(format!(
+                        "{} não recebeu o aviso do formato novo: {error}",
+                        path.display()
+                    ));
+                }
             }
         }
         // What each copy read is proved to be in the result: rewritten with
@@ -6522,24 +6586,48 @@ impl Store {
                 report.unsettled.push(shown);
             }
         }
-        // Only now, with the folders written, does this become this
-        // computer's last write.
+        // 5. Only now, with the folders written, does this become this
+        //    computer's last write. An old one (format 8), readable or not,
+        //    is kept aside first.
         if let Some(path) = guard_path {
-            if let Err(error) = sharedfolder::write_checked(
-                path,
-                key,
-                &request,
-                &payload,
-                &blobs,
-                format,
-                None,
-                Some(&written_at),
-            ) {
+            let old = sharedfolder::read_header(path)
+                .ok()
+                .flatten()
+                .is_some_and(|h| h.format < sharedfolder::FORMAT_9);
+            if nine_out && old {
+                let aside = sharedfolder::keep_aside(path).with_context(|| {
+                    "A cópia de segurança antiga deste computador não pôde ser guardada à parte; ela não foi substituída.".to_owned()
+                })?;
+                report.notes.push(format!(
+                    "A cópia de segurança deste computador ainda era do formato anterior do Ponte; ela foi guardada em {} e agora é gravada no formato novo.",
+                    aside.display()
+                ));
+            }
+            let write = || {
+                sharedfolder::write_checked(
+                    path,
+                    key,
+                    &request,
+                    &payload,
+                    &blobs,
+                    format,
+                    None,
+                    Some(&written_at),
+                )
+            };
+            let written = if nine_out {
+                write()
+            } else {
+                self.under_floor_lock(lineage, write)
+            };
+            if let Err(error) = written {
                 report.notes.push(format!(
                     "A cópia de segurança deste computador não foi gravada: {error}"
                 ));
             }
         }
+        // Recorded above: not again with the adoption.
+        let conflicts: Vec<SyncConflict> = Vec::new();
 
         // The library, the queue that was sent, its conflicts, the settings
         // and the journal of the copy now matched change together: an
@@ -6551,12 +6639,6 @@ impl Store {
         updated.folder_lineage = lineage.to_owned();
         updated.folder_identity = sharedfolder::snapshot_identity(&final_snapshot);
         let replaced = temp.is_some();
-        // A change already carded here (waiting or resolved) is not carded
-        // or counted again.
-        let carded = carded_uids(&self.conn)?;
-        let before = conflicts.len();
-        conflicts.retain(|c| c.mutation_uid.is_empty() || !carded.contains(&c.mutation_uid));
-        report.conflicts -= before - conflicts.len();
         let promoted = promote.is_some();
         let epoch = final_snapshot.ident_epoch.clone();
         let finish = |tx: &rusqlite::Transaction| -> Result<()> {
@@ -6630,20 +6712,35 @@ impl Store {
             tx.commit()?;
         }
         report.revision = revision;
-        report.promoted = promoted;
-        if promoted {
+        // Promoted only when every configured path has its 9 and its stub;
+        // otherwise the next exchange finishes the job.
+        report.promoted = promoted && stubbed_all;
+        if report.promoted {
             report.promotion_wait = None;
+        } else if promoted {
+            report.promotion_wait = Some(promotion_wait_line(
+                "nem todas as pastas receberam o aviso do formato novo; a próxima sincronização termina a atualização",
+            ));
         }
         Ok(report)
     }
 
     /// Takes in the changes of an old copy (format 8) read after the folder
-    /// moved to format 9 (design §3.5): each change that the result has not
-    /// applied is replayed only when every row it names was created by an
-    /// earlier change of the same copy (never a number of the base, which
-    /// may be another item there now) and the manual record it edits is not
-    /// one the base already has. Anything else becomes a card with its
-    /// content, and is not marked applied.
+    /// moved to format 9 (design §3.5, Q6). A change is replayed only when
+    /// it is one this rule can prove safe, and anything else becomes a card
+    /// with its content (never marked applied):
+    ///
+    /// - an import of a document whose number the base does not have (a new
+    ///   document; one that finds an existing record is a card);
+    /// - a new task whose uid the base does not have;
+    /// - a change addressed only by row numbers (notes, drafts, analyses,
+    ///   links, attachments, the Lixeira, task edits…), when every number
+    ///   it names is a row INSERTED by an earlier change of the same copy in
+    ///   this very replay (the insert log, never a number a receipt merely
+    ///   returned; a number used again by the copy is learned again).
+    ///
+    /// Settings, recursos, categories, projects, templates, examples and
+    /// atendimentos (addressed by uid or by spreadsheet) are always cards.
     #[allow(clippy::too_many_arguments)]
     fn take_from_old_copy(
         &self,
@@ -6655,6 +6752,7 @@ impl Store {
         conflicts: &mut Vec<SyncConflict>,
         report: &mut FolderSyncReport,
     ) -> Result<()> {
+        use IntranetMutation as M;
         let mut entries: Vec<&crate::sharedfolder::JournalEntry> = donor
             .payload
             .journal
@@ -6665,12 +6763,17 @@ impl Store {
             return Ok(());
         }
         entries.sort_by(|a, b| (a.revision, &a.created_at).cmp(&(b.revision, &b.created_at)));
-        // The manual records of the base, by number.
+        // What the base has, read before anything of this copy is replayed.
         let base_numbers: std::collections::BTreeSet<String> = store
             .list_documents("")?
             .into_iter()
             .map(|d| d.document_number.trim().to_uppercase())
             .collect();
+        let base_task_uids: std::collections::BTreeSet<String> = store
+            .conn
+            .prepare("SELECT uid FROM tasks WHERE uid IS NOT NULL AND uid<>''")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
         let device = if donor.header.writer_name.trim().is_empty() {
             "outro aparelho".to_owned()
         } else {
@@ -6678,41 +6781,85 @@ impl Store {
         };
         let mut ids = crate::idmap::IdMap::strict();
         for entry in entries {
-            let manual = match &entry.mutation {
-                IntranetMutation::ImportCapture { capture }
-                | IntranetMutation::ImportBundle { capture, .. }
-                    if capture.is_manual()
-                        && capture.document_number != crate::model::MANUAL_PENDING =>
-                {
-                    Some(capture.document_number.trim().to_uppercase())
+            // Which changes may be replayed at all.
+            let allowed: Result<(), String> = match &entry.mutation {
+                M::ImportCapture { capture } | M::ImportBundle { capture, .. } => {
+                    let number = capture.document_number.trim().to_uppercase();
+                    if base_numbers.contains(&number) {
+                        Err(format!(
+                            "o registro {} já existe na pasta e pode ter mudado desde então",
+                            capture.document_number.trim()
+                        ))
+                    } else {
+                        Ok(())
+                    }
                 }
-                _ => None,
+                M::SaveTask { task, .. } if task.id <= 0 => {
+                    if !task.uid.is_empty() && base_task_uids.contains(&task.uid) {
+                        Err("a tarefa já existe na pasta".into())
+                    } else {
+                        Ok(())
+                    }
+                }
+                M::SaveTask { .. }
+                | M::SaveNote { .. }
+                | M::SaveDraft { .. }
+                | M::SaveAnalysis { .. }
+                | M::RelinkTask { .. }
+                | M::SaveWorkContext { .. }
+                | M::SavePageText { .. }
+                | M::AddDocumentLink { .. }
+                | M::SetLinkActive { .. }
+                | M::TrashItem { .. }
+                | M::RestoreItem { .. }
+                | M::DeleteDocument { .. }
+                | M::AddAttachment { .. }
+                | M::UpdateAttachment { .. }
+                | M::DeleteAttachment { .. }
+                | M::PurgeTrash { .. }
+                | M::ExtractAttachmentText { .. }
+                | M::ReviewAttachmentText { .. } => Ok(()),
+                _ => Err(
+                    "é uma alteração que só pode ser refeita conferindo o que a pasta tem hoje"
+                        .into(),
+                ),
             };
-            let remapped = match manual {
-                Some(number) if base_numbers.contains(&number) => Err(format!(
-                    "o registro manual {number} já existe na pasta e pode ser outro registro"
-                )),
-                _ => ids
-                    .remap(&entry.mutation, &donor.payload.snapshot, Some(&*store))
-                    .and_then(|mutation| {
-                        store
-                            .keep_unseen_fields(mutation, donor.header.schema_version)
-                            .map_err(|e| e.to_string())
-                    }),
-            };
+            let remapped = allowed
+                .and_then(|_| ids.remap(&entry.mutation, &donor.payload.snapshot, Some(&*store)))
+                .and_then(|mutation| {
+                    store
+                        .keep_unseen_fields(mutation, donor.header.schema_version)
+                        .map_err(|e| e.to_string())
+                });
+            // Applied with the insert log open: what it inserted is the only
+            // proof of what it created.
+            let mut inserted = crate::idents::Inserted::new();
             let outcome = match &remapped {
                 Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &*store)
                     .and_then(|_| {
-                        store
-                            .execute_mutation(&entry.actor, mutation.clone())
-                            .map_err(|error| error.to_string())
+                        let logged = store
+                            .run_logged(|s| s.execute_mutation(&entry.actor, mutation.clone()))
+                            .map_err(|e| e.to_string())?;
+                        logged.closed.map_err(|e| e.to_string())?;
+                        let reply = logged.result.map_err(|e| e.to_string())?;
+                        inserted = logged.inserted.map_err(|e| e.to_string())?;
+                        Ok(reply)
                     }),
                 Err(reason) => Err(reason.clone()),
             };
             match (remapped, outcome) {
                 (Ok(mutation), Ok(reply)) => {
-                    let created = crate::idmap::created_ids(&*store, &mutation, &reply)?;
-                    ids.learn(&entry.created, Some(&created));
+                    let created: Vec<crate::idmap::CreatedId> =
+                        crate::idmap::created_ids(&*store, &mutation, &reply)?
+                            .into_iter()
+                            .filter(|c| {
+                                inserted.contains_key(&(
+                                    crate::idents::kind_of(c.kind).to_owned(),
+                                    c.id,
+                                ))
+                            })
+                            .collect();
+                    ids.relearn(&entry.created, &created);
                     applied.insert(entry.uid.clone());
                     report.merged_foreign += 1;
                     let revision = store.cabinet_revision()?;
@@ -6726,7 +6873,7 @@ impl Store {
                     });
                 }
                 (remapped, outcome) => {
-                    ids.learn(&entry.created, None);
+                    ids.relearn(&entry.created, &[]);
                     if carded.contains(&entry.uid) {
                         // Carded here already (an old copy read again).
                         continue;
@@ -6922,12 +7069,17 @@ impl Store {
         match attempt {
             Ok(RpcResponse::Mutated {
                 reply, snapshot, ..
+            }) if crate::idents::check(&snapshot, None).is_err() => {
+                // Applied there, but the answer cannot be used: the change
+                // waits here under the same identity, and the next send gets
+                // the main computer's receipt (never applied twice, never
+                // lost).
+                let _ = reply;
+                self.queue_locally_as(&actor, mutation, Some((uid, true)))
+            }
+            Ok(RpcResponse::Mutated {
+                reply, snapshot, ..
             }) => {
-                if crate::idents::check(&snapshot, None).is_err() {
-                    bail!(
-                        "A alteração foi gravada no computador principal, mas a cópia que ele devolveu não confere (a identidade dos itens). Nada foi substituído aqui; ela aparece na próxima sincronização, não a repita."
-                    );
-                }
                 // The change is on that computer, but is it still the history
                 // this copy comes from? If it went back, its answer replaces
                 // nothing here: the next synchronization asks the person.
@@ -10574,8 +10726,6 @@ struct FolderPlan {
     /// Copies of format 8 read after the floor became 9 (old writers, the
     /// guard, the phone's pending copies): changes are only taken from them.
     donors: Vec<crate::sharedfolder::Copy>,
-    /// One of `donors` is this computer's guard copy.
-    guard_donor: bool,
     /// Configured paths that get (back) the stub pointing to their file of
     /// format 9 (a bare name beside them).
     stub_targets: Vec<(PathBuf, String)>,
@@ -11600,6 +11750,17 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
             error("Chave de acesso do gabinete inválida ou sem autorização.".into()),
         );
     }
+    // A library that stayed at schema 21 (its update could not be done at
+    // this opening) has no identities to serve: nothing is synchronized or
+    // changed through it until it is updated; the clients keep their queues.
+    let needs_idents = matches!(
+        &rpc_req,
+        RpcRequest::V2 { request, .. }
+            if matches!(**request, RpcRequest::Sync { .. } | RpcRequest::Mutate { .. })
+    );
+    if needs_idents && !crate::idents::has_idents(&store.conn).unwrap_or(false) {
+        return (503, error(HOST_NOT_UPDATED.into()));
+    }
     match process_rpc(&mut store, &host_cfg, rpc_req) {
         Ok(resp) => (200, resp),
         Err(err) => (400, error(err.to_string())),
@@ -11638,7 +11799,20 @@ fn process_rpc_at(
         String::new()
     };
     match request {
-        RpcRequest::V2 { request, .. } => process_rpc_at(store, host_cfg, *request, true),
+        RpcRequest::V2 { request, .. } => {
+            // A library still at schema 21 serves no identities: nothing is
+            // synchronized or changed through it (see `HOST_NOT_UPDATED`).
+            if matches!(
+                *request,
+                RpcRequest::Sync { .. } | RpcRequest::Mutate { .. }
+            ) {
+                ensure!(
+                    crate::idents::has_idents(&store.conn)?,
+                    "{HOST_NOT_UPDATED}"
+                );
+            }
+            process_rpc_at(store, host_cfg, *request, true)
+        }
         RpcRequest::Ping => {
             let revision = store.cabinet_revision()?;
             let documents = store.list_documents("")?.len();

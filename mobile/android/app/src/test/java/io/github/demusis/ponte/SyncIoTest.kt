@@ -245,20 +245,28 @@ class SyncIoTest {
     }
 
     /**
-     * F2b (B15): before EVERY write to the Drive file, retries included, the file there must
-     * still be the one that was read, or what this phone's own earlier attempt left there:
-     * anything else is another writer (an older Ponte over the stub) and nothing is written.
+     * F2b (B15, review F2B-05): the upload is written once, only while the Drive file is still the
+     * one read; a stub that arrives during the upload is never overwritten, and a changed file is
+     * never written at all.
      */
-    @Test fun theDestinationIsCheckedAgainBeforeEveryAttemptRetriesIncluded() {
+    @Test fun aStubArrivingDuringTheUploadIsNeverOverwritten() {
         val original = SyncIo.Digest(hex(bytes(10)), 10)
-        val ours = SyncIo.Digest(hex(bytes(12)), 12)
-        val other = SyncIo.Digest(hex(bytes(14)), 14)
-        // First attempt: only the file that was read.
-        assertTrue(SyncIo.mayWrite(original, null, original))
-        assertFalse(SyncIo.mayWrite(original, null, other))
-        // A retry: the file read, or what our own failed attempt left.
-        assertTrue(SyncIo.mayWrite(original, ours, original))
-        assertTrue(SyncIo.mayWrite(original, ours, ours))
-        assertFalse(SyncIo.mayWrite(original, ours, other))
+        val want = SyncIo.Digest(hex(bytes(12)), 12)
+        val stub = SyncIo.Digest(hex(bytes(14)), 14)
+        // The write lands, then the cloud delivers the stub before the read-back.
+        var drive = original
+        var writes = 0
+        val ended = SyncIo.uploadOnce(original, want, readNow = { drive }, write = { writes++; drive = stub })
+        assertEquals(SyncIo.Upload.NOT_CONFIRMED, ended)
+        assertEquals(1, writes)
+        assertEquals(stub, drive)
+        // The Drive file is not the one read: nothing is written.
+        drive = stub
+        writes = 0
+        assertEquals(SyncIo.Upload.CHANGED, SyncIo.uploadOnce(original, want, readNow = { drive }, write = { writes++ }))
+        assertEquals(0, writes)
+        // The usual case.
+        drive = original
+        assertEquals(SyncIo.Upload.DONE, SyncIo.uploadOnce(original, want, readNow = { drive }, write = { drive = want }))
     }
 }

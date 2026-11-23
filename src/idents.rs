@@ -671,7 +671,7 @@ pub(crate) fn stop_log(conn: &Connection) -> Result<()> {
 }
 
 /// The ident kind of an id-map kind.
-fn kind_of(kind: IdKind) -> &'static str {
+pub(crate) fn kind_of(kind: IdKind) -> &'static str {
     match kind {
         IdKind::Document => "document",
         IdKind::Capture => "capture",
@@ -971,6 +971,10 @@ pub mod hooks {
         /// Runs once right before a transport file is renamed into place,
         /// with its path.
         pub static BEFORE_RENAME: RefCell<Option<PathHook>> = RefCell::new(None);
+        /// Runs once while a stub takes the place of an old file, in the
+        /// window where another writer could put a file at that name (with
+        /// the name).
+        pub static AT_STUB_RACE: RefCell<Option<PathHook>> = RefCell::new(None);
         /// Runs once in a folder exchange, right before the folders are
         /// written.
         pub static BEFORE_FOLDER_WRITE: RefCell<Option<Pause>> = RefCell::new(None);

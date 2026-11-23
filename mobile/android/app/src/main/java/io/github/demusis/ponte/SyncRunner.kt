@@ -350,22 +350,17 @@ internal object SyncRunner {
                         throw CoreException("O arquivo de sincronização não ficou completo. Tente sincronizar de novo.")
                     }
                     val want = SyncIo.hashFile(work)
-                    // d. write, then verify by reading back; one retry. Before EVERY attempt the
-                    // Drive file must still be the one read, or what our own failed attempt left:
-                    // anything else is another writer (an older Ponte over the stub), and nothing
-                    // is written over it.
-                    var ok = false
-                    var moved = false
-                    var ours: SyncIo.Digest? = null
-                    for (attempt in 1..2) {
-                        if (!SyncIo.mayWrite(original, ours, readUri(ctx, uri, null, Long.MAX_VALUE))) { moved = true; break }
-                        writeUri(ctx, uri, work)
-                        // read back whatever was written, however long
-                        val back = readUri(ctx, uri, null, Long.MAX_VALUE)
-                        if (SyncIo.unchanged(want, back)) { ok = true; break }
-                        ours = back
-                    }
-                    if (moved) {
+                    // d. one protected upload: written only while the Drive file is still the one
+                    // read, then read back. Never a second write: a read-back that differs proves
+                    // nothing about who wrote it (a stub of the new format may have arrived), so the
+                    // output stays pending for the next synchronization.
+                    val upload = SyncIo.uploadOnce(
+                        original, want,
+                        readNow = { readUri(ctx, uri, null, Long.MAX_VALUE) },
+                        write = { writeUri(ctx, uri, work) },
+                    )
+                    val ok = upload == SyncIo.Upload.DONE
+                    if (upload == SyncIo.Upload.CHANGED) {
                         isError = true
                         message = "O arquivo mudou no Drive durante a sincronização. " +
                             "As alterações ficaram guardadas neste aparelho e vão na próxima sincronização."
@@ -526,12 +521,20 @@ internal object SyncIo {
     fun unchanged(before: Digest, now: Digest): Boolean =
         before.sha256 == now.sha256 && before.length == now.length
 
+    /** How one upload of the merged copy ended. */
+    enum class Upload { DONE, CHANGED, NOT_CONFIRMED }
+
     /**
-     * Whether the Drive file may be written now: it is still the one that was read ([original]),
-     * or what this phone's own earlier attempt left there ([ours], null before the first).
+     * One protected upload: [write] runs only if the Drive file is still [original] (read with
+     * [readNow]); then the Drive file must read back as [want]. There is never a second write: what
+     * a read-back shows is not proof of what this phone wrote (another device, or the stub of the
+     * new format, may be there), so the output stays pending instead.
      */
-    fun mayWrite(original: Digest, ours: Digest?, now: Digest): Boolean =
-        unchanged(original, now) || (ours != null && unchanged(ours, now))
+    fun uploadOnce(original: Digest, want: Digest, readNow: () -> Digest, write: () -> Unit): Upload {
+        if (!unchanged(original, readNow())) return Upload.CHANGED
+        write()
+        return if (unchanged(want, readNow())) Upload.DONE else Upload.NOT_CONFIRMED
+    }
 
     /** Runs [block] and deletes [files] afterwards, whatever happens (success, error, cancellation). */
     fun <T> withCleanup(files: List<File>, block: () -> T): T {

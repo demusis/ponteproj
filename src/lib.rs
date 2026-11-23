@@ -88,6 +88,9 @@ mod f2a_tests;
 /// F2b: the parity machinery of F2a extended to the shared file of format 9.
 #[cfg(test)]
 mod f2b_parity;
+/// F2b: one regression test per finding of its review.
+#[cfg(test)]
+mod f2b_review_tests;
 /// F2b of Frente F: acceptance tests of the shared file of format 9.
 #[cfg(test)]
 mod f2b_tests;

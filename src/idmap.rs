@@ -545,6 +545,19 @@ impl IdMap {
         map
     }
 
+    /// [`IdMap::learn`] that replaces what a number meant: a copy that used
+    /// a number again (an item purged, another created in its row) means
+    /// the newer item from then on. A slot missing from `there` now refuses.
+    pub fn relearn(&mut self, here: &[CreatedId], there: &[CreatedId]) {
+        for created in here {
+            let target = there
+                .iter()
+                .find(|c| c.kind == created.kind && c.slot == created.slot)
+                .map(|c| c.id);
+            self.entries.insert((created.kind, created.id), target);
+        }
+    }
+
     fn is_new(&self, kind: IdKind, id: i64) -> bool {
         self.watermark.get(&kind).is_some_and(|mark| id > *mark)
     }

@@ -245,8 +245,14 @@ pub fn sort_newest_first(copies: &mut Vec<Copy>) {
 /// holds (a SHA-256 prefix), so the same content is never archived twice and
 /// the name cannot be taken for a working file.
 pub fn aside_path(path: &Path) -> Result<PathBuf> {
+    aside_path_as(path, path)
+}
+
+/// [`aside_path`] of the bytes at `from`, named after `named_after`.
+fn aside_path_as(from: &Path, named_after: &Path) -> Result<PathBuf> {
+    let path = named_after;
     let bytes =
-        std::fs::read(path).with_context(|| format!("Não foi possível ler {}.", path.display()))?;
+        std::fs::read(from).with_context(|| format!("Não foi possível ler {}.", from.display()))?;
     let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
     let short: String = digest
         .as_ref()
@@ -261,10 +267,26 @@ pub fn aside_path(path: &Path) -> Result<PathBuf> {
     Ok(path.with_file_name(format!("{stem}-divergente-{short}.ponte")))
 }
 
+/// The SHA-256 of the file at `path`, in hex: two copies with the same
+/// bytes are the same copy.
+pub fn file_digest(path: &Path) -> Result<String> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("Não foi possível ler {}.", path.display()))?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    Ok(digest.as_ref().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// Keeps a copy that is about to be replaced: the same file, beside it, under
 /// a name that says it diverged. Returns where it went.
 pub fn keep_aside(path: &Path) -> Result<PathBuf> {
-    let aside = aside_path(path)?;
+    keep_aside_as(path, path)
+}
+
+/// [`keep_aside`] of the file at `from`, named after `named_after` (a file
+/// moved out of the way keeps the name of where it was).
+pub fn keep_aside_as(from: &Path, named_after: &Path) -> Result<PathBuf> {
+    let path = from;
+    let aside = aside_path_as(from, named_after)?;
     if aside.exists() {
         // Kept by an earlier attempt (the folder could not be rewritten and
         // the exchange came back): the same content, so there is one archive
@@ -650,6 +672,86 @@ pub fn write_stub(
     )
 }
 
+/// What became of the old name when a stub was to replace it.
+pub enum Stubbed {
+    /// The stub is there; what the name held (if anything) was kept aside,
+    /// verified, at this path.
+    Installed(Option<PathBuf>),
+    /// Another writer changed the name meanwhile: its file was left there
+    /// (or put back), or kept aside at this path when it could not be put
+    /// back. No stub.
+    Changed(Option<PathBuf>),
+}
+
+/// Replaces the file at `path`, which held `expected` (its plain start as
+/// read at the start of the exchange, `None`: no file) by a stub pointing to
+/// `moved_to`, so that nothing another writer puts there is ever lost: the
+/// file is first moved out of the way (one rename: whatever was there last
+/// is what moves), checked against `expected`, and kept aside; the stub then
+/// takes the name only if it is still free. A file that is not the one read
+/// goes back to its name (or is kept aside) and is taken in next time. The
+/// semantics of these operations through each cloud client is UNVERIFIED.
+pub fn install_stub(
+    path: &Path,
+    password: &str,
+    request: &WriteRequest<'_>,
+    moved_to: &str,
+    expected: &Option<Vec<u8>>,
+) -> Result<Stubbed> {
+    let mut aside = None;
+    if expected.is_some() {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("ponte-sync.ponte");
+        let moving =
+            path.with_file_name(format!(".{name}.trava-{}", uuid::Uuid::new_v4().simple()));
+        match std::fs::rename(path, &moving) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Stubbed::Changed(None))
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Não foi possível substituir {}.", path.display()))
+            }
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = crate::idents::hooks::AT_STUB_RACE.with(|h| h.borrow_mut().take()) {
+            hook(path);
+        }
+        let moved = header_line(&moving).ok().flatten();
+        if moved.as_ref() != expected.as_ref() {
+            // Another writer's file: back to its name, or kept.
+            if crate::atomic_file::move_no_replace(&moving, path).is_ok() {
+                return Ok(Stubbed::Changed(None));
+            }
+            let kept = keep_aside_as(&moving, path)?;
+            let _ = std::fs::remove_file(&moving);
+            return Ok(Stubbed::Changed(Some(kept)));
+        }
+        match keep_aside_as(&moving, path) {
+            Ok(kept) => {
+                let _ = std::fs::remove_file(&moving);
+                aside = Some(kept);
+            }
+            Err(error) => {
+                let _ = crate::atomic_file::move_no_replace(&moving, path);
+                return Err(error);
+            }
+        }
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(hook) = crate::idents::hooks::AT_STUB_RACE.with(|h| h.borrow_mut().take()) {
+        hook(path);
+    }
+    match write_stub(path, password, request, moved_to, Some(&None)) {
+        Ok(_) => Ok(Stubbed::Installed(aside)),
+        Err(error) if error.is::<ChangedMeanwhile>() => Ok(Stubbed::Changed(None)),
+        Err(error) => Err(error),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_shaped(
     path: &Path,
@@ -716,13 +818,27 @@ fn write_shaped(
         if let Some(hook) = crate::idents::hooks::BEFORE_RENAME.with(|h| h.borrow_mut().take()) {
             hook(path);
         }
-        if let Some(expected) = expected {
-            if header_line(path).ok().as_ref() != Some(expected) {
-                changed.set(true);
-                anyhow::bail!(ChangedMeanwhile(path.to_path_buf()));
+        match expected {
+            None => std::fs::rename(&temp, path)?,
+            // A new name: published without replacing anything (whoever
+            // put a file there first keeps it).
+            Some(None) => {
+                if let Err(error) = crate::atomic_file::move_no_replace(&temp, path) {
+                    if std::fs::symlink_metadata(path).is_ok() {
+                        changed.set(true);
+                        anyhow::bail!(ChangedMeanwhile(path.to_path_buf()));
+                    }
+                    return Err(error.into());
+                }
+            }
+            Some(Some(_)) => {
+                if header_line(path).ok().as_ref() != expected {
+                    changed.set(true);
+                    anyhow::bail!(ChangedMeanwhile(path.to_path_buf()));
+                }
+                std::fs::rename(&temp, path)?;
             }
         }
-        std::fs::rename(&temp, path)?;
         Ok(())
     })();
     if result.is_err() {

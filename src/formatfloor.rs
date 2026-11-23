@@ -55,11 +55,64 @@ pub fn read(path: &Path, lineage: &str) -> Result<Floor> {
     Ok(read_all(path)?.get(lineage).copied().unwrap_or_default())
 }
 
-/// Raises the floor of `lineage` to `floor` (never lowers it).
+/// Runs `work` holding the lock of the floor file at `path` (a file
+/// beside it, created exclusively): raising the floor and the last phase of
+/// writing an 8 are never interleaved, in this process or another. A lock
+/// left by a process that died is taken over after two minutes.
+pub fn with_lock<T>(path: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let lock = PathBuf::from(format!("{}.trava", path.display()));
+    if let Some(parent) = lock.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let started = std::time::Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+        {
+            Ok(_) => break,
+            // Taken, or (Windows) still being removed by its last holder.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    || error.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
+                let stale = std::fs::metadata(&lock)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > std::time::Duration::from_secs(120));
+                if stale {
+                    let _ = std::fs::remove_file(&lock);
+                    continue;
+                }
+                anyhow::ensure!(
+                    started.elapsed() < std::time::Duration::from_secs(60),
+                    "Outra sincronização deste aparelho está em andamento; tente de novo em instantes."
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Não foi possível usar {}.", lock.display()))
+            }
+        }
+    }
+    let result = work();
+    let _ = std::fs::remove_file(&lock);
+    result
+}
+
+/// Raises the floor of `lineage` to `floor` (never lowers it): read,
+/// changed and replaced under the lock of the file.
 pub fn raise(path: &Path, lineage: &str, floor: Floor) -> Result<()> {
     if lineage.trim().is_empty() {
         return Ok(());
     }
+    with_lock(path, || raise_locked(path, lineage, floor))
+}
+
+fn raise_locked(path: &Path, lineage: &str, floor: Floor) -> Result<()> {
     let mut all = read_all(path)?;
     let now = all.get(lineage).copied().unwrap_or_default();
     if (now.format, now.level) >= (floor.format, floor.level) {
@@ -124,6 +177,25 @@ impl crate::storage::Store {
             Some(path) => Ok(read(&path, lineage)?.format),
             None => Ok(0),
         }
+    }
+
+    /// Runs `write` (an 8 of `lineage`) under the lock of the floor, which
+    /// is read again inside it: refused when it is 9.
+    pub(crate) fn under_floor_lock<T>(
+        &self,
+        lineage: &str,
+        write: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let Some(path) = self.floor_file() else {
+            return write();
+        };
+        with_lock(&path, || {
+            anyhow::ensure!(
+                read(&path, lineage)?.format < crate::sharedfolder::FORMAT_9,
+                "Esta pasta já foi atualizada para o formato novo do Ponte; a cópia no formato anterior não foi gravada. Sincronize de novo."
+            );
+            write()
+        })
     }
 
     /// Raises the floor of `lineage` to format 9.
