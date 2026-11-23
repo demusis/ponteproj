@@ -5161,6 +5161,8 @@ impl Store {
         // Never a base again: their changes are taken as an old copy's
         // (Q6), and each path is written again, kept aside first.
         let mut stale_nines: Vec<sharedfolder::Copy> = Vec::new();
+        // The guard became a donor: kept aside before it is replaced.
+        let mut guard_demoted = false;
         if nine_mode {
             let (fresh, stale) = std::mem::take(&mut nines)
                 .into_iter()
@@ -5221,6 +5223,7 @@ impl Store {
                         donors.push(copy);
                     }
                     guard_header = None;
+                    guard_demoted = true;
                 }
             }
             copies = std::mem::take(&mut nines);
@@ -5492,6 +5495,7 @@ impl Store {
         let temp_path = temp_dir.join(format!("sync-{}.sqlite3", uuid::Uuid::new_v4().simple()));
         let plan = FolderPlan {
             completing,
+            guard_demoted,
             strangers,
             nine: nine_mode,
             donors,
@@ -5625,6 +5629,7 @@ impl Store {
         use crate::sharedfolder::{self, JournalEntry, Payload, WriteRequest};
         let FolderPlan {
             completing,
+            guard_demoted,
             strangers,
             nine: nine_mode,
             donors,
@@ -6875,14 +6880,15 @@ impl Store {
             }
         }
         // 5. Only now, with the folders written, does this become this
-        //    computer's last write. An old one (format 8), readable or not,
-        //    is kept aside first.
+        //    computer's last write. An old one (format 8, or a 9 demoted to
+        //    a donor), readable or not, is kept aside first.
         if let Some(path) = guard_path {
-            let old = sharedfolder::read_header(path)
-                .ok()
-                .flatten()
-                .is_some_and(|h| h.format < sharedfolder::FORMAT_9);
-            if nine_out && old {
+            let old = guard_demoted
+                || sharedfolder::read_header(path)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|h| h.format < sharedfolder::FORMAT_9);
+            if nine_out && old && path.exists() {
                 let aside = sharedfolder::keep_aside(path).with_context(|| {
                     "A cópia de segurança antiga deste computador não pôde ser guardada à parte; ela não foi substituída.".to_owned()
                 })?;
@@ -11175,6 +11181,9 @@ struct FolderPlan {
     /// of every configured path must be there before anything is adopted or
     /// an old name gets its stub.
     completing: bool,
+    /// The guard was demoted to a donor (format 8, or a 9 below the floor's
+    /// level): it is kept aside before it is replaced, or not replaced.
+    guard_demoted: bool,
     /// Files of format 8 of another lineage found at configured paths after
     /// the floor became 9 (kept aside, named, and the stub put back).
     strangers: Vec<PathBuf>,

@@ -818,6 +818,13 @@ fn f3_0a_demoted_9_1_guard_is_kept_aside_before_it_is_replaced() {
     let before = std::fs::read(&guard).unwrap();
     // (Kept aside earlier: the guard of format 8 the promotion replaced.)
     let earlier = aside_in(t.dir.path());
+    // The archive cannot be made (its name is taken): the guard stays.
+    let blocked = sharedfolder::aside_path(&guard).unwrap();
+    std::fs::create_dir(&blocked).unwrap();
+    let refused = try_sync(&mut t.a);
+    assert!(refused.is_err(), "{:?}", refused.map(|r| r.notes));
+    assert_eq!(std::fs::read(&guard).unwrap(), before, "the guard is intact");
+    std::fs::remove_dir(&blocked).unwrap();
     let report = sync(&mut t.a);
     assert_eq!(level(&guard), F3_LEVEL, "the guard is rewritten at 9/2");
     let kept: Vec<String> = aside_in(t.dir.path())
