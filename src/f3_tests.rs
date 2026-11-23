@@ -823,7 +823,11 @@ fn f3_0a_demoted_9_1_guard_is_kept_aside_before_it_is_replaced() {
     std::fs::create_dir(&blocked).unwrap();
     let refused = try_sync(&mut t.a);
     assert!(refused.is_err(), "{:?}", refused.map(|r| r.notes));
-    assert_eq!(std::fs::read(&guard).unwrap(), before, "the guard is intact");
+    assert_eq!(
+        std::fs::read(&guard).unwrap(),
+        before,
+        "the guard is intact"
+    );
     std::fs::remove_dir(&blocked).unwrap();
     let report = sync(&mut t.a);
     assert_eq!(level(&guard), F3_LEVEL, "the guard is rewritten at 9/2");
@@ -847,7 +851,10 @@ fn f3_0a_demoted_9_1_guard_is_kept_aside_before_it_is_replaced() {
 impl Mirrors {
     fn set_floor(&self, who: &str, level: u32) {
         let mut all = std::collections::BTreeMap::new();
-        all.insert(self.lineage(), crate::formatfloor::Floor { format: 9, level });
+        all.insert(
+            self.lineage(),
+            crate::formatfloor::Floor { format: 9, level },
+        );
         std::fs::write(self.floor_file(who), serde_json::to_vec(&all).unwrap()).unwrap();
     }
 }
@@ -931,7 +938,12 @@ fn f3_0a_higher_local_9_1_revision_does_not_block_the_move_to_9_2() {
     let moved = try_sync(&mut t.a);
     let report = moved.unwrap_or_else(|e| panic!("A moves to 9/2: {e}"));
     assert_eq!(t.floor("a"), (9, F3_LEVEL));
-    let titles: Vec<String> = t.a.list_tasks().unwrap().into_iter().map(|t| t.title).collect();
+    let titles: Vec<String> =
+        t.a.list_tasks()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
     for title in ["Primeira do pendrive", "Segunda do pendrive"] {
         assert!(
             titles.iter().any(|t| t == title),
@@ -951,9 +963,9 @@ fn f3_0a_higher_local_9_1_revision_does_not_block_the_move_to_9_2() {
     std::fs::copy(&drive, &pendrive).unwrap();
     let stale = try_sync(&mut t.a);
     assert!(
-        stale
-            .as_ref()
-            .is_err_and(|e| e.to_string().contains("ainda não recebeu a versão mais recente")),
+        stale.as_ref().is_err_and(|e| e
+            .to_string()
+            .contains("ainda não recebeu a versão mais recente")),
         "{:?}",
         stale.map(|r| r.written_to)
     );
@@ -1020,7 +1032,13 @@ fn f3_0a_old_merged_entry_then_new_edit_of_the_same_task_without_a_card() {
     );
     assert_eq!(current(&a).title, "Edição depois da atualização");
     let copy = copy_at(&sharedfolder::nine_path(&path));
-    let there = copy.payload.snapshot.tasks.iter().find(|t| t.id == id).unwrap();
+    let there = copy
+        .payload
+        .snapshot
+        .tasks
+        .iter()
+        .find(|t| t.id == id)
+        .unwrap();
     assert_eq!(there.title, "Edição depois da atualização");
     assert!(a.list_offline_outbox().unwrap().is_empty());
 }
@@ -1131,4 +1149,462 @@ fn f3_0a_authenticated_9_2_guard_raises_the_floor_before_the_base_is_chosen() {
         title,
         "no 9/1 is the base"
     );
+}
+
+/// Review F3.0a1, finding 6. An oracle independent of the walker: for a
+/// sample of each variant with numbers, every optional field filled, the
+/// full list of (kind, number) sites is written here by hand, in the
+/// documented order; the translation is learned from that list (not from
+/// the walker), and the translated fields are checked one by one
+/// (dependencies, parent, polymorphic owners, batch, sources and the names
+/// that follow them).
+///
+/// Green on 5553b64 (the walker is right by inspection): it is the guard
+/// the old test was not. With a walker that skips a task's dependencies,
+/// `f3_0_walker_is_exhaustive` still passes and this one fails (see the
+/// report of the review fixes).
+#[test]
+fn f3_0a_walker_pins_every_site_of_full_samples() {
+    use crate::idmap::{CreatedId, IdKind as K, IdMap};
+    use IntranetMutation as M;
+    let (_dir, mut a, _path) = alone();
+    crate::f2a_parity::every_variant(&mut a, "a");
+    let made: Vec<IntranetMutation> = a
+        .list_offline_outbox()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.mutation)
+        .collect();
+    let sample = |name: &str| -> IntranetMutation {
+        made.iter()
+            .find(|m| crate::f2a_parity::variant_name(m) == name)
+            .unwrap_or_else(|| panic!("no sample of {name}"))
+            .clone()
+    };
+    let source = |id: &str, document_id, capture_id, file_id| crate::evidence::Source {
+        id: id.into(),
+        document_id,
+        capture_id,
+        label: String::new(),
+        file_id,
+        page: None,
+        method: String::new(),
+        text: String::new(),
+    };
+    let task = |id, document, parent, deps: Vec<i64>| {
+        let mut t = crate::tasks::Task::blank(document);
+        t.id = id;
+        t.parent_task_id = parent;
+        t.dependencies = deps;
+        t
+    };
+    let attendance = |id, batch, document, tasks: Vec<i64>| {
+        let mut att = match sample("SaveSaiopAttendance") {
+            M::SaveSaiopAttendance { attendance, .. } => attendance,
+            _ => unreachable!(),
+        };
+        att.id = id;
+        att.batch_id = batch;
+        att.document_id = document;
+        att.task_ids = tasks;
+        att
+    };
+    let mut analysis = crate::model::Analysis::default();
+    analysis.capture_id = 204;
+    analysis.materials = vec![
+        source("C204", 106, 204, None),
+        source("C205F302P1OCR", 107, 205, Some(302)),
+        source("A402Hcd34", 108, 206, None),
+    ];
+    for name in ["C204", "C205F302P1OCR", "A402Hcd34"] {
+        analysis.citations.push(crate::evidence::Citation {
+            source_id: name.into(),
+            quote: String::new(),
+            claim: String::new(),
+        });
+        analysis.facts.push(crate::model::Fact {
+            source_id: name.into(),
+            ..Default::default()
+        });
+    }
+    let mut record = crate::work_templates::GenerationRecord::default();
+    record.document_id = 120;
+    record.capture_id = 208;
+    record.draft_id = Some(950);
+    for (id, document_id, capture_id, file_id) in [
+        ("C208", 120, 208, None),
+        ("C209F304P3", 121, 209, Some(304)),
+        ("A408Hef56", 122, 210, None),
+    ] {
+        record.sources.push(crate::work_templates::UsedSource {
+            id: id.into(),
+            label: String::new(),
+            document_id,
+            capture_id,
+            file_id,
+        });
+    }
+    let mut resource_use = match sample("SaveResourceUse") {
+        M::SaveResourceUse { item, .. } => item,
+        _ => unreachable!(),
+    };
+    resource_use.document_id = Some(119);
+    resource_use.saiop_id = Some(705);
+    resource_use.task_id = Some(515);
+    let row = match sample("ImportSaiopBatch") {
+        M::ImportSaiopBatch { items, .. } => items[0].1.clone(),
+        _ => unreachable!(),
+    };
+    let attach = |owner_kind: &str, owner_id| M::AddAttachment {
+        owner_kind: owner_kind.into(),
+        owner_id,
+        name: "a.txt".into(),
+        description: String::new(),
+        data_base64: String::new(),
+    };
+    let trash = |kind: &str, id| M::TrashItem {
+        kind: kind.into(),
+        id,
+    };
+    // (sample, its sites by hand, in walk order)
+    let pinned: Vec<(IntranetMutation, Vec<(K, i64)>)> = vec![
+        (
+            M::SaveNote {
+                document_id: 101,
+                note: String::new(),
+                expected_version: Some(1),
+            },
+            vec![(K::Document, 101)],
+        ),
+        (
+            M::SaveDraft {
+                document_id: 103,
+                capture_id: 201,
+                kind: String::new(),
+                body: String::new(),
+                materials: vec![
+                    source("C201", 103, 201, None),
+                    source("C202F301P2", 104, 202, Some(301)),
+                    source("A401Hab12", 105, 203, None),
+                ],
+                provenance: None,
+            },
+            vec![
+                (K::Document, 103),
+                (K::Capture, 201),
+                (K::Document, 103),
+                (K::Capture, 201),
+                (K::Document, 104),
+                (K::Capture, 202),
+                (K::File, 301),
+                (K::Document, 105),
+                (K::Capture, 203),
+                (K::Attachment, 401),
+            ],
+        ),
+        (
+            M::SaveAnalysis {
+                document_id: 106,
+                analysis,
+            },
+            vec![
+                (K::Document, 106),
+                (K::Capture, 204),
+                (K::Document, 106),
+                (K::Capture, 204),
+                (K::Document, 107),
+                (K::Capture, 205),
+                (K::File, 302),
+                (K::Document, 108),
+                (K::Capture, 206),
+                (K::Attachment, 402),
+            ],
+        ),
+        (
+            M::SaveTask {
+                task: task(501, Some(109), Some(502), vec![503, 504]),
+                expected_version: Some(2),
+                no_project: false,
+            },
+            vec![
+                (K::Task, 501),
+                (K::Document, 109),
+                (K::Task, 502),
+                (K::Task, 503),
+                (K::Task, 504),
+            ],
+        ),
+        (
+            M::RelinkTask {
+                task_id: 505,
+                document_id: Some(110),
+                expected_version: None,
+            },
+            vec![(K::Task, 505), (K::Document, 110)],
+        ),
+        (
+            M::AddDocumentLink {
+                source: 111,
+                target: 112,
+                kind: String::new(),
+                reason: String::new(),
+            },
+            vec![(K::Document, 111), (K::Document, 112)],
+        ),
+        (trash("document", 113), vec![(K::Document, 113)]),
+        (trash("capture", 207), vec![(K::Capture, 207)]),
+        (trash("task", 506), vec![(K::Task, 506)]),
+        (trash("attachment", 403), vec![(K::Attachment, 403)]),
+        (trash("note", 9), vec![]),
+        (
+            M::SaveSaiopAttendance {
+                attendance: attendance(701, Some(801), Some(115), vec![507, 508]),
+                expected_version: None,
+            },
+            vec![
+                (K::Saiop, 701),
+                (K::SaiopBatch, 801),
+                (K::Document, 115),
+                (K::Task, 507),
+                (K::Task, 508),
+            ],
+        ),
+        (
+            M::ImportSaiopBatch {
+                file_name: String::new(),
+                file_sha256: String::new(),
+                sheet_name: String::new(),
+                items: vec![
+                    (attendance(0, None, Some(116), vec![509]), row.clone()),
+                    (attendance(0, None, None, vec![510, 511]), row),
+                ],
+            },
+            vec![
+                (K::Document, 116),
+                (K::Task, 509),
+                (K::Task, 510),
+                (K::Task, 511),
+            ],
+        ),
+        (
+            M::CreateTaskForSaiop {
+                attendance_id: 703,
+                task: Some(task(0, Some(117), Some(512), vec![513])),
+                title: String::new(),
+                expected_version: None,
+            },
+            vec![
+                (K::Saiop, 703),
+                (K::Document, 117),
+                (K::Task, 512),
+                (K::Task, 513),
+            ],
+        ),
+        (attach("document", 118), vec![(K::Document, 118)]),
+        (attach("task", 514), vec![(K::Task, 514)]),
+        (attach("saiop", 704), vec![(K::Saiop, 704)]),
+        (attach("example", 901), vec![(K::Example, 901)]),
+        (attach("outro", 902), vec![]),
+        (
+            M::SaveResourceUse {
+                item: resource_use,
+                expected_version: None,
+            },
+            vec![(K::Document, 119), (K::Saiop, 705), (K::Task, 515)],
+        ),
+        (
+            M::RecordGeneration { record },
+            vec![
+                (K::Document, 120),
+                (K::Capture, 208),
+                (K::Draft, 950),
+                (K::Document, 120),
+                (K::Capture, 208),
+                (K::Document, 121),
+                (K::Capture, 209),
+                (K::File, 304),
+                (K::Document, 122),
+                (K::Capture, 210),
+                (K::Attachment, 408),
+            ],
+        ),
+    ];
+    for (mutation, expected) in &pinned {
+        let name = crate::f2a_parity::variant_name(mutation);
+        assert_eq!(&crate::idrefs::sites(mutation), expected, "{name}");
+        // The translation comes from the list above, not from the walker.
+        let here: Vec<CreatedId> = expected
+            .iter()
+            .map(|(kind, id)| CreatedId::new(*kind, format!("{id}"), *id))
+            .collect();
+        let there: Vec<CreatedId> = expected
+            .iter()
+            .map(|(kind, id)| CreatedId::new(*kind, format!("{id}"), id + 1000))
+            .collect();
+        let mut map = IdMap::default();
+        map.learn(&here, Some(&there));
+        let moved = map.remap(mutation, &a, None).unwrap();
+        // Field by field.
+        match &moved {
+            M::SaveTask { task, .. } => {
+                assert_eq!(
+                    (
+                        task.id,
+                        task.document_id,
+                        task.parent_task_id,
+                        &task.dependencies
+                    ),
+                    (1501, Some(1109), Some(1502), &vec![1503, 1504])
+                );
+            }
+            M::CreateTaskForSaiop {
+                attendance_id,
+                task: Some(task),
+                ..
+            } => {
+                assert_eq!(*attendance_id, 1703);
+                assert_eq!(
+                    (
+                        task.id,
+                        task.document_id,
+                        task.parent_task_id,
+                        &task.dependencies
+                    ),
+                    (0, Some(1117), Some(1512), &vec![1513])
+                );
+            }
+            M::SaveSaiopAttendance { attendance, .. } => {
+                assert_eq!(
+                    (
+                        attendance.id,
+                        attendance.batch_id,
+                        attendance.document_id,
+                        &attendance.task_ids
+                    ),
+                    (1701, Some(1801), Some(1115), &vec![1507, 1508])
+                );
+            }
+            M::ImportSaiopBatch { items, .. } => {
+                assert_eq!(
+                    (items[0].0.document_id, &items[0].0.task_ids),
+                    (Some(1116), &vec![1509])
+                );
+                assert_eq!(
+                    (items[1].0.document_id, &items[1].0.task_ids),
+                    (None, &vec![1510, 1511])
+                );
+            }
+            M::AddAttachment {
+                owner_kind,
+                owner_id,
+                ..
+            } => {
+                let want = match owner_kind.as_str() {
+                    "document" => 1118,
+                    "task" => 1514,
+                    "saiop" => 1704,
+                    "example" => 1901,
+                    _ => 902,
+                };
+                assert_eq!(*owner_id, want, "owner {owner_kind}");
+            }
+            M::TrashItem { kind, id } => {
+                let want = match kind.as_str() {
+                    "document" => 1113,
+                    "capture" => 1207,
+                    "task" => 1506,
+                    "attachment" => 1403,
+                    _ => 9,
+                };
+                assert_eq!(*id, want, "trash {kind}");
+            }
+            M::SaveResourceUse { item, .. } => {
+                assert_eq!(
+                    (item.document_id, item.saiop_id, item.task_id),
+                    (Some(1119), Some(1705), Some(1515))
+                );
+            }
+            M::RelinkTask {
+                task_id,
+                document_id,
+                ..
+            } => assert_eq!((*task_id, *document_id), (1505, Some(1110))),
+            M::AddDocumentLink { source, target, .. } => {
+                assert_eq!((*source, *target), (1111, 1112))
+            }
+            M::SaveNote { document_id, .. } => assert_eq!(*document_id, 1101),
+            M::SaveDraft {
+                document_id,
+                capture_id,
+                materials,
+                ..
+            } => {
+                assert_eq!((*document_id, *capture_id), (1103, 1201));
+                let got: Vec<(&str, i64, i64, Option<i64>)> = materials
+                    .iter()
+                    .map(|s| (s.id.as_str(), s.document_id, s.capture_id, s.file_id))
+                    .collect();
+                assert_eq!(
+                    got,
+                    vec![
+                        ("C1201", 1103, 1201, None),
+                        ("C1202F1301P2", 1104, 1202, Some(1301)),
+                        ("A1401Hab12", 1105, 1203, None),
+                    ]
+                );
+            }
+            M::SaveAnalysis {
+                document_id,
+                analysis,
+            } => {
+                assert_eq!((*document_id, analysis.capture_id), (1106, 1204));
+                let got: Vec<(&str, i64, i64, Option<i64>)> = analysis
+                    .materials
+                    .iter()
+                    .map(|s| (s.id.as_str(), s.document_id, s.capture_id, s.file_id))
+                    .collect();
+                let names = ["C1204", "C1205F1302P1OCR", "A1402Hcd34"];
+                assert_eq!(
+                    got,
+                    vec![
+                        (names[0], 1106, 1204, None),
+                        (names[1], 1107, 1205, Some(1302)),
+                        (names[2], 1108, 1206, None),
+                    ]
+                );
+                // The names that use the sources follow them.
+                let cited: Vec<&str> = analysis
+                    .citations
+                    .iter()
+                    .map(|c| c.source_id.as_str())
+                    .collect();
+                let facts: Vec<&str> = analysis
+                    .facts
+                    .iter()
+                    .map(|f| f.source_id.as_str())
+                    .collect();
+                assert_eq!((cited, facts), (names.to_vec(), names.to_vec()));
+            }
+            M::RecordGeneration { record } => {
+                assert_eq!(
+                    (record.document_id, record.capture_id, record.draft_id),
+                    (1120, 1208, Some(1950))
+                );
+                let got: Vec<(&str, i64, i64, Option<i64>)> = record
+                    .sources
+                    .iter()
+                    .map(|s| (s.id.as_str(), s.document_id, s.capture_id, s.file_id))
+                    .collect();
+                assert_eq!(
+                    got,
+                    vec![
+                        ("C1208", 1120, 1208, None),
+                        ("C1209F1304P3", 1121, 1209, Some(1304)),
+                        ("A1408Hef56", 1122, 1210, None),
+                    ]
+                );
+            }
+            other => panic!("not checked: {other:?}"),
+        }
+    }
 }
