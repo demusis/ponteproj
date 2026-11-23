@@ -118,6 +118,11 @@ internal object PhoneWords {
         // src/intranet.rs:2297
         Regex("""Nenhuma pasta está acessível agora \(.*?\)\. Conecte o pendrive ou espere a nuvem ficar disponível\.""", any) to
             "O arquivo de sincronização não está acessível agora. Espere o Drive ficar disponível e tente de novo.",
+        // src/folder_health.rs (too_big_message): the library does not fit in the file; the Lixeira and the
+        // attachments are handled on the computer.
+        Regex("""Nenhuma pasta pôde ser gravada: O acervo passa de 512 MB e não cabe no arquivo de sincronização( \(daria [^)]*\))?\. Nada foi gravado\. .*?As alterações continuam guardadas neste computador\.""", any) to
+            "O acervo passa de 512 MB e não cabe no arquivo de sincronização$1. Nada foi gravado. ${FolderRoom.ADVICE} " +
+            "As alterações continuam guardadas neste aparelho.",
         // src/intranet.rs:2794
         Regex("""Nenhuma pasta pôde ser gravada: .*?\. As alterações continuam guardadas neste computador\.""", any) to
             "Não foi possível gravar o arquivo de sincronização. As alterações continuam guardadas neste aparelho.",

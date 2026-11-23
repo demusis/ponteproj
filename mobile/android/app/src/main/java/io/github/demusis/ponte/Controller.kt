@@ -960,6 +960,8 @@ internal object Controller {
         }
         // The holidays may have changed with the library (a sync, or the opening of the core).
         updateSettings()
+        // And the file on the Drive may have grown: its size is read again for Ajustes.
+        if (Route.Settings in stack) loadFileInfo()
         refreshTasks()
         reloadDocument()
         refreshOpenTask()

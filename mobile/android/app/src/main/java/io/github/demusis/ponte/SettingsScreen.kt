@@ -111,7 +111,9 @@ internal fun SettingsScreen(
                                     state.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text,
                                     maxLines = 2, overflow = TextOverflow.Ellipsis
                                 )
-                                if (state.fileSize >= 0) Text(formatSize(state.fileSize), fontSize = 13.sp, color = c.muted)
+                                if (state.fileSize >= 0) {
+                                    Text(FolderRoom.line(state.fileSize), fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                                }
                             }
                         }
                         TextAction(if (state.fileName.isEmpty()) "Escolher arquivo" else "Trocar arquivo", onPickFile)
@@ -148,6 +150,7 @@ internal fun SettingsScreen(
                         state.mobileData, onMobile
                     )
 
+                    FolderRoom.warning(state.fileSize)?.let { Notice(it, tone = Tone.WARNING) }
                     if (state.pending) {
                         Notice("Há alterações deste aparelho aguardando envio ao Drive. Elas vão na próxima sincronização.", tone = Tone.WARNING)
                     }
@@ -160,6 +163,7 @@ internal fun SettingsScreen(
                             )
                         }
                     }
+                    Text(FolderRoom.NOT_SYNCED, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
                 }
             }
 
