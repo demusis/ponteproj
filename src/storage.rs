@@ -662,6 +662,16 @@ impl Store {
         // Identical to an older version: that version becomes current again,
         // without storing anything new.
         let duplicate = existing.is_some();
+        // The current version follows the document's own time, not the order
+        // in which the versions reached this library: a version captured
+        // before the current one (an import replayed late by a
+        // synchronization) is kept in the history and the current one stays.
+        let becomes_current = match latest {
+            Some(current) if Some(current) != existing.as_ref().map(|(id, _)| *id) => {
+                !capture_order(&tx, current)?.is_after(&CaptureOrder::of(capture))
+            }
+            _ => true,
+        };
         let capture_id = match &existing {
             Some((id, _)) => *id,
             None => {
@@ -669,10 +679,17 @@ impl Store {
                 tx.last_insert_rowid()
             }
         };
-        tx.execute(
-            "UPDATE documents SET latest_capture_id=?1,last_seen_at=?2 WHERE id=?3",
-            params![capture_id, seen, document_id],
-        )?;
+        if becomes_current {
+            tx.execute(
+                "UPDATE documents SET latest_capture_id=?1,last_seen_at=?2 WHERE id=?3",
+                params![capture_id, seen, document_id],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE documents SET last_seen_at=?1 WHERE id=?2",
+                params![seen, document_id],
+            )?;
+        }
         tx.execute(
             "INSERT INTO requests(request_id,document_id,capture_id) VALUES(?1,?2,?3)",
             params![request_key, document_id, capture_id],
@@ -705,7 +722,7 @@ impl Store {
                 ImportOutcome::Imported
             }),
             existing_captured_at: existing.map(|(_, created_at)| created_at),
-            previous_version: duplicate,
+            previous_version: duplicate && becomes_current,
         };
         let added = finish_import_extras(
             &tx,
@@ -861,16 +878,7 @@ impl Store {
             .map(|bytes| decode(&bytes))
             .transpose()?
             .unwrap_or_default();
-        let analysis: Option<Analysis> = self
-            .conn
-            .query_row(
-                "SELECT payload FROM analyses WHERE document_id=?1 ORDER BY id DESC LIMIT 1",
-                [id],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
-            .optional()?
-            .map(|bytes| decode(&bytes))
-            .transpose()?;
+        let analysis: Option<Analysis> = current_analysis(&self.conn, id)?;
         let mut stmt = self.conn.prepare("SELECT id,capture_id,payload,created_at FROM drafts WHERE document_id=?1 ORDER BY id DESC")?;
         let rows = stmt.query_map([id], |row| {
             Ok((
@@ -1138,16 +1146,7 @@ impl Store {
             .unwrap_or_default();
         let work_context = self.load_work_context(document_id)?;
         let context = work_context.analysis_text(&note);
-        let analysis: Option<Analysis> = self
-            .conn
-            .query_row(
-                "SELECT payload FROM analyses WHERE document_id=?1 ORDER BY id DESC LIMIT 1",
-                [document_id],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
-            .optional()?
-            .map(|bytes| decode(&bytes))
-            .transpose()?;
+        let analysis: Option<Analysis> = current_analysis(&self.conn, document_id)?;
         let facts = analysis
             .filter(|a| {
                 a.capture_id == capture_id
@@ -1479,6 +1478,70 @@ impl Store {
             .collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
     }
+}
+
+/// Where a version stands in its document's own time: when it was captured
+/// (`Capture::captured_at`, which travels with the version). Two versions
+/// captured at the same moment, or one whose time cannot be read, are not
+/// ordered by it: the order in which they arrived decides, as it always did.
+pub(crate) struct CaptureOrder {
+    at: Option<chrono::DateTime<chrono::FixedOffset>>,
+}
+
+impl CaptureOrder {
+    pub(crate) fn of(capture: &Capture) -> Self {
+        Self {
+            at: chrono::DateTime::parse_from_rfc3339(capture.captured_at.trim()).ok(),
+        }
+    }
+    /// Captured strictly later than `other`.
+    pub(crate) fn is_after(&self, other: &Self) -> bool {
+        match (self.at, other.at) {
+            (Some(a), Some(b)) => a > b,
+            _ => false,
+        }
+    }
+}
+
+/// The [`CaptureOrder`] of a stored version.
+pub(crate) fn capture_order(conn: &Connection, capture_id: i64) -> Result<CaptureOrder> {
+    let blob: Vec<u8> = conn.query_row(
+        "SELECT payload FROM captures WHERE id=?1",
+        [capture_id],
+        |r| r.get(0),
+    )?;
+    let capture: Capture = decode(&blob)?;
+    Ok(CaptureOrder::of(&capture))
+}
+
+/// Of `candidates` (versions of one document), the one captured last by the
+/// document's own time, ties (and unreadable times, which come first) by
+/// number, as before; `None` when there is none.
+pub(crate) fn newest_capture(conn: &Connection, candidates: &[i64]) -> Result<Option<i64>> {
+    let mut keyed = Vec::with_capacity(candidates.len());
+    for &id in candidates {
+        keyed.push((capture_order(conn, id)?.at, id));
+    }
+    Ok(keyed.into_iter().max().map(|(_, id)| id))
+}
+
+/// The current analysis of a document: the one made last by its own time
+/// (`created_at`, the moment the analysis was made, which travels with it),
+/// not the one that reached this library last. Ties by number.
+fn current_analysis(conn: &Connection, document_id: i64) -> Result<Option<Analysis>> {
+    let rows: Vec<(i64, String, Vec<u8>)> = conn
+        .prepare("SELECT id,created_at,payload FROM analyses WHERE document_id=?1")?
+        .query_map([document_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let newest = rows.into_iter().max_by_key(|(id, at, _)| {
+        (
+            chrono::DateTime::parse_from_rfc3339(at.trim())
+                .ok()
+                .map(|t| t.timestamp_micros()),
+            *id,
+        )
+    });
+    newest.map(|(_, _, blob)| decode(&blob)).transpose()
 }
 
 fn require_document(conn: &Connection, id: i64) -> Result<()> {

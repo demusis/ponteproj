@@ -432,7 +432,13 @@ fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
                 [target.id],
                 |r| r.get(0),
             )?;
-            let remaining:Option<i64>=conn.query_row("SELECT c.id FROM captures c WHERE c.document_id=?1 AND c.id<>?2 AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='capture' AND t.item_id=c.id) ORDER BY c.id DESC LIMIT 1",params![doc_id,target.id],|r|r.get(0)).optional()?;
+            // The version that takes over is the one captured last by the
+            // document's own time, not the one that arrived last.
+            let active: Vec<i64> = conn
+                .prepare("SELECT c.id FROM captures c WHERE c.document_id=?1 AND c.id<>?2 AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='capture' AND t.item_id=c.id)")?
+                .query_map(params![doc_id, target.id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let remaining = crate::storage::newest_capture(conn, &active)?;
             let current: i64 = conn.query_row(
                 "SELECT latest_capture_id FROM documents WHERE id=?1",
                 [doc_id],

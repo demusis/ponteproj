@@ -1437,14 +1437,14 @@ fn current_text(store: &Store) -> String {
     store.load_document(doc).unwrap().capture.text
 }
 
-/// R2-B3 against 0.50, versions: the current version is a pointer
-/// (`latest_capture_id`), set by whichever import is APPLIED last. B imports
-/// an older version offline, A a newer one and publishes first: B's import is
-/// replayed after A's, so the OLDER version becomes current, the same on
-/// both devices. Then trashing the current version falls back to the highest
-/// id (ORDER BY id DESC), again the same on both.
+/// R2-B3, versions: the current version is a pointer (`latest_capture_id`).
+/// In 0.50.0 it was set by whichever import was APPLIED last: B imports an
+/// older version offline, A a newer one and publishes first, B's import is
+/// replayed after A's and the OLDER version became current. Since F0 the
+/// pointer follows the capture time: the newer one stays current, the same
+/// on both devices, and trashing it promotes the newest remaining one.
 #[test]
-fn r2_b3_the_current_version_follows_the_order_of_arrival_but_is_the_same_everywhere() {
+fn r2_b3_the_current_version_follows_the_capture_time_and_is_the_same_everywhere() {
     let mut p = pair();
     let sample = crate::model::sample_capture();
     let mut newer = sample.clone();
@@ -1464,8 +1464,8 @@ fn r2_b3_the_current_version_follows_the_order_of_arrival_but_is_the_same_everyw
     eprintln!("R2-B3 current after merge: {}", current_text(&p.a));
     assert_eq!(
         current_text(&p.a),
-        older.text,
-        "arrival order elects the older capture"
+        newer.text,
+        "the capture time elects the newer capture"
     );
     // Trash the current one: the fallback is the highest remaining id.
     let doc = p.a.list_documents("").unwrap()[0].id;
@@ -1486,6 +1486,7 @@ fn r2_b3_the_current_version_follows_the_order_of_arrival_but_is_the_same_everyw
     sync(&mut p.b);
     assert_eq!(current_text(&p.a), current_text(&p.b));
     eprintln!("R2-B3 current after trashing it: {}", current_text(&p.a));
+    assert_eq!(current_text(&p.a), older.text, "the newest remaining one");
 }
 
 /// R2-B3 against 0.50, notes: the current note is the note row with the
@@ -2274,4 +2275,133 @@ fn f0_a_resumed_plan_that_created_its_record_refuses_another_record_with_its_req
         note_before,
         "note on X"
     );
+}
+
+// ------------------------------------- F0: current by own time (item 5) --
+
+fn version_at(text: &str, at: &str) -> crate::model::Capture {
+    let mut c = crate::model::sample_capture();
+    c.request_id = uuid::Uuid::new_v4().to_string();
+    c.text = text.into();
+    c.captured_at = at.into();
+    c
+}
+
+fn trash_current(store: &mut Store) {
+    let doc = store.list_documents("").unwrap()[0].id;
+    let latest = one(
+        store,
+        "SELECT latest_capture_id FROM documents WHERE id=?1",
+        rusqlite::types::Value::Integer(doc),
+    )
+    .unwrap();
+    store
+        .trash_item(crate::trash::Target {
+            kind: crate::trash::Kind::Capture,
+            id: latest,
+        })
+        .unwrap();
+}
+
+/// F0 (R2-B3, item 5), within a device: two libraries receive the same four
+/// versions of a document in different orders (one of them captured on the
+/// 8th arrives last, as an import replayed late). Both show as current the
+/// one captured last (the 10th), and after it goes to the Lixeira both
+/// promote the one captured on the 9th, not the one that arrived last.
+#[test]
+fn f0_the_current_version_follows_the_capture_time_not_the_arrival_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let versions = [
+        version_at("Versão do dia 09.", "2026-11-09T12:00:00Z"),
+        version_at("Versão do dia 10.", "2026-11-10T12:00:00Z"),
+        version_at("Versão do dia 08.", "2026-11-08T12:00:00Z"),
+    ];
+    let mut results = Vec::new();
+    for (name, order) in [("1.sqlite3", [0, 1, 2]), ("2.sqlite3", [2, 1, 0])] {
+        let mut store = Store::open(&dir.path().join(name)).unwrap();
+        store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        for index in order {
+            store.import_capture(&versions[index]).unwrap();
+        }
+        let current = current_text(&store);
+        trash_current(&mut store);
+        results.push((current, current_text(&store)));
+    }
+    for (current, after_trash) in &results {
+        assert_eq!(current, "Versão do dia 10.");
+        assert_eq!(after_trash, "Versão do dia 09.");
+    }
+}
+
+/// F0 (R2-B3, item 5), two computers: A imports a version captured on the
+/// 10th and publishes; B imports one captured on the 5th and publishes after
+/// (its import is replayed after A's). The newer capture stays current on
+/// both, and the older one is kept in the history.
+#[test]
+fn f0_an_older_version_replayed_later_does_not_become_current() {
+    let mut p = pair();
+    let newer = version_at("Versão nova (A, capturada dia 10).", "2026-11-10T12:00:00Z");
+    let older = version_at(
+        "Versão antiga (B, capturada dia 05).",
+        "2026-11-05T12:00:00Z",
+    );
+    p.a.import_capture(&newer).unwrap();
+    sync(&mut p.a);
+    p.b.import_capture(&older).unwrap();
+    sync(&mut p.b);
+    sync(&mut p.a);
+    for (who, store) in [("A", &p.a), ("B", &p.b)] {
+        assert_eq!(current_text(store), newer.text, "{who}");
+        let doc = store.list_documents("").unwrap()[0].id;
+        let texts: Vec<String> = store
+            .capture_versions(doc)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.capture.text)
+            .collect();
+        assert!(texts.contains(&older.text), "{who}: {texts:?}");
+    }
+}
+
+/// F0 (R2-B3, item 5), analyses: B analyses a document offline (made on the
+/// 5th), A analyses it later (the 10th) and publishes first; B's analysis is
+/// replayed after A's. The current analysis is A's, the newer one, on both.
+#[test]
+fn f0_the_current_analysis_follows_the_time_it_was_made() {
+    let mut p = pair();
+    let doc = p.a.list_documents("").unwrap()[0].id;
+    let capture_id = one(
+        &p.a,
+        "SELECT latest_capture_id FROM documents WHERE id=?1",
+        rusqlite::types::Value::Integer(doc),
+    )
+    .unwrap();
+    let analysis = |summary: &str, at: &str| crate::model::Analysis {
+        capture_id,
+        summary: summary.into(),
+        reason: "r".into(),
+        model: "modelo-de-teste".into(),
+        created_at: at.into(),
+        priority: "normal".into(),
+        ..Default::default()
+    };
+    p.b.save_analysis(
+        doc,
+        &analysis("Análise de B (dia 05)", "2026-11-05T10:00:00Z"),
+    )
+    .unwrap();
+    p.a.save_analysis(
+        doc,
+        &analysis("Análise de A (dia 10)", "2026-11-10T10:00:00Z"),
+    )
+    .unwrap();
+    sync(&mut p.a);
+    sync(&mut p.b);
+    sync(&mut p.a);
+    for (who, store) in [("A", &p.a), ("B", &p.b)] {
+        let current = store.load_document(doc).unwrap().analysis.unwrap();
+        assert_eq!(current.summary, "Análise de A (dia 10)", "{who}");
+    }
 }
