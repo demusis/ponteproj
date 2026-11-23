@@ -168,89 +168,193 @@ fn table_counts(conn: &Connection, tables: &[String]) -> Result<BTreeMap<String,
     Ok(counts)
 }
 
+/// The start of the names of the copies made before the step to schema 22.
+const MIGRATION_COPY_FAMILY: &str = "antes-do-acervo-22-";
+
+/// Free space on the volume of `folder` (a failure is an error, never "no
+/// limit").
+fn measured_free_space(folder: &Path) -> std::io::Result<u64> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(answer) = crate::idents::hooks::FREE_SPACE.with(|h| h.borrow_mut().take()) {
+        return answer;
+    }
+    crate::auto_backup::free_space(folder)
+}
+
+/// A digest of everything a library holds: `user_version`, every schema
+/// object and every row of every table, in a fixed order. Two libraries
+/// with the same digest hold the same thing: it is the proof that a copy
+/// is the state it was made from.
+fn state_digest(conn: &Connection) -> Result<String> {
+    let mut hash = Sha256::new();
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    hash.update(version.to_le_bytes());
+    let field = |hash: &mut Sha256, value: rusqlite::types::ValueRef<'_>| {
+        use rusqlite::types::ValueRef as V;
+        match value {
+            V::Null => hash.update([0u8]),
+            V::Integer(n) => {
+                hash.update([1u8]);
+                hash.update(n.to_le_bytes());
+            }
+            V::Real(f) => {
+                hash.update([2u8]);
+                hash.update(f.to_bits().to_le_bytes());
+            }
+            V::Text(bytes) | V::Blob(bytes) => {
+                hash.update([if matches!(value, V::Text(_)) {
+                    3u8
+                } else {
+                    4u8
+                }]);
+                hash.update((bytes.len() as u64).to_le_bytes());
+                hash.update(bytes);
+            }
+        }
+    };
+    {
+        let mut statement = conn.prepare(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name,tbl_name",
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            for i in 0..4 {
+                field(&mut hash, row.get_ref(i)?);
+            }
+        }
+    }
+    let tables: Vec<(String, bool)> = conn
+        .prepare(
+            "SELECT name,wr FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite\\_stat%' ESCAPE '\\' ORDER BY name",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (table, without_rowid) in tables {
+        let quoted = format!("\"{}\"", table.replace('"', "\"\""));
+        let columns: i64 = conn.query_row(
+            &format!(
+                "SELECT count(*) FROM pragma_table_info('{}')",
+                table.replace('\'', "''")
+            ),
+            [],
+            |r| r.get(0),
+        )?;
+        let order = if without_rowid {
+            (1..=columns)
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            "rowid".to_owned()
+        };
+        hash.update(table.as_bytes());
+        let mut statement = conn.prepare(&format!("SELECT * FROM {quoted} ORDER BY {order}"))?;
+        let width = statement.column_count();
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            hash.update([9u8]);
+            for i in 0..width {
+                field(&mut hash, row.get_ref(i)?);
+            }
+        }
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+/// Whether the copy at `path` is the state with `version`, `counts` and
+/// `digest`. Opened as immutable: nothing is created beside it.
+fn copy_is_state(
+    path: &Path,
+    version: i64,
+    counts: &BTreeMap<String, i64>,
+    digest: &str,
+) -> Result<bool> {
+    let copy = crate::recovery::open_own_copy(path)?;
+    let copied: i64 = copy.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if copied != version {
+        return Ok(false);
+    }
+    let tables: Vec<String> = counts.keys().cloned().collect();
+    if table_counts(&copy, &tables).ok().as_ref() != Some(counts) {
+        return Ok(false);
+    }
+    Ok(state_digest(&copy)? == digest)
+}
+
 /// The copy made before the step to schema 22, of the state the caller
 /// holds locked (its write transaction has not written yet, so a second,
-/// read-only connection reads exactly that state): written as
-/// `backups/antes-do-acervo-22-<data>.sqlite3.partial` beside the library,
-/// checked (`quick_check`, `user_version` equal to `version`, the rows of
-/// every table equal to `counts`) and only then given its final name, never
-/// over another file. A failure leaves no partial file behind.
-fn copy_locked_state(db: &Path, version: i64, counts: &BTreeMap<String, i64>) -> Result<PathBuf> {
+/// read-only connection reads exactly that state), in `backups` beside the
+/// library as `antes-do-acervo-22-<data>.sqlite3`.
+///
+/// It is made as the installer makes its copies
+/// (`upgrade_backup::backup_named_checked`): a partial file of this attempt
+/// alone, created exclusively under a random name, checked (`quick_check`,
+/// `user_version`, the rows of every table and the digest of the whole
+/// state equal to the locked one) and published under a name nobody has,
+/// never over another file. A failed attempt leaves no partial file of its
+/// own. A copy an earlier attempt already published is used again only when
+/// it is proved to be this very state (same version, counts and digest), so
+/// an update that keeps failing after the copy does not pile up copies.
+fn copy_locked_state(
+    db: &Path,
+    version: i64,
+    counts: &BTreeMap<String, i64>,
+    digest: &str,
+) -> Result<PathBuf> {
     let folder = db
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
         .join("backups");
-    std::fs::create_dir_all(&folder).with_context(|| {
-        format!(
-            "Não foi possível criar a pasta da cópia de segurança ({}).",
-            folder.display()
-        )
-    })?;
-    let stem = format!(
-        "antes-do-acervo-22-{}",
-        chrono::Local::now().format("%Y%m%d-%H%M%S")
-    );
-    let target = crate::upgrade_backup::first_free_name(&folder, &stem)?;
-    let partial = PathBuf::from(format!("{}.partial", target.display()));
-    let remove = |path: &Path| {
-        for suffix in ["", "-wal", "-shm", "-journal"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
-    };
-    let made = (|| -> Result<()> {
-        ensure!(
-            !partial.exists(),
-            "Já existe {}; nada foi alterado.",
-            partial.display()
-        );
-        {
-            let source = Connection::open_with_flags(
-                db,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )
-            .context("Não foi possível abrir o acervo para copiá-lo.")?;
-            crate::upgrade_backup::copy_from(&source, &partial)?;
-        }
-        crate::upgrade_backup::verify(&partial)?;
-        {
-            let copy = Connection::open(&partial)
-                .context("Não foi possível reabrir a cópia para conferi-la.")?;
-            let copied: i64 = copy.pragma_query_value(None, "user_version", |r| r.get(0))?;
-            ensure!(
-                copied == version,
-                "A cópia saiu com a versão {copied} do acervo, e não com a {version}."
-            );
-            let tables: Vec<String> = counts.keys().cloned().collect();
-            let copied = table_counts(&copy, &tables)?;
-            for (table, n) in counts {
-                ensure!(
-                    copied.get(table) == Some(n),
-                    "A cópia não tem as mesmas linhas de {table} ({:?} em vez de {n}).",
-                    copied.get(table)
-                );
+    if let Ok(entries) = std::fs::read_dir(&folder) {
+        let mut earlier: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .is_some_and(|n| {
+                        n.starts_with(MIGRATION_COPY_FAMILY) && n.ends_with(".sqlite3")
+                    })
+            })
+            .collect();
+        earlier.sort();
+        for path in earlier {
+            if copy_is_state(&path, version, counts, digest).unwrap_or(false) {
+                return Ok(path);
             }
-            copy.close()
-                .map_err(|(_, e)| e)
-                .context("Não foi possível fechar a cópia depois de conferi-la.")?;
         }
-        crate::atomic_file::move_no_replace(&partial, &target).with_context(|| {
-            format!(
-                "Não foi possível dar o nome final à cópia ({}).",
-                target.display()
-            )
-        })?;
-        Ok(())
-    })();
-    match made {
-        Ok(()) => {
-            remove(&partial);
-            Ok(target)
-        }
-        Err(error) => {
-            remove(&partial);
-            Err(error)
+    }
+    let now = || chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    #[cfg(any(test, feature = "test-support"))]
+    let stamp = crate::idents::hooks::MIGRATION_STAMP
+        .with(|h| h.borrow().clone())
+        .unwrap_or_else(now);
+    #[cfg(not(any(test, feature = "test-support")))]
+    let stamp = now();
+    let stem = format!("{MIGRATION_COPY_FAMILY}{stamp}");
+    let outcome = crate::upgrade_backup::backup_named_checked(
+        db,
+        &folder,
+        &stem,
+        MIGRATION_COPY_FAMILY,
+        |partial| {
+            ensure!(
+                copy_is_state(partial, version, counts, digest)?,
+                "A cópia não saiu igual ao acervo travado para a atualização."
+            );
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(pause) =
+                crate::idents::hooks::MIGRATION_COPY_WRITTEN.with(|h| h.borrow_mut().take())
+            {
+                pause();
+            }
+            Ok(())
+        },
+    )?;
+    match outcome {
+        crate::upgrade_backup::Outcome::BackedUp(path) => Ok(path),
+        crate::upgrade_backup::Outcome::NoLibrary => {
+            bail!("O arquivo do acervo não foi encontrado para copiá-lo.")
         }
     }
 }
@@ -339,7 +443,9 @@ impl Store {
             version <= LIBRARY_SCHEMA,
             "Este acervo foi criado por uma versão mais nova do Ponte; atualize o Ponte antes de abri-lo."
         );
-        let upgrading = version < LIBRARY_SCHEMA;
+        // The juntada links are reconciled by a service opening only when the
+        // CONTENT schema moves (the step to 22 changes the file alone).
+        let upgrading = version < SCHEMA_VERSION;
         // `cache_size` is in KiB when negative: 64 MB of pages kept in memory
         // (the default, about 2 MB, made a library of some size read its
         // pages from the file again at every query).
@@ -520,6 +626,13 @@ impl Store {
     fn migrate_to_library_schema(&mut self, db: &Path, created_now: bool) -> Result<()> {
         let stopped =
             |step: &str| format!("A atualização do acervo parou em “{step}”; nada foi alterado.");
+        // Already at 22 (every opening after the first): no write lock asked.
+        let seen: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if seen >= LIBRARY_SCHEMA {
+            return Ok(());
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -538,13 +651,20 @@ impl Store {
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            let free = crate::auto_backup::free_space(folder).unwrap_or(u64::MAX);
+            // A measure that fails is never taken for "room enough".
+            let free = measured_free_space(folder).map_err(|error| {
+                anyhow::anyhow!(
+                    "Não foi possível medir o espaço livre em {} ({error}). O acervo não foi atualizado e nada foi alterado; abra o Ponte de novo e, se isso continuar, avise quem cuida dele.",
+                    folder.display()
+                )
+            })?;
             ensure!(
                 free >= needed,
                 "Falta espaço para atualizar o acervo com segurança (são necessários {} MB). Libere espaço e abra o Ponte de novo; nada foi alterado.",
                 needed.div_ceil(1024 * 1024).max(1)
             );
-            copy_locked_state(db, version, &counts)
+            let digest = state_digest(&tx).with_context(|| stopped("cópia de segurança"))?;
+            copy_locked_state(db, version, &counts, &digest)
                 .with_context(|| stopped("cópia de segurança"))?;
         }
         (|| -> Result<()> {
@@ -752,6 +872,7 @@ impl Store {
                 &request_key,
                 false,
             )?;
+            close_import_log(&tx, extras)?;
             tx.commit()?;
             return Ok((receipt, added));
         }
@@ -815,6 +936,7 @@ impl Store {
                     &request_key,
                     false,
                 )?;
+                close_import_log(&tx, extras)?;
                 tx.commit()?;
                 return Ok((receipt, added));
             }
@@ -893,6 +1015,7 @@ impl Store {
             &request_key,
             new_document,
         )?;
+        close_import_log(&tx, extras)?;
         tx.commit()
             .context("Não foi possível concluir a importação; tente de novo.")?;
         // The capture is already committed; a failure here must not undo the
@@ -1695,33 +1818,35 @@ fn current_analysis(
     document_id: i64,
     current_capture: i64,
 ) -> Result<Option<Analysis>> {
-    let Some(id) = current_analysis_id(conn, document_id, current_capture)? else {
-        return Ok(None);
-    };
-    let blob: Vec<u8> = conn.query_row("SELECT payload FROM analyses WHERE id=?1", [id], |r| {
-        r.get(0)
-    })?;
-    decode(&blob).map(Some)
+    Ok(current_analysis_row(conn, document_id, current_capture)?.map(|(_, analysis)| analysis))
 }
 
-/// The row of [`current_analysis`] (the rule `current_pointer` keeps since
-/// schema 22, `idents::current_analysis_sql`).
-pub(crate) fn current_analysis_id(
+/// [`current_analysis`] with its row number. The rows it chooses from and
+/// the content it answers come from ONE statement: a change committed by
+/// another connection meanwhile can never pair the choice with the content
+/// of another row. The tests compare `current_pointer` with this read.
+pub(crate) fn current_analysis_row(
     conn: &Connection,
     document_id: i64,
     current_capture: i64,
-) -> Result<Option<i64>> {
-    let rows: Vec<(i64, i64, String)> = conn
-        .prepare("SELECT id,capture_id,created_at FROM analyses WHERE document_id=?1")?
-        .query_map([document_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+) -> Result<Option<(i64, Analysis)>> {
+    let rows: Vec<(i64, i64, String, Vec<u8>)> = conn
+        .prepare("SELECT id,capture_id,created_at,payload FROM analyses WHERE document_id=?1")?
+        .query_map([document_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(pause) = crate::idents::hooks::AFTER_ANALYSIS_SELECT.with(|h| h.borrow_mut().take())
+    {
+        pause();
+    }
     let of_current = rows
         .iter()
-        .any(|(_, capture, _)| *capture == current_capture);
-    Ok(rows
-        .into_iter()
-        .filter(|(_, capture, _)| !of_current || *capture == current_capture)
-        .max_by_key(|(id, _, at)| {
+        .any(|(_, capture, _, _)| *capture == current_capture);
+    rows.into_iter()
+        .filter(|(_, capture, _, _)| !of_current || *capture == current_capture)
+        .max_by_key(|(id, _, at, _)| {
             (
                 chrono::DateTime::parse_from_rfc3339(at.trim())
                     .ok()
@@ -1729,7 +1854,8 @@ pub(crate) fn current_analysis_id(
                 *id,
             )
         })
-        .map(|(id, _, _)| id))
+        .map(|(id, _, _, blob)| decode(&blob).map(|analysis| (id, analysis)))
+        .transpose()
 }
 
 fn require_document(conn: &Connection, id: i64) -> Result<()> {
@@ -1979,6 +2105,17 @@ pub(crate) fn remove_in_progress_import_receipt(
         "DELETE FROM import_receipts WHERE request_id=?1 AND state='in_progress'",
         [request_key],
     )?;
+    Ok(())
+}
+
+/// Closes the log of inserted rows that `import_capture_core` opened for a
+/// change queued inside its transaction, right before that transaction
+/// commits, on every way out (the import of a request that already has its
+/// receipt included). A failure to close fails the import.
+fn close_import_log(tx: &Connection, extras: Option<&ImportExtras<'_>>) -> Result<()> {
+    if extras.is_some_and(|e| e.queue_actor.is_some()) {
+        crate::idents::stop_log(tx)?;
+    }
     Ok(())
 }
 

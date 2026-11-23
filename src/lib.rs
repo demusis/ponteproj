@@ -75,6 +75,11 @@ pub mod workload;
 /// F1 of Frente F: characterization tests of row ids (tests only).
 #[cfg(test)]
 mod f1_inventory;
+#[cfg(test)]
+mod f2a_parity;
+/// F2a: the review regression tests and the parity with the build without F2a.
+#[cfg(test)]
+mod f2a_review_tests;
 /// F2a of Frente F: acceptance tests of the library schema 22 (tests only).
 #[cfg(test)]
 mod f2a_tests;

@@ -2152,7 +2152,6 @@ pub(crate) fn queue_import_locally(
             crate::idents::created_idents(tx, &mutation, &MutationReply::Id(*id), &inserted)?;
         entries.push((mutation, created, idents));
     }
-    crate::idents::stop_log(tx);
     for (mutation, created, idents) in entries {
         insert_outbox_row(
             tx,
@@ -2200,7 +2199,6 @@ pub(crate) fn queue_attachment_locally(
     let inserted = crate::idents::logged(tx)?;
     let idents =
         crate::idents::created_idents(tx, &mutation, &MutationReply::Id(attachment_id), &inserted)?;
-    crate::idents::stop_log(tx);
     insert_outbox_row(
         tx,
         &OutboxEntry {
@@ -5477,18 +5475,39 @@ impl Store {
                             Some(&store),
                         )
                     });
+                // A failure of the identities after the change may have been
+                // applied in the temporary library is not a refusal of the
+                // change: the whole exchange stops here, before anything is
+                // written or adopted, and the queue stays as it is.
+                let mut broken: Option<anyhow::Error> = None;
                 let outcome = match &remapped {
                     Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &store)
                         .and_then(|_| {
                             // The rows it inserts there take the identities
                             // it gave its rows here.
-                            store
-                                .execute_carrying(&entry.actor, mutation.clone(), &entry.idents)
-                                .map(|(reply, _)| reply)
-                                .map_err(|error| error.to_string())
+                            match store.execute_carrying(
+                                &entry.actor,
+                                mutation.clone(),
+                                &entry.idents,
+                            ) {
+                                Ok(crate::idents::Carried::Applied(reply, _)) => Ok(reply),
+                                Ok(crate::idents::Carried::Refused(error)) => {
+                                    Err(error.to_string())
+                                }
+                                Err(error) => {
+                                    broken = Some(error);
+                                    Err(String::new())
+                                }
+                            }
                         }),
                     Err(reason) => Err(reason.clone()),
                 };
+                if let Some(error) = broken {
+                    return Err(error.context(format!(
+                        "A sincronização parou antes de gravar qualquer coisa: a alteração «{}» foi reaplicada, mas as identidades dos itens dela não puderam ser registradas. Nada foi enviado nem adotado; tente de novo.",
+                        entry.label
+                    )));
+                }
                 match (remapped, outcome) {
                     (Ok(mutation), Ok(reply)) => {
                         let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
@@ -6171,12 +6190,38 @@ impl Store {
     ) -> Result<MutationReply> {
         let queued_mutation = self.prepare_mutation_for_outbox(mutation.clone());
         let base = self.snapshot_for_mutation(&queued_mutation);
-        let (reply, inserted) = self.run_logged(|store| store.execute_mutation(actor, mutation))?;
+        let logged = self.run_logged(|store| store.execute_mutation(actor, mutation))?;
+        let reply = match logged.result {
+            Ok(reply) => reply,
+            Err(error) => {
+                // Not applied: a failure to close the log is said with it.
+                return Err(match logged.closed {
+                    Ok(()) => error,
+                    Err(closing) => error.context(closing.to_string()),
+                });
+            }
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(pause) =
+            crate::idents::hooks::AFTER_LOCAL_COMMIT.with(|h| h.borrow_mut().take())
+        {
+            pause();
+        }
         let created = crate::idmap::created_ids(&*self, &queued_mutation, &reply)?;
-        let idents =
-            crate::idents::created_idents(&self.conn, &queued_mutation, &reply, &inserted)?;
+        // The change is applied: it is queued whatever happens to its
+        // identities. Identities that cannot be read (or read back) go
+        // missing, which only means the rows get new ones elsewhere; they
+        // are never guessed.
+        let idents = logged
+            .inserted
+            .and_then(|inserted| {
+                crate::idents::created_idents(&self.conn, &queued_mutation, &reply, &inserted)
+            })
+            .unwrap_or_default();
         self.enqueue_offline_mutation(actor, queued_mutation, base, created, idents, identity)?;
         self.offline_queued += 1;
+        // A log that did not close is said, after the change was queued.
+        logged.closed?;
         Ok(reply)
     }
 

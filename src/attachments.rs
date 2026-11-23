@@ -771,6 +771,9 @@ impl Store {
                 Some(request.data.len() as i64),
             )?;
         }
+        if queue_actor.is_some() {
+            crate::idents::stop_log(&tx)?;
+        }
         tx.commit()?;
         Ok(id)
     }

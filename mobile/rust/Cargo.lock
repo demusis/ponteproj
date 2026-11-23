@@ -1012,6 +1012,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "directories",
+ "libc",
  "pdf-extract",
  "regex",
  "reqwest",

@@ -158,6 +158,20 @@ pub(crate) fn backup_named(
     stem: &str,
     family: &str,
 ) -> Result<Outcome> {
+    backup_named_checked(database, destination, stem, family, |_| Ok(()))
+}
+
+/// [`backup_named`] with one more check: `before_publish` runs on the
+/// finished, verified partial file (a file of this run alone) right before
+/// it is published; an error leaves nothing behind. Used by the copy made
+/// before the library moves to schema 22 (`storage`).
+pub(crate) fn backup_named_checked(
+    database: &Path,
+    destination: &Path,
+    stem: &str,
+    family: &str,
+    before_publish: impl FnOnce(&Path) -> Result<()>,
+) -> Result<Outcome> {
     debug_assert!(stem.starts_with(family));
     if !library_exists(database)? {
         return Ok(Outcome::NoLibrary);
@@ -173,6 +187,7 @@ pub(crate) fn backup_named(
     let mut partial = Partial::create(&first_choice)?;
     copy_consistently(database, &partial.path)?;
     verify(&partial.path)?;
+    before_publish(&partial.path)?;
     // Another run of the same second and label may have taken the name since
     // it was chosen: the copy is published under a name nobody has, never over
     // a copy that is there.

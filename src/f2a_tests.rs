@@ -247,9 +247,41 @@ fn replay(source: &Store, target: &mut Store, entries: &[OutboxEntry]) -> Vec<Re
         let mutation = ids
             .remap(&entry.mutation, source, Some(&*target))
             .unwrap_or_else(|e| panic!("{}: {e}", entry.label));
-        let (reply, rekeyed) = target
+        let carried = target
             .execute_carrying(&entry.actor, mutation.clone(), &entry.idents)
             .unwrap_or_else(|e| panic!("{}: {e}", entry.label));
+        let (reply, rekeyed) = match carried {
+            crate::idents::Carried::Applied(reply, rekeyed) => (reply, rekeyed),
+            crate::idents::Carried::Refused(error) => {
+                // An item created and deleted while queued: the queue merged
+                // its creation into the delete, and the target never had it.
+                let created_and_deleted_here = matches!(
+                    &entry.mutation,
+                    crate::intranet::IntranetMutation::DeleteResource { .. }
+                        | crate::intranet::IntranetMutation::DeleteResourceUse { .. }
+                        | crate::intranet::IntranetMutation::DeleteCategory { .. }
+                        | crate::intranet::IntranetMutation::DeleteProject { .. }
+                ) && entry.label.contains("xclus");
+                assert!(
+                    created_and_deleted_here && format!("{error:#}").contains("não encontrad"),
+                    "{}: recusada: {error:#}",
+                    entry.label
+                );
+                out.push(crate::idents::Rekeyed::default());
+                continue;
+            }
+        };
+        // Right after the change: a later change (a purge) may remove the row.
+        for (slot, row) in &rekeyed.applied {
+            assert_eq!(
+                crate::idents::ident_of(&target.conn, &slot.kind, *row)
+                    .unwrap()
+                    .as_deref(),
+                Some(slot.ident.as_str()),
+                "{}",
+                entry.label
+            );
+        }
         let created = crate::idmap::created_ids(&*target, &mutation, &reply).unwrap();
         ids.learn(&entry.created, Some(&created));
         out.push(rekeyed);
@@ -379,9 +411,9 @@ fn f2a_b1_only_inserted_rows_get_carried_idents() {
         .unwrap();
     let note = p.a.conn.last_insert_rowid();
     let logged = crate::idents::logged(&p.a.conn).unwrap();
-    crate::idents::stop_log(&p.a.conn);
+    crate::idents::stop_log(&p.a.conn).unwrap();
     assert_eq!(
-        logged,
+        logged.keys().cloned().collect::<BTreeSet<_>>(),
         BTreeSet::from([("note".to_owned(), note)]),
         "{logged:?}"
     );
@@ -687,7 +719,7 @@ fn f2a_b6_trashed_document_with_note_and_analysis_migrates() {
     assert_invariants(&store, "depois de apagar");
 }
 
-/// The analysis pointer follows F0's rule (`storage::current_analysis_id`):
+/// The analysis pointer follows F0's rule (`storage::current_analysis_row`):
 /// the newest analysis, by its own time, of the CURRENT version; the newest
 /// of any version only when the current one has none. Checked after a new
 /// analysis, a version change, sending the current version to the Lixeira
@@ -1139,8 +1171,8 @@ fn f2a_behaviour_unchanged() {
     let mut p = pair();
     assert_invariants(&p.a, "A, início");
     assert_invariants(&p.b, "B, início");
-    let made_a = crate::f1_inventory::fill(&mut p.a, "a");
-    let _ = made_a;
+    // Every variant of `IntranetMutation`, made through the product.
+    crate::f2a_parity::every_variant(&mut p.a, "a");
     assert_invariants(&p.a, "A, depois de preencher");
     let queued_a = outbox(&p.a);
     assert!(queued_a.len() > 10);
@@ -1154,11 +1186,7 @@ fn f2a_behaviour_unchanged() {
     let rekeyed = replay(&p.a, &mut replica, &queued_a);
     let mut variants = BTreeSet::new();
     for (entry, result) in queued_a.iter().zip(&rekeyed) {
-        let variant = serde_json::to_value(&entry.mutation).unwrap();
-        variants.insert(match variant {
-            serde_json::Value::Object(map) => map.keys().next().cloned().unwrap_or_default(),
-            other => other.to_string(),
-        });
+        variants.insert(crate::f2a_parity::variant_name(&entry.mutation));
         assert_eq!(result.skipped, 0, "{}", entry.label);
         assert_eq!(
             result.applied.len(),
@@ -1168,19 +1196,16 @@ fn f2a_behaviour_unchanged() {
             entry.idents,
             result.applied
         );
-        for (slot, row) in &result.applied {
-            assert_eq!(
-                ident(&replica, &slot.kind, *row).as_deref(),
-                Some(slot.ident.as_str()),
-                "{}",
-                entry.label
-            );
-        }
     }
     let carried: usize = queued_a.iter().map(|e| e.idents.len()).sum();
     assert!(carried >= 15, "{carried}");
     assert_invariants(&replica, "réplica");
-    eprintln!("variantes reaplicadas ({}): {variants:?}", variants.len());
+    assert_eq!(
+        variants.len(),
+        crate::f2a_parity::enum_variant_count(),
+        "variantes reaplicadas: {variants:?}"
+    );
+    assert_eq!(variants.len(), 43);
 
     // The exchange's own replay gives the queue's identities to the rows
     // of its temporary library.

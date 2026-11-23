@@ -25,7 +25,6 @@ use crate::storage::Store;
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 
 /// The ident kinds and their tables.
 pub(crate) const KINDS: [(&str, &str); 12] = [
@@ -51,8 +50,9 @@ pub struct SlotIdent {
     pub ident: String,
 }
 
-/// The rows a logged execution inserted: (ident kind, row id).
-pub(crate) type Inserted = BTreeSet<(String, i64)>;
+/// The rows a logged execution inserted, (ident kind, row id), with the
+/// identity each was given in the write that created it.
+pub(crate) type Inserted = std::collections::BTreeMap<(String, i64), String>;
 
 /// What a replay did with the identities its change carried.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -93,19 +93,31 @@ CREATE TABLE ident_state(id INTEGER PRIMARY KEY CHECK(id=1), origin TEXT NOT NUL
 /// A new random identity: 32 lowercase hex digits.
 const RANDOM_IDENT: &str = "lower(hex(randomblob(16)))";
 
-/// The moment an analysis was made, as `storage::current_analysis` reads
-/// it (an RFC 3339 time with its offset), or NULL when it does not read as
-/// one. SQLite keeps milliseconds, which is what the Ponte writes.
-fn analysis_time(column: &str) -> String {
+/// The moment an analysis was made in microseconds since 1970 (an SQL
+/// expression), exactly as `storage::current_analysis` reads it with
+/// `chrono::DateTime::parse_from_rfc3339(…).timestamp_micros()`: an RFC 3339
+/// time (`T`, `t` or a space between date and time, an optional fraction of
+/// any length, of which the first six digits count, and `Z`, `z` or
+/// `±HH:MM`), or NULL when it does not read as one (an impossible date or
+/// time included).
+pub(crate) fn analysis_time(column: &str) -> String {
+    let head = "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T ][0-9][0-9]:[0-9][0-9]:[0-9][0-9]*'";
     format!(
-        "(CASE WHEN trim({column}) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T ][0-9][0-9]:[0-9][0-9]:[0-9][0-9]*' \
-         AND (trim({column}) GLOB '*Z' OR trim({column}) GLOB '*[+-][0-9][0-9]:[0-9][0-9]') \
-         THEN julianday(trim({column})) END)"
+        "(SELECT CASE WHEN h AND tz IS NOT NULL \
+           AND (body='' OR (substr(body,1,1)='.' AND length(body)>1 AND substr(body,2) NOT GLOB '*[^0-9]*')) \
+           AND date(substr(u,1,10))=substr(u,1,10) AND time(substr(u,12,8))=substr(u,12,8) \
+         THEN unixepoch(substr(u,1,10)||'T'||substr(u,12,8)||tz)*1000000 \
+           + CAST(substr(substr(body,2)||'000000',1,6) AS INTEGER) END \
+         FROM (SELECT u,h,tz,CASE WHEN tz IS NULL THEN NULL ELSE substr(rest,1,length(rest)-length(tz)) END AS body \
+           FROM (SELECT u, u GLOB {head} AS h, substr(u,20) AS rest, \
+             CASE WHEN substr(u,20) GLOB '*Z' THEN 'Z' \
+                  WHEN substr(u,20) GLOB '*[+-][0-9][0-9]:[0-9][0-9]' THEN substr(u,-6) END AS tz \
+             FROM (SELECT upper(trim({column})) AS u))))"
     )
 }
 
 /// The current analysis of the document `document` (an SQL expression), as
-/// `storage::current_analysis_id`: of the analyses of its current version
+/// `storage::current_analysis_row`: of the analyses of its current version
 /// (`documents.latest_capture_id`), the one made last by its own time,
 /// unreadable times first, ties by number; only when the current version
 /// has none, the same choice among all of them.
@@ -254,56 +266,53 @@ pub(crate) fn triggers() -> Vec<(String, String)> {
 /// never writes to it). Created at every opening.
 pub(crate) fn install_insert_log(conn: &Connection) -> Result<()> {
     conn.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS ponte_inserted(kind TEXT NOT NULL, row_id INTEGER NOT NULL);",
+        "CREATE TEMP TABLE IF NOT EXISTS ponte_inserted(kind TEXT NOT NULL, row_id INTEGER NOT NULL, ident TEXT NOT NULL);",
     )?;
     Ok(())
 }
 
-/// The TEMP triggers that fill the log: they exist only while a log is
-/// open. (A TEMP trigger on a main table that stayed for the life of the
-/// connection would keep that connection from renaming tables whenever
-/// another connection had renamed the table away: SQLite checks it and
-/// cannot even drop it then.)
-fn log_triggers(create: bool) -> String {
-    let mut sql = String::new();
-    for (kind, table) in KINDS {
-        if create {
-            sql.push_str(&format!(
-                "CREATE TEMP TRIGGER IF NOT EXISTS ponte_log_{table} AFTER INSERT ON main.{table} \
-                 BEGIN INSERT INTO temp.ponte_inserted(kind,row_id) VALUES('{kind}',NEW.id); END;\n"
-            ));
-        } else {
-            sql.push_str(&format!("DROP TRIGGER IF EXISTS temp.ponte_log_{table};\n"));
-        }
-    }
-    sql
-}
+/// The TEMP trigger that fills the log. It sits on `item_ident`: every row
+/// inserted into one of the twelve tables gets its identity there in the
+/// same statement, so the log records the row AND the identity it was given
+/// in the very write that created it (read back later, after the commit,
+/// another connection may have replaced the row under the same number). It
+/// exists only while a log is open: a TEMP trigger on a main table that
+/// stayed for the life of the connection would keep it from renaming tables
+/// whenever another connection had renamed that table away (SQLite checks
+/// it and cannot even drop it then).
+const LOG_TRIGGER: &str = "CREATE TEMP TRIGGER IF NOT EXISTS ponte_log_item_ident AFTER INSERT ON main.item_ident \
+     BEGIN INSERT INTO temp.ponte_inserted(kind,row_id,ident) VALUES(NEW.kind,NEW.row_id,NEW.ident); END;";
 
-/// Opens the log of this connection, empty. Inside a transaction, a
-/// rollback closes it again.
+/// Opens the log of this connection, empty. Whoever opens it closes it
+/// ([`stop_log`]) on every way out that does not roll back; inside a
+/// transaction, a rollback closes it too.
 pub(crate) fn start_log(conn: &Connection) -> Result<()> {
-    conn.execute_batch(&format!(
-        "DELETE FROM temp.ponte_inserted;\n{}",
-        log_triggers(true)
-    ))?;
+    conn.execute_batch(&format!("DELETE FROM temp.ponte_inserted;\n{LOG_TRIGGER}"))?;
     Ok(())
 }
 
-/// The rows inserted since [`start_log`].
+/// The rows inserted since [`start_log`], with the identity each was given.
 pub(crate) fn logged(conn: &Connection) -> Result<Inserted> {
-    let mut statement = conn.prepare("SELECT kind,row_id FROM temp.ponte_inserted")?;
+    let mut statement = conn.prepare("SELECT kind,row_id,ident FROM temp.ponte_inserted")?;
     let rows = statement
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .query_map([], |r| {
+            Ok((
+                (r.get::<_, String>(0)?, r.get::<_, i64>(1)?),
+                r.get::<_, String>(2)?,
+            ))
+        })?
         .collect::<rusqlite::Result<Inserted>>()?;
     Ok(rows)
 }
 
 /// Closes the log and empties it.
-pub(crate) fn stop_log(conn: &Connection) {
-    let _ = conn.execute_batch(&format!(
-        "{}DELETE FROM temp.ponte_inserted;",
-        log_triggers(false)
-    ));
+pub(crate) fn stop_log(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS temp.ponte_log_item_ident; DELETE FROM temp.ponte_inserted;",
+    )
+    .map_err(|error| {
+        anyhow::anyhow!("Não foi possível fechar o registro das linhas inseridas ({error}).")
+    })
 }
 
 /// The ident kind of an id-map kind.
@@ -322,30 +331,61 @@ fn kind_of(kind: IdKind) -> &'static str {
     }
 }
 
+/// The row ids the reply itself names: the rows of these slots are the ones
+/// this execution wrote, whatever happened to the library since.
+fn reply_rows(reply: &MutationReply) -> Vec<(&'static str, i64)> {
+    match reply {
+        MutationReply::Receipt(receipt) => vec![
+            ("document", receipt.document_id),
+            ("capture", receipt.capture_id),
+        ],
+        MutationReply::SaiopBatch(batch) => vec![("saiop_batch", batch.id)],
+        _ => Vec::new(),
+    }
+}
+
 /// The rows `mutation`, answered with `reply`, inserted for each of its
-/// slots, as (kind, slot, row): the slots of `idmap::created_ids` whose row
-/// is in `inserted`, plus `note` for a saved note and `analysis` for a
-/// saved analysis (the row of that document this very execution inserted,
-/// never the newest of the table).
+/// slots, as (kind, slot, row, identity given at the insert): the slots of
+/// `idmap::created_ids` whose row is in the log, plus `note` for a saved
+/// note and `analysis` for a saved analysis (the row of that document this
+/// very execution inserted, never the newest of the table).
+///
+/// The identity is the one the log recorded in the write that created the
+/// row, never the one the row holds now. A slot found by a lookup in the
+/// library as it is now (the files of a version, the triage task, the
+/// atendimento of an import, a link) counts only when its row still holds
+/// that identity: the row is then the very row this execution created, not
+/// another one that took its number since. A slot named by the reply itself
+/// is the row this execution wrote.
 fn slot_rows(
     conn: &Connection,
     mutation: &IntranetMutation,
     reply: &MutationReply,
     inserted: &Inserted,
-) -> Result<Vec<(&'static str, String, i64)>> {
+) -> Result<Vec<(&'static str, String, i64, String)>> {
     let mut out = Vec::new();
     if inserted.is_empty() {
         return Ok(out);
     }
+    let named = reply_rows(reply);
+    let unchanged = |kind: &str, row: i64, ident: &str| -> Result<bool> {
+        Ok(ident_of(conn, kind, row)?.as_deref() == Some(ident))
+    };
     for created in crate::idmap::created_ids(&ConnFrame(conn), mutation, reply)? {
         let kind = kind_of(created.kind);
-        if inserted.contains(&(kind.to_owned(), created.id)) {
-            out.push((kind, created.slot, created.id));
+        let Some(ident) = inserted.get(&(kind.to_owned(), created.id)) else {
+            continue;
+        };
+        let from_reply = named.contains(&(kind, created.id))
+            || (created.slot.is_empty()
+                && matches!(reply, MutationReply::Id(id) if *id == created.id));
+        if from_reply || unchanged(kind, created.id, ident)? {
+            out.push((kind, created.slot, created.id, ident.clone()));
         }
     }
-    let own = |kind: &'static str, table: &str, document: i64| -> Result<Option<i64>> {
-        let mut newest = None;
-        for (_, row) in inserted.iter().filter(|(k, _)| k == kind) {
+    let own = |kind: &'static str, table: &str, document: i64| -> Result<Option<(i64, String)>> {
+        let mut newest: Option<(i64, String)> = None;
+        for ((_, row), ident) in inserted.iter().filter(|((k, _), _)| k == kind) {
             let of: Option<i64> = conn
                 .query_row(
                     &format!("SELECT document_id FROM {table} WHERE id=?1"),
@@ -353,21 +393,24 @@ fn slot_rows(
                     |r| r.get(0),
                 )
                 .optional()?;
-            if of == Some(document) {
-                newest = newest.max(Some(*row));
+            if of == Some(document)
+                && unchanged(kind, *row, ident)?
+                && newest.as_ref().is_none_or(|(n, _)| row > n)
+            {
+                newest = Some((*row, ident.clone()));
             }
         }
         Ok(newest)
     };
     match mutation {
         IntranetMutation::SaveNote { document_id, .. } => {
-            if let Some(row) = own("note", "notes", *document_id)? {
-                out.push(("note", "note".into(), row));
+            if let Some((row, ident)) = own("note", "notes", *document_id)? {
+                out.push(("note", "note".into(), row, ident));
             }
         }
         IntranetMutation::SaveAnalysis { document_id, .. } => {
-            if let Some(row) = own("analysis", "analyses", *document_id)? {
-                out.push(("analysis", "analysis".into(), row));
+            if let Some((row, ident)) = own("analysis", "analyses", *document_id)? {
+                out.push(("analysis", "analysis".into(), row, ident));
             }
         }
         _ => {}
@@ -376,24 +419,25 @@ fn slot_rows(
 }
 
 /// The identities of the rows `mutation` inserted here, by slot: what a
-/// queued change carries (`OutboxEntry::idents`).
+/// queued change carries (`OutboxEntry::idents`). See [`slot_rows`].
 pub(crate) fn created_idents(
     conn: &Connection,
     mutation: &IntranetMutation,
     reply: &MutationReply,
     inserted: &Inserted,
 ) -> Result<Vec<SlotIdent>> {
-    let mut out = Vec::new();
-    for (kind, slot, row) in slot_rows(conn, mutation, reply, inserted)? {
-        if let Some(ident) = ident_of(conn, kind, row)? {
-            out.push(SlotIdent {
-                kind: kind.to_owned(),
-                slot,
-                ident,
-            });
-        }
+    #[cfg(any(test, feature = "test-support"))]
+    if hooks::FAIL_CAPTURE.with(|h| h.replace(false)) {
+        anyhow::bail!("falha injetada na captura das identidades (teste)");
     }
-    Ok(out)
+    Ok(slot_rows(conn, mutation, reply, inserted)?
+        .into_iter()
+        .map(|(kind, slot, _, ident)| SlotIdent {
+            kind: kind.to_owned(),
+            slot,
+            ident,
+        })
+        .collect())
 }
 
 /// Gives the rows a replay of `mutation` inserted (`inserted`) the
@@ -411,11 +455,15 @@ pub(crate) fn rekey(
     if carried.is_empty() {
         return Ok(out);
     }
+    #[cfg(any(test, feature = "test-support"))]
+    if hooks::FAIL_REKEY.with(|h| h.replace(false)) {
+        anyhow::bail!("falha injetada na troca de identidades (teste)");
+    }
     let rows = slot_rows(conn, mutation, reply, inserted)?;
     for slot in carried {
-        let Some((kind, _, row)) = rows
+        let Some((kind, _, row, _)) = rows
             .iter()
-            .find(|(kind, name, _)| *kind == slot.kind && *name == slot.slot)
+            .find(|(kind, name, _, _)| *kind == slot.kind && *name == slot.slot)
         else {
             continue;
         };
@@ -444,32 +492,78 @@ pub(crate) fn rekey(
     Ok(out)
 }
 
+/// What a logged execution gave: the result of the work, the rows it
+/// inserted (or why they could not be read) and whether the log closed.
+pub(crate) struct Logged<T> {
+    pub result: Result<T>,
+    pub inserted: Result<Inserted>,
+    pub closed: Result<()>,
+}
+
+/// A replayed change: applied (with what became of the identities it
+/// carried) or refused by the library (its own error, as before).
+// What became of the identities is read by the tests only.
+#[allow(dead_code)]
+pub(crate) enum Carried {
+    Applied(MutationReply, Rekeyed),
+    Refused(anyhow::Error),
+}
+
 impl Store {
-    /// Runs `work` with the log of inserted rows open; answers its result
-    /// and the rows it inserted.
+    /// Runs `work` with the log of inserted rows open, and closes it again.
+    /// An error opening the log is returned before `work` runs (nothing
+    /// done); after that, the outcome of the work and of the log are kept
+    /// apart, so a change that was applied is never taken for one that was
+    /// not.
     pub(crate) fn run_logged<T>(
         &mut self,
         work: impl FnOnce(&mut Store) -> Result<T>,
-    ) -> Result<(T, Inserted)> {
+    ) -> Result<Logged<T>> {
         start_log(&self.conn)?;
         let result = work(self);
         let inserted = logged(&self.conn);
-        stop_log(&self.conn);
-        Ok((result?, inserted?))
+        let closed = stop_log(&self.conn);
+        Ok(Logged {
+            result,
+            inserted,
+            closed,
+        })
     }
 
     /// Applies a replayed change (as `execute_mutation`) and gives the rows
     /// it inserted the identities the change carried (see [`rekey`]).
+    ///
+    /// `Ok(Refused)` is a refusal of the change itself, as `execute_mutation`
+    /// gives it. `Err` is a failure of the log or of the identities AFTER the
+    /// change may have been applied: the caller must abandon what it was
+    /// building (an exchange stops before publishing anything), never record
+    /// the change as refused. A change that carries no identity is applied
+    /// without the log, as before F2a.
     pub(crate) fn execute_carrying(
         &mut self,
         actor: &str,
         mutation: IntranetMutation,
         carried: &[SlotIdent],
-    ) -> Result<(MutationReply, Rekeyed)> {
+    ) -> Result<Carried> {
+        if carried.is_empty() {
+            return Ok(match self.execute_mutation(actor, mutation) {
+                Ok(reply) => Carried::Applied(reply, Rekeyed::default()),
+                Err(error) => Carried::Refused(error),
+            });
+        }
         let applied = mutation.clone();
-        let (reply, inserted) = self.run_logged(|store| store.execute_mutation(actor, mutation))?;
+        let logged = self.run_logged(|store| store.execute_mutation(actor, mutation))?;
+        let reply = match logged.result {
+            Ok(reply) => reply,
+            Err(error) => {
+                logged.closed?;
+                return Ok(Carried::Refused(error));
+            }
+        };
+        logged.closed?;
+        let inserted = logged.inserted?;
         let rekeyed = rekey(&self.conn, carried, &applied, &reply, &inserted)?;
-        Ok((reply, rekeyed))
+        Ok(Carried::Applied(reply, rekeyed))
     }
 }
 
@@ -490,6 +584,23 @@ pub mod hooks {
         /// Sees the temporary library of a folder exchange right before it
         /// is exported.
         pub static PEEK_TEMP: RefCell<Option<Peek>> = RefCell::new(None);
+        /// Runs once in `queue_locally`, after the change was applied (and
+        /// committed) and before what it created is captured.
+        pub static AFTER_LOCAL_COMMIT: RefCell<Option<Pause>> = RefCell::new(None);
+        /// Runs once right after the current analysis of a document was
+        /// read (`storage::current_analysis_row`).
+        pub static AFTER_ANALYSIS_SELECT: RefCell<Option<Pause>> = RefCell::new(None);
+        /// The next capture of identities fails once.
+        pub static FAIL_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// The next rekey fails once.
+        pub static FAIL_REKEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// The date in the name of the copy made before the 21→22 step.
+        pub static MIGRATION_STAMP: RefCell<Option<String>> = const { RefCell::new(None) };
+        /// Runs once when the copy before the 21→22 step is written and
+        /// checked, before it gets its final name.
+        pub static MIGRATION_COPY_WRITTEN: RefCell<Option<Pause>> = RefCell::new(None);
+        /// What the measure of free space answers (once).
+        pub static FREE_SPACE: RefCell<Option<std::io::Result<u64>>> = const { RefCell::new(None) };
     }
 }
 
@@ -554,7 +665,7 @@ pub mod test_support {
     }
 
     /// The current analysis of a document as the product chooses it, by the
-    /// product's own function (`storage::current_analysis_id`, with the
+    /// product's own read (`storage::current_analysis_row`, with the
     /// document's current version).
     pub fn current_analysis(conn: &Connection, document: i64) -> Result<Option<i64>> {
         let current: Option<i64> = conn.query_row(
@@ -562,7 +673,10 @@ pub mod test_support {
             [document],
             |r| r.get(0),
         )?;
-        crate::storage::current_analysis_id(conn, document, current.unwrap_or(0))
+        Ok(
+            crate::storage::current_analysis_row(conn, document, current.unwrap_or(0))?
+                .map(|(id, _)| id),
+        )
     }
 
     /// Every way the library breaks the F2a invariants, in words: each row

@@ -383,10 +383,28 @@ pub fn free_space(path: &Path) -> std::io::Result<u64> {
         }
         Ok(available)
     }
-    #[cfg(not(windows))]
+    // Android and the other Unix systems: the volume's blocks available to
+    // this (unprivileged) process.
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        // SAFETY: a NUL-terminated path and a zeroed, writable `statvfs`.
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        #[allow(clippy::unnecessary_cast)]
+        Ok((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+    }
+    #[cfg(not(any(windows, unix)))]
     {
         let _ = path;
-        Ok(u64::MAX)
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "espaço livre não medido neste sistema",
+        ))
     }
 }
 
