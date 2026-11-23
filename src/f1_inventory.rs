@@ -2943,3 +2943,188 @@ fn f0r_a_guard_that_cannot_be_kept_aside_stops_the_exchange() {
         .iter()
         .any(|c| c.capture.document_number == number("c", 1)));
 }
+
+/// Review 7: A corrects the reference of an atendimento that hangs from no
+/// document and publishes; B adopts it. Nothing is reported missing and no
+/// copy is kept aside (the atendimento is the same one, by number and
+/// creation time, in the same numbering).
+#[test]
+fn f0r_an_edited_atendimento_reference_is_no_loss() {
+    let mut p = pair();
+    let mut att = crate::saiop::SaiopAttendance::new_manual();
+    att.reference_raw = "PROC-ANTIGA".into();
+    att.reference_norm = crate::saiop::normalize_reference(&att.reference_raw);
+    att.subject = "Atendimento avulso".into();
+    let id = p.a.save_saiop_attendance(&att, None).unwrap();
+    sync(&mut p.a);
+    sync(&mut p.b);
+    let mut edited =
+        p.a.list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+    edited.reference_raw = "PROC-CORRIGIDA".into();
+    edited.reference_norm = crate::saiop::normalize_reference(&edited.reference_raw);
+    p.a.save_saiop_attendance(&edited, None).unwrap();
+    sync(&mut p.a);
+    // `sync` fails on any loss notice.
+    sync(&mut p.b);
+    sync(&mut p.a);
+    assert!(p
+        .b
+        .list_saiop_attendances()
+        .unwrap()
+        .iter()
+        .any(|a| a.reference_raw == "PROC-CORRIGIDA"));
+    let backups = p._dir.path().join("copias-antes-da-substituicao");
+    assert!(!backups.exists(), "a copy of a library was kept");
+}
+
+/// Review 7: A and B each make a manual record offline and both get the
+/// same provisional number; A renames its record's automatic triage task and
+/// publishes first. B's record is replayed under another number, with a new
+/// triage task: B's own triage is in the result (made again by that replay),
+/// so nothing is reported missing.
+#[test]
+fn f0r_a_triage_task_made_again_by_a_replay_is_no_loss() {
+    let mut p = pair();
+    let fields = |title: &str| crate::manual::ManualFields {
+        kind: "ligacao".into(),
+        title: title.into(),
+        origin: "Gabinete".into(),
+        document_date: String::new(),
+        text: format!("Texto de {title}"),
+    };
+    let a_doc =
+        p.a.create_manual_document(&fields("Registro de A"))
+            .unwrap()
+            .document_id;
+    let b_doc =
+        p.b.create_manual_document(&fields("Registro de B"))
+            .unwrap()
+            .document_id;
+    let mut triage =
+        p.a.list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.document_id == Some(a_doc) && t.action == "triar")
+            .unwrap();
+    triage.title = "Triagem renomeada por A".into();
+    p.a.save_task(&triage).unwrap();
+    sync(&mut p.a);
+    let _ = b_doc;
+    // `sync` fails on any loss notice.
+    sync(&mut p.b);
+    sync(&mut p.a);
+    assert!(p
+        .b
+        .list_documents("")
+        .unwrap()
+        .iter()
+        .any(|d| d.title == "Registro de B"));
+    let backups = p._dir.path().join("copias-antes-da-substituicao");
+    assert!(!backups.exists(), "a copy of a library was kept");
+}
+
+/// Review 8 (measurement, run by hand with `--ignored --nocapture`): the
+/// cost of checking this library's items against a result, by a whole
+/// export (0.51 F0 first round) and by the narrow projection now used, on a
+/// generated library of 5,000 documents and 20,000 tasks.
+#[test]
+#[ignore = "medição de custo (revisão F0, item 8)"]
+fn f0r_measure_the_cost_of_checking_the_library() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("grande.sqlite3")).unwrap();
+    let started = std::time::Instant::now();
+    // Written straight into the tables, in one transaction (the import path
+    // is far too slow for this many in a test build); the rows are what the
+    // import writes: document, sealed version, request, and sealed tasks.
+    {
+        let tx = store.conn.transaction().unwrap();
+        for n in 0..5_000u32 {
+            let mut c = capture(
+                &format!("SEFAZ-PRO-2026/{:05}", 10_000 + n),
+                &format!(
+                    "Texto do documento {n}. {}",
+                    "Conteúdo de exemplo. ".repeat(40)
+                ),
+            );
+            c.request_id = uuid::Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO documents(identity_hash,last_seen_at) VALUES(?1,?2)",
+                rusqlite::params![
+                    crate::storage::identity_hash_for_number(&c.document_number),
+                    c.captured_at
+                ],
+            )
+            .unwrap();
+            let doc = tx.last_insert_rowid();
+            let payload = crate::protection::seal(&serde_json::to_vec(&c).unwrap()).unwrap();
+            tx.execute(
+                "INSERT INTO captures(document_id,content_hash,payload,created_at) VALUES(?1,?2,?3,?4)",
+                rusqlite::params![doc, uuid::Uuid::new_v4().as_bytes().to_vec(), payload, c.captured_at],
+            )
+            .unwrap();
+            let cap = tx.last_insert_rowid();
+            tx.execute(
+                "UPDATE documents SET latest_capture_id=?1 WHERE id=?2",
+                [cap, doc],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO requests(request_id,document_id,capture_id) VALUES(?1,?2,?3)",
+                rusqlite::params![c.request_id, doc, cap],
+            )
+            .unwrap();
+            for k in 0..4 {
+                let mut t = crate::tasks::Task::new(doc);
+                t.title = format!("Tarefa {k} do documento {n}");
+                let payload = crate::protection::seal(&serde_json::to_vec(&t).unwrap()).unwrap();
+                tx.execute(
+                    "INSERT INTO tasks(document_id,payload,uid) VALUES(?1,?2,?3)",
+                    rusqlite::params![doc, payload, t.uid],
+                )
+                .unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+    let documents: Vec<i64> = store
+        .list_documents("")
+        .unwrap()
+        .iter()
+        .map(|d| d.id)
+        .collect();
+    let tasks = store.list_tasks().unwrap().len();
+    eprintln!(
+        "F0 cost: library of {} documents and {tasks} tasks built in {:?}",
+        documents.len(),
+        started.elapsed()
+    );
+    let snapshot = store.export_snapshot().unwrap();
+    let result = crate::coverage::ResultIndex::of(&snapshot);
+    let check = crate::coverage::Check {
+        result: &result,
+        explained: &[],
+        same_numbering: true,
+        replayed: None,
+    };
+    let exported_bytes = serde_json::to_vec(&snapshot).unwrap().len();
+    drop(snapshot);
+    for round in 0..2 {
+        let t = std::time::Instant::now();
+        let whole = store.export_snapshot().unwrap();
+        let lost_old =
+            crate::coverage::dropped(&crate::coverage::SnapshotHolder(&whole), &check).unwrap();
+        let old = t.elapsed();
+        drop(whole);
+        let t = std::time::Instant::now();
+        let holder = crate::coverage::LibraryHolder::new(&store.conn).unwrap();
+        let lost_new = crate::coverage::dropped(&holder, &check).unwrap();
+        let new = t.elapsed();
+        assert!(lost_old.is_empty() && lost_new.is_empty());
+        eprintln!("F0 cost round {round}: whole export + check {old:?}; narrow projection {new:?}");
+    }
+    eprintln!("F0 cost: the whole export of this library is {exported_bytes} bytes as JSON");
+}

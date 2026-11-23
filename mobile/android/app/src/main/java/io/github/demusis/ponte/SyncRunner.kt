@@ -317,6 +317,9 @@ internal object SyncRunner {
             val summary = r.optString("summary")
             val conflicts = r.optInt("conflicts", 0)
             var message = "Sincronizado: " + PhoneWords.adapt(summary)
+            // What was kept aside and where: told whatever happens next (upload errors included).
+            val notes = r.optJSONArray("notes")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+            val notesText = PhoneWords.syncNotes(notes)
             var isError = false
             // The pending copy may go only when the core says that what it
             // held is merged or kept; an answer without it keeps the copy.
@@ -379,6 +382,10 @@ internal object SyncRunner {
             if (listErr != null) {
                 isError = true
                 message += "\n$listErr"
+            }
+            if (notesText.isNotEmpty()) {
+                isError = true
+                message += "\n" + notesText
             }
             setStatus(message, isError)
         }

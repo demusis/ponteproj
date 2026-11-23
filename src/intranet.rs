@@ -4767,6 +4767,16 @@ impl Store {
                 || (copies[0].header.writer == cfg.folder_writer
                     && !guard_missing)
                 || copies[0].content_identity() == cfg.folder_identity)
+            // Every other copy holds that same content: the same write, or
+            // equal content (a copy at the same revision with other content
+            // is merged, and kept aside if it holds what the result lacks).
+            && copies.iter().skip(1).all(|c| {
+                guard_path.as_deref() == Some(c.path.as_path())
+                    || (c.header.revision == copies[0].header.revision
+                        && c.header.writer == copies[0].header.writer
+                        && c.header.written_at == copies[0].header.written_at)
+                    || c.content_identity() == copies[0].content_identity()
+            })
         {
             report.revision = cfg.synced_revision;
             return Ok(report);
@@ -4834,6 +4844,21 @@ impl Store {
         // (this computer's own changes) and by the copy they came from.
         let mut cards_here = crate::coverage::Removed::default();
         let mut cards_from: BTreeMap<usize, crate::coverage::Removed> = BTreeMap::new();
+        // What the replays made of this library's items and of each copy's.
+        let mut replayed_here = crate::coverage::Replayed::default();
+        let mut replayed_from: BTreeMap<usize, crate::coverage::Replayed> = BTreeMap::new();
+        // Which copies hold each change of their journals, and what it
+        // created there, with that copy's numbers.
+        let mut holders_of: BTreeMap<String, Vec<(usize, Vec<crate::idmap::CreatedId>)>> =
+            BTreeMap::new();
+        for (index, copy) in copies.iter().enumerate() {
+            for entry in &copy.payload.journal {
+                holders_of
+                    .entry(entry.uid.clone())
+                    .or_default()
+                    .push((index, entry.created.clone()));
+            }
+        }
         if first_write {
             reporter.step("Preparando a primeira cópia a partir do acervo deste computador…");
             for entry in &outbox {
@@ -5145,6 +5170,19 @@ impl Store {
                 match (remapped, outcome) {
                     (Ok(mutation), Ok(reply)) => {
                         let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
+                        // An import that landed on a record already there
+                        // (another one with the same request) proves nothing.
+                        // Every copy that holds this change: what it created
+                        // there is what it created here.
+                        if !matches!(&reply, MutationReply::Receipt(r) if r.duplicate) {
+                            for (holder, there) in holders_of.get(&entry.uid).into_iter().flatten()
+                            {
+                                replayed_from
+                                    .entry(*holder)
+                                    .or_default()
+                                    .learn(there, &created);
+                            }
+                        }
                         report.merged_foreign += 1;
                         let revision = store.cabinet_revision()?;
                         applied.insert(entry.uid.clone());
@@ -5323,6 +5361,9 @@ impl Store {
                 match (remapped, outcome) {
                     (Ok(mutation), Ok(reply)) => {
                         let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
+                        if !matches!(&reply, MutationReply::Receipt(r) if r.duplicate) {
+                            replayed_here.learn(&entry.created, &created);
+                        }
                         ids.learn(&entry.created, Some(&created));
                         if let (Some(doc), Some(outcome)) = (
                             crate::renumber::creation_document(&entry.mutation, &entry.created),
@@ -5398,7 +5439,13 @@ impl Store {
         for entry in &journal {
             removed.note(&entry.mutation);
         }
-        let result_keys = crate::coverage::keys(&final_snapshot);
+        let result_index = crate::coverage::ResultIndex::of(&final_snapshot);
+        let final_identity = sharedfolder::snapshot_identity(&final_snapshot);
+        // The identity of each copy's content, computed once.
+        let identities: BTreeMap<PathBuf, String> = copies
+            .iter()
+            .map(|c| (c.path.clone(), c.content_identity()))
+            .collect();
         sharedfolder::trim_journal(&mut journal);
         let payload = Payload {
             snapshot: final_snapshot.clone(),
@@ -5422,8 +5469,14 @@ impl Store {
             if guard_path == Some(copy.path.as_path()) {
                 continue;
             }
-            // A copy already at this exact state is left alone.
-            if changed_content || copy.header.revision < revision || preserve.contains(&copy.path) {
+            // A copy already at this exact state is left alone; one at the
+            // same revision with other content is rewritten (after the
+            // check below keeps aside what it alone holds).
+            if changed_content
+                || copy.header.revision < revision
+                || preserve.contains(&copy.path)
+                || identities.get(&copy.path) != Some(&final_identity)
+            {
                 targets.push(copy.path.clone());
             }
         }
@@ -5435,10 +5488,11 @@ impl Store {
         }
         // Nothing that a copy about to be rewritten, the guard copy or this
         // library holds goes without a copy kept aside first, unless the
-        // result has it or a removal the result records explains its
-        // absence. Numbers explain a removal only for a copy that took no
-        // change the result lacks (its numbering is the result's); a uid
-        // always does.
+        // result has it (see `coverage` for what proves that) or a removal
+        // the result records explains its absence. Numbers count only for a
+        // copy proved to use the result's numbering: it took changes, all of
+        // which the result has (a copy that took none, like the first
+        // publication of a forked library, proves nothing).
         let result_applied: std::collections::BTreeSet<&String> = payload.applied.iter().collect();
         let mut preserve = preserve.to_vec();
         let mut uncovered: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
@@ -5449,11 +5503,12 @@ impl Store {
             if !is_guard && !targets.contains(&copy.path) {
                 continue;
             }
-            let same_numbering = copy
-                .payload
-                .applied
-                .iter()
-                .all(|uid| result_applied.contains(uid));
+            let same_numbering = !copy.payload.applied.is_empty()
+                && copy
+                    .payload
+                    .applied
+                    .iter()
+                    .all(|uid| result_applied.contains(uid));
             let by_journal = if same_numbering {
                 &removed
             } else {
@@ -5461,10 +5516,14 @@ impl Store {
             };
             let cards = cards_from.get(&index).unwrap_or(&no_cards);
             let lost = crate::coverage::dropped(
-                &copy.payload.snapshot,
-                &result_keys,
-                &[by_journal, cards],
-            );
+                &crate::coverage::SnapshotHolder(&copy.payload.snapshot),
+                &crate::coverage::Check {
+                    result: &result_index,
+                    explained: &[by_journal, cards],
+                    same_numbering,
+                    replayed: replayed_from.get(&index),
+                },
+            )?;
             if !lost.is_empty() {
                 if !is_guard && !preserve.contains(&copy.path) {
                     preserve.push(copy.path.clone());
@@ -5494,8 +5553,27 @@ impl Store {
             }
         }
         if temp.is_some() && !joining && !pure {
-            let here = self.export_snapshot()?;
-            let lost = crate::coverage::dropped(&here, &result_keys, &[&removed, &cards_here]);
+            // This library numbers like the copy it adopted last (the one
+            // whose content it recorded, or the guard it wrote): what the
+            // replays of that copy's changes made of them counts here too.
+            for (index, copy) in copies.iter().enumerate() {
+                let adopted = guard_path == Some(copy.path.as_path())
+                    || (!cfg.folder_identity.is_empty()
+                        && identities.get(&copy.path) == Some(&cfg.folder_identity));
+                if let (true, Some(made)) = (adopted, replayed_from.get(&index)) {
+                    replayed_here.absorb(made);
+                }
+            }
+            // Read with narrow queries, not a whole export of the library.
+            let lost = crate::coverage::dropped(
+                &crate::coverage::LibraryHolder::new(&self.conn)?,
+                &crate::coverage::Check {
+                    result: &result_index,
+                    explained: &[&removed, &cards_here],
+                    same_numbering: true,
+                    replayed: Some(&replayed_here),
+                },
+            )?;
             if !lost.is_empty() {
                 let kept = self.backup_before_replacement()?.context(
                     "Este computador tem itens que não estão no resultado da sincronização, e não há onde guardar uma cópia do acervo antes de substituí-lo. Nada foi gravado nem substituído.",
@@ -5510,10 +5588,12 @@ impl Store {
             }
         }
         let mut failures = Vec::new();
+        let mut archived: Vec<PathBuf> = Vec::new();
         for path in &targets {
             // What the rewrite would drop is kept first, beside it; if that
             // cannot be done, the copy is left as it is.
             if preserve.contains(path) {
+                archived.push(path.clone());
                 match sharedfolder::keep_aside(path) {
                     Ok(aside) => report.notes.push(match uncovered.get(path) {
                         Some(lost) => format!(
@@ -5531,6 +5611,7 @@ impl Store {
                         ),
                     }),
                     Err(error) => {
+                        archived.retain(|p| p != path);
                         failures.push(format!(
                             "{} não foi regravada, para não perder o que só ela tem: {error}",
                             path.display()
@@ -5560,6 +5641,22 @@ impl Store {
             );
         }
         report.notes.extend(failures);
+        // What each copy read is proved to be in the result: rewritten with
+        // it, equal to it, or kept aside (for the phone: only such a pending
+        // copy may be deleted).
+        for copy in copies {
+            if guard_path == Some(copy.path.as_path()) {
+                continue;
+            }
+            let shown = copy.path.display().to_string();
+            let settled = report.written_to.contains(&shown)
+                || archived.contains(&copy.path)
+                || (!report.unwritten.contains(&shown)
+                    && identities.get(&copy.path) == Some(&final_identity));
+            if !settled {
+                report.unsettled.push(shown);
+            }
+        }
         // Only now, with the folders written, does this become this
         // computer's last write.
         if let Some(path) = guard_path {
@@ -9354,6 +9451,11 @@ pub struct FolderSyncReport {
     /// the cloud client, a full disk): they stay as they were and the next
     /// exchange tries again.
     pub unwritten: Vec<String>,
+    /// Copies read by this exchange whose content is not proved to be in
+    /// what it published: not rewritten with the result, not equal to it and
+    /// not kept aside. Whoever holds such a copy must keep it (the phone's
+    /// pending copies).
+    pub unsettled: Vec<String>,
     /// Manual records of this computer that the copy numbered differently
     /// (found when the copy was adopted; each is also a notice kept until
     /// the person dismisses it).

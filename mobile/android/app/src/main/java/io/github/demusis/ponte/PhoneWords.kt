@@ -150,6 +150,21 @@ internal object PhoneWords {
         "este computador" to "este aparelho"
     )
 
+    /** Opens what the exchange tells about copies kept aside (items it could not prove are in the result). */
+    const val SYNC_NOTES_HEADER = "Atenção (nada foi apagado):"
+
+    /**
+     * What the exchange says about copies it kept aside and why ([notes] of the core's answer),
+     * for the phone: each note on its own line, a file kept aside named by its file name (the
+     * folder is the app's own), after [SYNC_NOTES_HEADER]; "" when there is nothing to tell.
+     */
+    fun syncNotes(notes: List<String>): String {
+        val lines = notes.map { it.trim() }.filter { it.isNotEmpty() }.map { note ->
+            adapt(ANY_PATH.replace(note) { m -> m.value.substringAfterLast('/').substringAfterLast('\\') })
+        }
+        return if (lines.isEmpty()) "" else (listOf(SYNC_NOTES_HEADER) + lines).joinToString("\n")
+    }
+
     /**
      * Rewrites a text that came from the core (a status, a summary or an error, never document
      * data) for the phone; text it does not know is returned as it was.

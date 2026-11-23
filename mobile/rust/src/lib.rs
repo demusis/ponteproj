@@ -202,11 +202,18 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
         // Also false when the working copy needed a rewrite that did not
         // succeed: the pending copy may then be the newest one there is, and
         // nothing has reached Drive yet.
+        //
+        // And false unless every copy read is proved to be in the result:
+        // rewritten with it, equal to it, or kept aside.
         "pending_settled": report.preserve_failed.is_empty()
+            && report.unsettled.is_empty()
             && !report
                 .unwritten
                 .iter()
                 .any(|w| std::path::Path::new(w) == std::path::Path::new(path)),
+        // What the person must know about what was kept aside (the items
+        // and where the copy is), in the computer's words.
+        "notes": report.notes.clone(),
         // How many copies could not be rewritten (also in the summary).
         "unwritten": report.unwritten.len(),
         // Records of this phone that the copy numbered differently (also in
@@ -5564,6 +5571,120 @@ mod tests {
         assert!(titles.contains(&"Só no pendente-novo"), "{titles:?}");
         assert!(titles.contains(&"Do computador"), "{titles:?}");
         assert_eq!(answer["pending_settled"], json!(true), "{answer}");
+    }
+
+    /// Review 1: a staged pending copy, first published by a forked library
+    /// (same lineage, empty journal, nothing applied), holds standalone task
+    /// X with the same row number and title as another task of the Drive
+    /// copy. Drive has the same revision, a later write and one applied
+    /// change. A new phone joins with both. The staged copy may be called
+    /// settled only if X is proved to be somewhere: in the result, or in a
+    /// copy kept aside.
+    #[test]
+    fn a_staged_copy_is_settled_only_when_what_it_holds_is_proved_kept() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        let reporter = ponteproj::ai::Reporter::silent();
+        let cfg = computer.load_intranet_config().unwrap();
+        let mut task = ponteproj::tasks::Task::blank(None);
+        task.title = "Do computador".into();
+        computer.save_task(&task).unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        let shared = ponteproj::sharedfolder::read(&drive, KEY).unwrap().unwrap();
+        assert!(!shared.payload.applied.is_empty());
+        let (number, title) = {
+            let first = &shared.payload.snapshot.tasks[0];
+            (first.id, first.title.clone())
+        };
+        // The forked library: one standalone task X, same number and title as
+        // the Drive copy's first task, but another task (its own uid).
+        let mut forked = open(&dir.0, "bifurcado.sqlite3", "Bifurcado");
+        let mut x = ponteproj::tasks::Task::blank(None);
+        x.title = title.clone();
+        let x_id = forked.save_task(&x).unwrap();
+        assert_eq!(x_id, number, "same row number");
+        let x_uid = forked
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == x_id)
+            .unwrap()
+            .uid;
+        let mut snapshot = forked.export_snapshot().unwrap();
+        snapshot.revision = shared.header.revision;
+        let staged = dir.0.join("pendente-novo.ponte");
+        fn request<'a>(
+            header: &'a ponteproj::sharedfolder::Header,
+            writer: &'a str,
+            writer_name: &'a str,
+        ) -> ponteproj::sharedfolder::WriteRequest<'a> {
+            ponteproj::sharedfolder::WriteRequest {
+                lineage: &header.lineage,
+                revision: header.revision,
+                writer,
+                writer_name,
+                schema_version: header.schema_version,
+            }
+        }
+        ponteproj::sharedfolder::write(
+            &staged,
+            KEY,
+            &request(&shared.header, "bifurcado", "Bifurcado"),
+            &ponteproj::sharedfolder::Payload {
+                snapshot,
+                applied: Vec::new(),
+                journal: Vec::new(),
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        // Drive is written again (same content and revision), later.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        ponteproj::sharedfolder::write(
+            &drive,
+            KEY,
+            &request(
+                &shared.header,
+                &shared.header.writer,
+                &shared.header.writer_name,
+            ),
+            &shared.payload,
+            &shared.blobs,
+        )
+        .unwrap();
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        let answer = sync_paths(
+            &mut phone,
+            &work.display().to_string(),
+            &staged.display().to_string(),
+            KEY,
+        )
+        .unwrap();
+        let has_x = |path: &std::path::Path| {
+            ponteproj::sharedfolder::read(path, KEY)
+                .ok()
+                .flatten()
+                .is_some_and(|c| c.payload.snapshot.tasks.iter().any(|t| t.uid == x_uid))
+        };
+        let kept_aside = std::fs::read_dir(&dir.0).unwrap().any(|e| {
+            let path = e.unwrap().path();
+            path.to_string_lossy().contains("-divergente-") && has_x(&path)
+        });
+        if answer["pending_settled"] == json!(true) {
+            assert!(
+                has_x(&work) || kept_aside,
+                "settled although X is nowhere: {answer}"
+            );
+        }
+        assert!(has_x(&work) || has_x(&staged) || kept_aside, "X lost: {answer}");
+        assert!(
+            answer["notes"].to_string().contains(&title) || has_x(&work),
+            "the person is told: {answer}"
+        );
     }
 
     #[test]

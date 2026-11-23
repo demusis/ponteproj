@@ -9,218 +9,552 @@
 //! never in any journal, so nothing replayed it). The two cannot be told
 //! apart by its absence alone, so an absence is accepted only when a removal
 //! recorded in the result's journal explains it; any other absence keeps a
-//! copy aside first. Items are found by what identifies them on every
-//! computer (request ids and number identity, uids), never by row number,
-//! which changes between copies.
+//! copy aside first.
+//!
+//! An item is found in the result by what proves it is the same item:
+//! - a uid (tasks, recursos, usos, projetos, categorias, modelos, blocos,
+//!   exemplos), never a title;
+//! - for a document, its number identity, or a request id that created it
+//!   together with the title of the version that request made;
+//! - for an atendimento of a spreadsheet, the file of its batch and its row;
+//! - what a replay in this very exchange made of it (the slots `created` of
+//!   the replayed change: an import's triage task and atendimento, a new
+//!   record, task or atendimento);
+//! - in the same numbering only (a copy whose changes the result all has,
+//!   or this library): an atendimento by number and creation time, a task
+//!   without uid (from a copy written before task uids) by number and title;
+//! - the automatic triage task of a document, by that document's request id
+//!   and its action (it is made again when the document's import is
+//!   replayed).
+//!
+//! A false alarm only keeps one more copy aside; a false match would lose an
+//! item, so a match needs one of the proofs above.
 
+use crate::idmap::{CreatedId, IdKind};
 use crate::intranet::{CabinetSnapshot, IntranetMutation};
-use std::collections::BTreeSet;
+use anyhow::Result;
+use rusqlite::{Connection, OptionalExtension};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// What an item hangs from, when removing that also removes it.
+#[derive(Clone)]
 enum Parent {
     Document(i64),
     Uid(String),
     Batch(i64),
 }
 
-/// One first-level item: its kind and number in the holder, what finds it
-/// in another copy, and how it is shown to the person.
-struct Item {
+/// One first-level item: its kind and number in the holder, the keys that
+/// find it in the result, and how it is shown to the person.
+#[derive(Clone)]
+pub(crate) struct Item {
     kind: &'static str,
     id: i64,
     uid: String,
+    /// Proofs valid whatever the numbering.
     keys: Vec<String>,
+    /// Proofs valid only in the same numbering.
+    frame_keys: Vec<String>,
     parent: Option<Parent>,
     label: String,
+    /// The keys and label still to be read (a library reads them only for
+    /// the items the cheap keys did not find).
+    complete: bool,
+}
+
+impl Item {
+    fn new(kind: &'static str, id: i64, uid: &str, parent: Option<Parent>) -> Self {
+        Self {
+            kind,
+            id,
+            uid: uid.to_owned(),
+            keys: Vec::new(),
+            frame_keys: Vec::new(),
+            parent,
+            label: String::new(),
+            complete: true,
+        }
+    }
+}
+
+/// Something whose items are checked: a copy's snapshot or this library.
+pub(crate) trait Holder {
+    /// Every item with its cheap keys.
+    fn items(&self) -> Result<Vec<Item>>;
+    /// Adds what an item's cheap keys left out (the rest of its keys, its
+    /// label); nothing for a snapshot, where everything is at hand.
+    fn complete(&self, item: &mut Item) -> Result<()>;
 }
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn items(s: &CabinetSnapshot) -> Vec<Item> {
-    let mut out = Vec::new();
-    // What a task or an atendimento made automatically with its document
-    // (the triage, the atendimento of an import) is made again, with a new
-    // uid and time, when the import is replayed: it is also found by its
-    // document and what it is.
-    let identity: std::collections::BTreeMap<i64, String> = s
-        .documents
-        .iter()
-        .map(|d| (d.id, hex(&d.identity_hash)))
-        .collect();
-    for doc in &s.documents {
-        let current = s
-            .captures
-            .iter()
-            .find(|c| Some(c.id) == doc.latest_capture_id)
-            .map(|c| &c.capture);
-        let title = current.map(|c| c.title.trim()).unwrap_or_default();
-        // By its number identity, or by a request id that created it AND its
-        // title: a renumbered record keeps both of these, while another
-        // record that came with the same request id (and took its place in
-        // the replay) does not have its title.
-        let mut keys = vec![format!("documento:{}", hex(&doc.identity_hash))];
-        keys.extend(
-            s.requests
-                .iter()
-                .filter(|r| r.document_id == doc.id)
-                .map(|r| format!("pedido:{}|{title}", r.request_id.to_lowercase())),
-        );
-        let label = current
-            .map(|c| format!("documento {} — {title}", c.document_number.trim()))
-            .unwrap_or_else(|| format!("documento #{}", doc.id));
-        out.push(Item {
-            kind: "document",
-            id: doc.id,
-            uid: String::new(),
-            keys,
-            parent: None,
-            label,
-        });
-    }
-    for task in &s.tasks {
-        let key = if task.uid.is_empty() {
-            format!("tarefa#{}:{}", task.id, task.title.trim())
-        } else {
-            format!("tarefa:{}", task.uid)
-        };
-        // A task of a copy written before task uids gets one when adopted:
-        // it is also found by its number and title.
-        let mut keys = vec![
-            key,
-            format!("tarefa-numero:{}|{}", task.id, task.title.trim()),
-        ];
-        if let Some(doc) = task.document_id.and_then(|d| identity.get(&d)) {
-            keys.push(format!(
-                "tarefa-do-documento:{doc}|{}|{}",
-                task.title.trim(),
-                task.action
-            ));
-        }
-        out.push(Item {
-            kind: "task",
-            id: task.id,
-            uid: task.uid.clone(),
-            keys,
-            parent: task.document_id.map(Parent::Document),
-            label: format!("tarefa “{}”", task.title.trim()),
-        });
-    }
-    for row in &s.saiop_attendances {
-        let a = &row.attendance;
-        let when = if a.created_at.is_empty() {
-            format!("{}|{}", a.entry_date, a.subject.trim())
-        } else {
-            a.created_at.clone()
-        };
-        let name = if a.reference_raw.trim().is_empty() {
-            a.subject.trim()
-        } else {
-            a.reference_raw.trim()
-        };
-        // Its creation time is given again when a new atendimento is
-        // replayed: it is also found by what the person typed.
-        let mut keys = vec![
-            format!("atendimento:{}|{when}", a.reference_norm),
-            format!(
-                "atendimento-dados:{}|{}|{}",
-                a.reference_norm,
-                a.entry_date,
-                a.subject.trim()
-            ),
-        ];
-        if let Some(doc) = a.document_id.and_then(|d| identity.get(&d)) {
-            keys.push(format!(
-                "atendimento-do-documento:{doc}|{}",
-                a.reference_norm
-            ));
-        }
-        out.push(Item {
-            kind: "saiop",
-            id: a.id,
-            uid: String::new(),
-            keys,
-            parent: a.batch_id.map(Parent::Batch),
-            label: format!("atendimento {name}"),
-        });
-    }
-    let mut by_uid = |kind: &'static str, uid: &str, parent: Option<Parent>, label: String| {
-        out.push(Item {
-            kind,
-            id: 0,
-            uid: uid.to_owned(),
-            keys: vec![format!("{kind}:{uid}")],
-            parent,
-            label,
-        });
-    };
-    for r in &s.resources.resources {
-        by_uid(
-            "resource",
-            &r.uid,
-            None,
-            format!("recurso “{}”", r.value.name.trim()),
-        );
-    }
-    for u in &s.resources.uses {
-        by_uid(
-            "resource_use",
-            &u.uid,
-            Some(Parent::Uid(u.resource_uid.clone())),
-            format!(
-                "uso de recurso por {} ({})",
-                u.value.who.trim(),
-                u.value.start.trim()
-            ),
-        );
-    }
-    for p in &s.projects {
-        by_uid(
-            "project",
-            &p.uid,
-            None,
-            format!("projeto “{}”", p.name.trim()),
-        );
-    }
-    for c in &s.categories {
-        by_uid(
-            "category",
-            &c.uid,
-            None,
-            format!("categoria “{}”", c.name.trim()),
-        );
-    }
-    for t in &s.templates.templates {
-        by_uid(
-            "template",
-            &t.uid,
-            None,
-            format!("modelo “{}”", t.head.name.trim()),
-        );
-    }
-    for b in &s.templates.blocks {
-        by_uid(
-            "block",
-            &b.uid,
-            None,
-            format!("bloco “{}”", b.head.name.trim()),
-        );
-    }
-    for e in &s.templates.examples {
-        by_uid(
-            "example",
-            &e.uid,
-            Some(Parent::Uid(e.value.template_uid.clone())),
-            format!("exemplo “{}”", e.value.title.trim()),
-        );
-    }
-    out
+fn document_label(number: &str, title: &str) -> String {
+    format!("documento {} — {}", number.trim(), title.trim())
 }
 
-/// Every key that finds an item of `s`.
-pub(crate) fn keys(s: &CabinetSnapshot) -> BTreeSet<String> {
-    items(s).into_iter().flat_map(|i| i.keys).collect()
+fn task_keys(item: &mut Item, title: &str, action: &str, requests: &[String]) {
+    if item.uid.is_empty() {
+        item.frame_keys
+            .push(format!("tarefa#{}|{}", item.id, title.trim()));
+    }
+    if action == "triar" {
+        item.keys
+            .extend(requests.iter().map(|r| format!("triagem:{r}")));
+    }
+    item.label = format!("tarefa “{}”", title.trim());
+}
+
+/// An atendimento by its number and the moment it was created (to the
+/// millisecond): together they name one atendimento whatever else changed
+/// in it. Without that moment (older rows), the number alone counts only in
+/// the same numbering.
+fn attendance_keys(item: &mut Item, created_at: &str) {
+    let key = format!("atendimento#{}|{}", item.id, created_at.trim());
+    if created_at.trim().is_empty() {
+        item.frame_keys.push(key);
+    } else {
+        item.keys.push(key);
+    }
+}
+
+fn attendance_label(a: &crate::saiop::SaiopAttendance) -> String {
+    let name = if a.reference_raw.trim().is_empty() {
+        a.subject.trim()
+    } else {
+        a.reference_raw.trim()
+    };
+    format!("atendimento {name}")
+}
+
+// ------------------------------------------------------------ snapshots --
+
+/// The items of a copy (or of the result), all keys at once.
+pub(crate) struct SnapshotHolder<'a>(pub(crate) &'a CabinetSnapshot);
+
+impl Holder for SnapshotHolder<'_> {
+    fn items(&self) -> Result<Vec<Item>> {
+        let s = self.0;
+        let captures: HashMap<i64, &crate::model::Capture> =
+            s.captures.iter().map(|c| (c.id, &c.capture)).collect();
+        let mut requests: HashMap<i64, Vec<(String, i64)>> = HashMap::new();
+        for r in &s.requests {
+            requests
+                .entry(r.document_id)
+                .or_default()
+                .push((r.request_id.to_lowercase(), r.capture_id));
+        }
+        let none = Vec::new();
+        let mut out = Vec::new();
+        for doc in &s.documents {
+            let mut item = Item::new("document", doc.id, "", None);
+            item.keys
+                .push(format!("documento:{}", hex(&doc.identity_hash)));
+            for (request, capture) in requests.get(&doc.id).unwrap_or(&none) {
+                if let Some(made) = captures.get(capture) {
+                    item.keys
+                        .push(format!("pedido:{request}|{}", made.title.trim()));
+                }
+            }
+            item.label = match doc.latest_capture_id.and_then(|c| captures.get(&c)) {
+                Some(c) => document_label(&c.document_number, &c.title),
+                None => format!("documento #{}", doc.id),
+            };
+            out.push(item);
+        }
+        for task in &s.tasks {
+            let mut item = Item::new(
+                "task",
+                task.id,
+                &task.uid,
+                task.document_id.map(Parent::Document),
+            );
+            if !task.uid.is_empty() {
+                item.keys.push(format!("tarefa:{}", task.uid));
+            }
+            let of_document: Vec<String> = task
+                .document_id
+                .and_then(|d| requests.get(&d))
+                .map(|rs| rs.iter().map(|(r, _)| r.clone()).collect())
+                .unwrap_or_default();
+            task_keys(&mut item, &task.title, &task.action, &of_document);
+            out.push(item);
+        }
+        let batches: HashMap<i64, &str> = s
+            .saiop_batches
+            .iter()
+            .map(|b| (b.id, b.file_sha256.as_str()))
+            .collect();
+        for row in &s.saiop_attendances {
+            let a = &row.attendance;
+            let mut item = Item::new("saiop", a.id, "", a.batch_id.map(Parent::Batch));
+            if let (Some(sha), Some(source)) =
+                (a.batch_id.and_then(|b| batches.get(&b)), a.source_row)
+            {
+                item.keys.push(format!("atendimento-lote:{sha}|{source}"));
+            }
+            attendance_keys(&mut item, &a.created_at);
+            item.label = attendance_label(a);
+            out.push(item);
+        }
+        let mut by_uid = |kind: &'static str, uid: &str, parent: Option<Parent>, label: String| {
+            let mut item = Item::new(kind, 0, uid, parent);
+            item.keys.push(format!("{kind}:{uid}"));
+            item.label = label;
+            out.push(item);
+        };
+        for r in &s.resources.resources {
+            by_uid(
+                "resource",
+                &r.uid,
+                None,
+                format!("recurso “{}”", r.value.name.trim()),
+            );
+        }
+        for u in &s.resources.uses {
+            by_uid(
+                "resource_use",
+                &u.uid,
+                Some(Parent::Uid(u.resource_uid.clone())),
+                format!(
+                    "uso de recurso por {} ({})",
+                    u.value.who.trim(),
+                    u.value.start.trim()
+                ),
+            );
+        }
+        for p in &s.projects {
+            by_uid(
+                "project",
+                &p.uid,
+                None,
+                format!("projeto “{}”", p.name.trim()),
+            );
+        }
+        for c in &s.categories {
+            by_uid(
+                "category",
+                &c.uid,
+                None,
+                format!("categoria “{}”", c.name.trim()),
+            );
+        }
+        for t in &s.templates.templates {
+            by_uid(
+                "template",
+                &t.uid,
+                None,
+                format!("modelo “{}”", t.head.name.trim()),
+            );
+        }
+        for b in &s.templates.blocks {
+            by_uid(
+                "block",
+                &b.uid,
+                None,
+                format!("bloco “{}”", b.head.name.trim()),
+            );
+        }
+        for e in &s.templates.examples {
+            by_uid(
+                "example",
+                &e.uid,
+                Some(Parent::Uid(e.value.template_uid.clone())),
+                format!("exemplo “{}”", e.value.title.trim()),
+            );
+        }
+        Ok(out)
+    }
+
+    fn complete(&self, _item: &mut Item) -> Result<()> {
+        Ok(())
+    }
+}
+
+// -------------------------------------------------------------- library --
+
+/// The items of this library, read with narrow queries: numbers, uids and
+/// keys from their columns; a payload is decrypted only for an item those
+/// did not find in the result (its title, action or creation time).
+pub(crate) struct LibraryHolder<'a> {
+    conn: &'a Connection,
+    requests: HashMap<i64, Vec<(String, i64)>>,
+}
+
+impl<'a> LibraryHolder<'a> {
+    pub(crate) fn new(conn: &'a Connection) -> Result<Self> {
+        let mut requests: HashMap<i64, Vec<(String, i64)>> = HashMap::new();
+        let mut statement =
+            conn.prepare("SELECT request_id,document_id,capture_id FROM requests")?;
+        let rows = statement.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (request, document, capture) = row?;
+            requests
+                .entry(document)
+                .or_default()
+                .push((request.to_lowercase(), capture));
+        }
+        Ok(Self { conn, requests })
+    }
+
+    fn sealed<T: serde::de::DeserializeOwned>(
+        &self,
+        sql: &str,
+        key: rusqlite::types::Value,
+    ) -> Result<Option<T>> {
+        let blob: Option<Vec<u8>> = self.conn.query_row(sql, [key], |r| r.get(0)).optional()?;
+        match blob {
+            Some(blob) => Ok(Some(serde_json::from_slice(&crate::protection::unseal(
+                &blob,
+            )?)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn capture(&self, id: i64) -> Result<Option<crate::model::Capture>> {
+        self.sealed(
+            "SELECT payload FROM captures WHERE id=?1",
+            rusqlite::types::Value::Integer(id),
+        )
+    }
+
+    fn uid_label(&self, table: &str, uid: &str) -> Option<String> {
+        let value: serde_json::Value = self
+            .sealed(
+                &format!("SELECT payload FROM {table} WHERE uid=?1"),
+                rusqlite::types::Value::Text(uid.to_owned()),
+            )
+            .ok()
+            .flatten()?;
+        ["name", "title", "who"]
+            .iter()
+            .find_map(|k| value.get(*k).and_then(|v| v.as_str()))
+            .map(|s| s.trim().to_owned())
+    }
+}
+
+impl Holder for LibraryHolder<'_> {
+    fn items(&self) -> Result<Vec<Item>> {
+        let mut out = Vec::new();
+        let mut statement = self
+            .conn
+            .prepare("SELECT id,identity_hash FROM documents")?;
+        let rows =
+            statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        for row in rows {
+            let (id, identity) = row?;
+            let mut item = Item::new("document", id, "", None);
+            item.keys.push(format!("documento:{}", hex(&identity)));
+            item.complete = false;
+            out.push(item);
+        }
+        let mut statement = self.conn.prepare("SELECT id,uid,document_id FROM tasks")?;
+        let rows = statement.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                r.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, uid, document) = row?;
+            let mut item = Item::new("task", id, &uid, document.map(Parent::Document));
+            if !uid.is_empty() {
+                item.keys.push(format!("tarefa:{uid}"));
+            }
+            item.complete = false;
+            out.push(item);
+        }
+        let batches: HashMap<i64, String> = self
+            .conn
+            .prepare("SELECT id,file_sha256 FROM saiop_batches")?
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut statement = self
+            .conn
+            .prepare("SELECT id,batch_id,source_row FROM saiop_attendances")?;
+        let rows = statement.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, batch, source) = row?;
+            let mut item = Item::new("saiop", id, "", batch.map(Parent::Batch));
+            if let (Some(sha), Some(source)) = (batch.and_then(|b| batches.get(&b)), source) {
+                item.keys.push(format!("atendimento-lote:{sha}|{source}"));
+            }
+            item.complete = false;
+            out.push(item);
+        }
+        for (kind, sql) in [
+            ("resource", "SELECT uid,NULL FROM resources"),
+            ("resource_use", "SELECT uid,resource_uid FROM resource_uses"),
+            ("project", "SELECT uid,NULL FROM projects"),
+            ("category", "SELECT uid,NULL FROM categories"),
+            ("template", "SELECT uid,NULL FROM work_templates"),
+            ("block", "SELECT uid,NULL FROM instruction_blocks"),
+            (
+                "example",
+                "SELECT e.uid,t.uid FROM template_examples e LEFT JOIN work_templates t ON t.id=e.template_id",
+            ),
+        ] {
+            let mut statement = self.conn.prepare(sql)?;
+            let rows = statement.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?;
+            for row in rows {
+                let (uid, parent) = row?;
+                let mut item = Item::new(kind, 0, &uid, parent.map(Parent::Uid));
+                item.keys.push(format!("{kind}:{uid}"));
+                item.complete = false;
+                out.push(item);
+            }
+        }
+        Ok(out)
+    }
+
+    fn complete(&self, item: &mut Item) -> Result<()> {
+        if item.complete {
+            return Ok(());
+        }
+        item.complete = true;
+        let none = Vec::new();
+        match item.kind {
+            "document" => {
+                for (request, capture) in self.requests.get(&item.id).unwrap_or(&none) {
+                    if let Some(made) = self.capture(*capture)? {
+                        item.keys
+                            .push(format!("pedido:{request}|{}", made.title.trim()));
+                    }
+                }
+                let latest: Option<i64> = self
+                    .conn
+                    .query_row(
+                        "SELECT latest_capture_id FROM documents WHERE id=?1",
+                        [item.id],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                item.label = match latest.map(|c| self.capture(c)).transpose()?.flatten() {
+                    Some(c) => document_label(&c.document_number, &c.title),
+                    None => format!("documento #{}", item.id),
+                };
+            }
+            "task" => {
+                let task: Option<crate::tasks::Task> = self.sealed(
+                    "SELECT payload FROM tasks WHERE id=?1",
+                    rusqlite::types::Value::Integer(item.id),
+                )?;
+                let (title, action) = task.map(|t| (t.title, t.action)).unwrap_or_default();
+                let of_document: Vec<String> = match &item.parent {
+                    Some(Parent::Document(d)) => self
+                        .requests
+                        .get(d)
+                        .map(|rs| rs.iter().map(|(r, _)| r.clone()).collect())
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                task_keys(item, &title, &action, &of_document);
+            }
+            "saiop" => {
+                let a: Option<crate::saiop::SaiopAttendance> = self.sealed(
+                    "SELECT payload FROM saiop_attendances WHERE id=?1",
+                    rusqlite::types::Value::Integer(item.id),
+                )?;
+                match a {
+                    Some(a) => {
+                        attendance_keys(item, &a.created_at);
+                        item.label = attendance_label(&a);
+                    }
+                    None => item.label = format!("atendimento #{}", item.id),
+                }
+            }
+            kind => {
+                let (table, word) = match kind {
+                    "resource" => ("resources", "recurso"),
+                    "resource_use" => ("resource_uses", "uso de recurso"),
+                    "project" => ("projects", "projeto"),
+                    "category" => ("categories", "categoria"),
+                    "template" => ("work_templates", "modelo"),
+                    "block" => ("instruction_blocks", "bloco"),
+                    _ => ("template_examples", "exemplo"),
+                };
+                item.label = match self.uid_label(table, &item.uid) {
+                    Some(name) => format!("{word} “{name}”"),
+                    None => word.to_owned(),
+                };
+            }
+        }
+        Ok(())
+    }
+}
+
+// --------------------------------------------------------------- result --
+
+/// What finds an item in the result.
+pub(crate) struct ResultIndex {
+    keys: BTreeSet<String>,
+    frame_keys: BTreeSet<String>,
+    present: BTreeSet<(&'static str, i64)>,
+}
+
+impl ResultIndex {
+    pub(crate) fn of(result: &CabinetSnapshot) -> Self {
+        let items = SnapshotHolder(result).items().unwrap_or_default();
+        Self {
+            keys: items.iter().flat_map(|i| i.keys.iter().cloned()).collect(),
+            frame_keys: items
+                .iter()
+                .flat_map(|i| i.frame_keys.iter().cloned())
+                .collect(),
+            present: items
+                .iter()
+                .filter(|i| i.id > 0)
+                .map(|i| (i.kind, i.id))
+                .collect(),
+        }
+    }
+}
+
+/// What the replays of this exchange made of the holder's items: the
+/// holder's (kind, number) to the result's number, from the `created`
+/// slots of each change replayed successfully.
+#[derive(Default)]
+pub(crate) struct Replayed(BTreeMap<(&'static str, i64), i64>);
+
+impl Replayed {
+    /// The mappings of `other` too.
+    pub(crate) fn absorb(&mut self, other: &Replayed) {
+        self.0.extend(other.0.iter().map(|(k, v)| (*k, *v)));
+    }
+
+    pub(crate) fn learn(&mut self, there: &[CreatedId], here: &[CreatedId]) {
+        for from in there {
+            let kind = match from.kind {
+                IdKind::Document => "document",
+                IdKind::Task => "task",
+                IdKind::Saiop => "saiop",
+                _ => continue,
+            };
+            if let Some(to) = here
+                .iter()
+                .find(|c| c.kind == from.kind && c.slot == from.slot)
+            {
+                self.0.insert((kind, from.id), to.id);
+            }
+        }
+    }
 }
 
 /// The removals a journal records: by number (in the numbering of the copy
@@ -264,13 +598,9 @@ impl Removed {
         }
     }
 
-    /// A change that became a conflict card: what it created stays in the
-    /// card, so its absence from the result is not a loss.
-    pub(crate) fn kept_in_card(
-        &mut self,
-        mutation: &IntranetMutation,
-        created: &[crate::idmap::CreatedId],
-    ) {
+    /// A change that became a conflict card: what it created (or the uid
+    /// item it saves) stays in the card, so its absence is not a loss.
+    pub(crate) fn kept_in_card(&mut self, mutation: &IntranetMutation, created: &[CreatedId]) {
         use IntranetMutation as M;
         let uid = match mutation {
             M::SaveTask { task, .. } => Some(&task.uid),
@@ -286,7 +616,6 @@ impl Removed {
         if let Some(uid) = uid.filter(|u| !u.is_empty()) {
             self.uids.insert(uid.clone());
         }
-        use crate::idmap::IdKind;
         for c in created {
             let kind = match c.kind {
                 IdKind::Document => "document",
@@ -298,7 +627,7 @@ impl Removed {
         }
     }
 
-    /// The same removals without those recorded by number: for a copy
+    /// The same removals without those recorded by number: for a holder
     /// whose numbers may name other items.
     pub(crate) fn by_uid_only(&self) -> Self {
         Self {
@@ -320,19 +649,43 @@ impl Removed {
     }
 }
 
-/// The items of `holder` that are neither in the result (`result_keys`) nor
-/// removed by a change it records, as shown to the person.
-pub(crate) fn dropped(
-    holder: &CabinetSnapshot,
-    result_keys: &BTreeSet<String>,
-    removed: &[&Removed],
-) -> Vec<String> {
-    items(holder)
-        .into_iter()
-        .filter(|item| !item.keys.iter().any(|k| result_keys.contains(k)))
-        .filter(|item| !removed.iter().any(|r| r.explains(item)))
-        .map(|item| item.label)
-        .collect()
+/// How a holder is checked against the result.
+pub(crate) struct Check<'a> {
+    pub(crate) result: &'a ResultIndex,
+    /// Removals and cards that explain an absence.
+    pub(crate) explained: &'a [&'a Removed],
+    /// The holder's numbers are the result's (frame keys count).
+    pub(crate) same_numbering: bool,
+    pub(crate) replayed: Option<&'a Replayed>,
+}
+
+/// The items of `holder` the result neither has nor explains, as shown to
+/// the person.
+pub(crate) fn dropped(holder: &dyn Holder, check: &Check) -> Result<Vec<String>> {
+    let found = |item: &Item| {
+        item.keys.iter().any(|k| check.result.keys.contains(k))
+            || (check.same_numbering
+                && item
+                    .frame_keys
+                    .iter()
+                    .any(|k| check.result.frame_keys.contains(k)))
+            || check
+                .replayed
+                .and_then(|r| r.0.get(&(item.kind, item.id)))
+                .is_some_and(|there| check.result.present.contains(&(item.kind, *there)))
+            || check.explained.iter().any(|r| r.explains(item))
+    };
+    let mut out = Vec::new();
+    for mut item in holder.items()? {
+        if found(&item) {
+            continue;
+        }
+        holder.complete(&mut item)?;
+        if !found(&item) {
+            out.push(item.label);
+        }
+    }
+    Ok(out)
 }
 
 /// "a, b, c e mais 4": at most six names.
