@@ -127,6 +127,27 @@ class NovasTelasTest {
         return WeekPlan.days(monday, listOf(e1, e2, d))
     }
 
+    /** Today's deadlines are the tasks "Para hoje" below: the week lists only the timed block, plus a deadline not below. */
+    private fun weekDuplicado(onlyDuplicates: Boolean): List<WeekDay> {
+        val today = LocalDate.now()
+        val shown = (Samples.today.late + Samples.today.today + Samples.today.upcoming).map { it.id }
+        val entries = ArrayList<WeekEntry>()
+        shown.take(4).forEachIndexed { i, id -> entries += WeekEntry("d$i", "Tarefa $id", WeekKind.DEADLINE, day = today, taskId = id) }
+        if (!onlyDuplicates) {
+            entries += WeekEntry(
+                "t1", "Reunião de alinhamento com a Coordenação", WeekKind.TASK,
+                start = LocalDateTime.of(today, LocalTime.of(14, 0)), end = LocalDateTime.of(today, LocalTime.of(15, 30)), taskId = 900
+            )
+            entries += WeekEntry("d9", "Entregar prestação de contas", WeekKind.DEADLINE, day = today, taskId = 901)
+        }
+        return WeekPlan.days(WeekPlan.mondayOf(today), entries)
+    }
+
+    @Test fun hojeSemRepetirTarefas() = hoje(Samples.today, "sem_repetir", false, 3840, emptyList(), weekDuplicado(true), 0)
+    @Test fun hojeSemRepetirTarefasEscuro() = hoje(Samples.today, "sem_repetir_escuro", true, 3840, emptyList(), weekDuplicado(true), 0)
+    @Test fun hojeSemRepetirComBloco() = hoje(Samples.today, "sem_repetir_bloco", false, 3840, emptyList(), weekDuplicado(false), 0)
+    @Test fun hojeSemRepetirComBlocoEscuro() = hoje(Samples.today, "sem_repetir_bloco_escuro", true, 3840, emptyList(), weekDuplicado(false), 0)
+
     private fun hoje(state: TodayState, name: String, dark: Boolean, heightPx: Int, risks: List<RiskItem>, week: List<WeekDay>, followUps: Int) {
         narrow(heightPx)
         sliced(name, dark) { MainShell(Samples.shell.copy(tab = 0, badge = 4), {}, {}, {}, {}) {
