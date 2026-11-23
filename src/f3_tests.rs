@@ -843,3 +843,118 @@ fn f3_0a_demoted_9_1_guard_is_kept_aside_before_it_is_replaced() {
         "byte for byte"
     );
 }
+
+impl Mirrors {
+    fn set_floor(&self, who: &str, level: u32) {
+        let mut all = std::collections::BTreeMap::new();
+        all.insert(self.lineage(), crate::formatfloor::Floor { format: 9, level });
+        std::fs::write(self.floor_file(who), serde_json::to_vec(&all).unwrap()).unwrap();
+    }
+}
+
+/// The configuration as a build of F2b leaves it: no field of F3 (a build
+/// that does not know them drops them when it saves).
+fn forget_f3_config_fields(store: &mut Store) {
+    let mut value = serde_json::to_value(store.load_intranet_config().unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("synced_level");
+    store
+        .save_intranet_config(&serde_json::from_value(value).unwrap())
+        .unwrap();
+}
+
+/// Exchanges `store` with only the configured path `only`, as a Ponte of
+/// F2b would: the files written there and the guard are left at 9/1, the
+/// floor at (9, 1), and the configuration without the fields of F3.
+fn exchange_as_f2b(t: &mut Mirrors, who: &str, only: &Path) {
+    let store = if who == "a" { &mut t.a } else { &mut t.b };
+    let full = store.load_intranet_config().unwrap();
+    let mut narrow = full.clone();
+    narrow.folder_files = vec![only.display().to_string()];
+    store.save_intranet_config(&narrow).unwrap();
+    sync(store);
+    let mut after = store.load_intranet_config().unwrap();
+    after.folder_files = full.folder_files;
+    store.save_intranet_config(&after).unwrap();
+    forget_f3_config_fields(store);
+    sharedfolder::reseal_for_test(&sharedfolder::nine_path(only), KEY, 1, |_, _| {}).unwrap();
+    let guard = guard_of(t, who);
+    if guard.exists() {
+        sharedfolder::reseal_for_test(&guard, KEY, 1, |_, _| {}).unwrap();
+    }
+    t.set_floor(who, 1);
+}
+
+/// Review F3.0a1, finding 3. Two mirrors parted at 9/1: a Ponte of F2b on
+/// A moved the pendrive and A's guard two revisions ahead (two tasks),
+/// while another device took only the Drive to 9/2, at a lower revision.
+/// A, updated, sees the 9/2: its floor rises to 2, the pendrive and the
+/// guard are demoted. The last adoption of A was at level 1 (proved by its
+/// guard: the revision and content it recorded), so the lower revision of
+/// the 9/2 is a change of level, not a stale cloud copy: the 9/2 is the
+/// base and the 9/1 goes through Q6 (the two tasks come back). An older 9/2
+/// after that is refused as before (same level).
+///
+/// Red on 5553b64: the revision check (Drive below A's revision) stops
+/// every exchange at the same point, forever.
+#[test]
+fn f3_0a_higher_local_9_1_revision_does_not_block_the_move_to_9_2() {
+    let mut t = mirrors();
+    t.as_f2b();
+    forget_f3_config_fields(&mut t.a);
+    forget_f3_config_fields(&mut t.b);
+    let [drive, pendrive] = t.nines();
+    let start = t.a.load_intranet_config().unwrap().synced_revision;
+    let pendrive_name = t.paths[1].clone();
+    for title in ["Primeira do pendrive", "Segunda do pendrive"] {
+        let mut task = crate::tasks::Task::blank(None);
+        task.title = title.into();
+        t.a.save_task(&task).unwrap();
+        exchange_as_f2b(&mut t, "a", &pendrive_name);
+    }
+    assert_eq!(level(&pendrive), 1);
+    let local = t.a.load_intranet_config().unwrap().synced_revision;
+    assert_eq!(copy_at(&pendrive).header.revision, local);
+    assert!(local >= start + 2, "{start} {local}");
+    // B (updated) takes only the Drive to 9/2, with nothing new.
+    let mut narrow = t.b.load_intranet_config().unwrap();
+    let both = narrow.folder_files.clone();
+    narrow.folder_files = vec![t.paths[0].display().to_string()];
+    t.b.save_intranet_config(&narrow).unwrap();
+    sync(&mut t.b);
+    narrow.folder_files = both;
+    let _ = narrow;
+    assert_eq!(level(&drive), F3_LEVEL);
+    let on_drive = copy_at(&drive).header.revision;
+    assert!(on_drive < local, "Drive {on_drive}, A {local}");
+    let older_drive = std::fs::read(&drive).unwrap();
+
+    let moved = try_sync(&mut t.a);
+    let report = moved.unwrap_or_else(|e| panic!("A moves to 9/2: {e}"));
+    assert_eq!(t.floor("a"), (9, F3_LEVEL));
+    let titles: Vec<String> = t.a.list_tasks().unwrap().into_iter().map(|t| t.title).collect();
+    for title in ["Primeira do pendrive", "Segunda do pendrive"] {
+        assert!(
+            titles.iter().any(|t| t == title),
+            "{title}: {titles:?} {:?}",
+            report.notes
+        );
+    }
+    assert_eq!((level(&drive), level(&pendrive)), (F3_LEVEL, F3_LEVEL));
+    assert_eq!(
+        copy_at(&drive).content_identity(),
+        copy_at(&pendrive).content_identity()
+    );
+    // Same level now: an older 9/2 is a stale cloud copy, refused.
+    let now = t.a.load_intranet_config().unwrap().synced_revision;
+    assert_eq!(copy_at(&drive).header.revision, now);
+    std::fs::write(&drive, &older_drive).unwrap();
+    std::fs::copy(&drive, &pendrive).unwrap();
+    let stale = try_sync(&mut t.a);
+    assert!(
+        stale
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("ainda não recebeu a versão mais recente")),
+        "{:?}",
+        stale.map(|r| r.written_to)
+    );
+}
