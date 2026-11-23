@@ -402,6 +402,17 @@ pub(crate) fn write_stamped(
     };
     let header_bytes = serde_json::to_vec(&header)?;
     ensure!(!header_bytes.contains(&b'\n'), "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.");
+    // The size is known before anything is built or encrypted: a library that
+    // cannot fit is refused here, with nothing held in memory twice.
+    let expected = MAGIC.len() as u64
+        + header_bytes.len() as u64
+        + 1
+        + packed_len(payload, blobs)?
+        + ring::aead::AES_256_GCM.tag_len() as u64;
+    ensure!(
+        expected <= write_limit(),
+        crate::folder_health::too_big_message(Some(expected))
+    );
     let mut body = pack(payload, blobs)?;
     let key = ring::aead::LessSafeKey::new(
         ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &derive_key(password, &salt))
@@ -413,8 +424,8 @@ pub(crate) fn write_stamped(
         .map_err(|_| anyhow::anyhow!("Não foi possível proteger o arquivo de sincronização."))?;
     let total = MAGIC.len() as u64 + header_bytes.len() as u64 + 1 + body.len() as u64;
     ensure!(
-        total <= MAX_FILE_BYTES,
-        "O acervo passa de 512 MB e não cabe no arquivo de sincronização."
+        total <= write_limit(),
+        crate::folder_health::too_big_message(Some(total))
     );
     let parent = path
         .parent()
@@ -469,6 +480,34 @@ pub(crate) fn pack(payload: &Payload, blobs: &Blobs) -> Result<Vec<u8>> {
         }
     }
     Ok(out)
+}
+
+/// Counts what is written to it and keeps nothing.
+struct Counter(u64);
+
+impl Write for Counter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len() as u64;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// What [`pack`] would produce, in bytes, without building it: the JSON is
+/// counted as it is serialized and the blobs are only measured.
+pub(crate) fn packed_len(payload: &Payload, blobs: &Blobs) -> Result<u64> {
+    let mut json = Counter(0);
+    serde_json::to_writer(&mut json, payload)?;
+    let mut total = 1 + 8 + json.0;
+    for section in [&blobs.pdfs, &blobs.attachments] {
+        total += 8;
+        for bytes in section.values() {
+            total += 8 + 8 + bytes.len() as u64;
+        }
+    }
+    Ok(total)
 }
 
 struct Cursor<'a> {
@@ -537,6 +576,29 @@ pub(crate) fn set_journal_cap_for_test(entries: usize) {
     JOURNAL_CAP.with(|cap| cap.set(entries));
 }
 
+#[cfg(test)]
+thread_local! {
+    static WRITE_LIMIT: std::cell::Cell<u64> = const { std::cell::Cell::new(MAX_FILE_BYTES) };
+}
+
+/// A test that needs the "does not fit" path without half a gigabyte of data
+/// lowers the limit of writing, for its own thread only.
+#[cfg(test)]
+pub(crate) fn set_write_limit_for_test(bytes: u64) {
+    WRITE_LIMIT.with(|limit| limit.set(bytes));
+}
+
+pub(crate) fn write_limit() -> u64 {
+    #[cfg(test)]
+    {
+        WRITE_LIMIT.with(|limit| limit.get())
+    }
+    #[cfg(not(test))]
+    {
+        MAX_FILE_BYTES
+    }
+}
+
 fn journal_cap() -> usize {
     #[cfg(test)]
     {
@@ -589,6 +651,56 @@ mod tests {
             r#"{"revision":3,"documents":[],"captures":[],"requests":[],"notes":[],"drafts":[],"analyses":[],"tasks":[],"work_contexts":[],"files_meta":[],"page_texts":[],"document_links":[],"trash":[],"capture_refs":[],"item_versions":[],"team_events":[]}"#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_library_that_does_not_fit_is_refused_before_anything_is_built_or_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ponte-sync.ponte");
+        let mut blobs = Blobs::default();
+        blobs.pdfs.insert(1, vec![7_u8; 4096]);
+        blobs.attachments.insert(2, vec![8_u8; 100]);
+        let payload = Payload {
+            snapshot: empty_snapshot(),
+            applied: vec![],
+            journal: vec![],
+        };
+        // The count is the size of what pack builds.
+        assert_eq!(
+            packed_len(&payload, &blobs).unwrap(),
+            pack(&payload, &blobs).unwrap().len() as u64
+        );
+        let request = WriteRequest {
+            lineage: "lin-1",
+            revision: 1,
+            writer: "pc-a",
+            writer_name: "Casa",
+            schema_version: 10,
+        };
+        // Written whole, the file is exactly what the count said plus the
+        // header and the tag.
+        let header = write(&path, "senha-forte-123", &request, &payload, &blobs).unwrap();
+        let size = std::fs::metadata(&path).unwrap().len();
+        let expected = SYNC_MAGIC.len() as u64
+            + serde_json::to_vec(&header).unwrap().len() as u64
+            + 1
+            + packed_len(&payload, &blobs).unwrap()
+            + 16;
+        assert_eq!(size, expected);
+        std::fs::remove_file(&path).unwrap();
+        // One byte under the size: refused with the advice, nothing written.
+        set_write_limit_for_test(size - 1);
+        let error = write(&path, "senha-forte-123", &request, &payload, &blobs)
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("O acervo passa de 512 MB e não cabe no arquivo de sincronização"));
+        assert!(error.contains("Nada foi gravado") && error.contains("esvazie a Lixeira"));
+        assert!(error.contains("anexos grandes"));
+        assert_eq!(dir.path().read_dir().unwrap().count(), 0);
+        // At the size it fits.
+        set_write_limit_for_test(size);
+        write(&path, "senha-forte-123", &request, &payload, &blobs).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), size);
     }
 
     #[test]

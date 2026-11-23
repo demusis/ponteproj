@@ -5235,17 +5235,20 @@ impl Store {
         }
 
         reporter.step("Reunindo PDFs e anexos…");
-        let (final_snapshot, blobs) = match &temp {
-            Some(store) => {
-                let snapshot = store.export_snapshot()?;
-                let blobs = collect_blobs(store, &snapshot)?;
-                (snapshot, blobs)
-            }
-            None => {
-                let snapshot = self.export_snapshot()?;
-                let blobs = collect_blobs(self, &snapshot)?;
-                (snapshot, blobs)
-            }
+        let source: &Store = temp.as_ref().unwrap_or(&*self);
+        let final_snapshot = source.export_snapshot()?;
+        // What the PDFs and attachments alone take is known from the
+        // snapshot: a library already over the limit is refused here, without
+        // reading them, and nothing is built or written (see below).
+        let too_big_early = {
+            let bound = crate::folder_health::blob_bound(&final_snapshot);
+            (bound > sharedfolder::write_limit())
+                .then(|| crate::folder_health::too_big_message(Some(bound)))
+        };
+        let blobs = if too_big_early.is_some() {
+            sharedfolder::Blobs::default()
+        } else {
+            collect_blobs(source, &final_snapshot)?
         };
         let revision = final_snapshot.revision;
         sharedfolder::trim_journal(&mut journal);
@@ -5284,6 +5287,15 @@ impl Store {
         }
         let mut failures = Vec::new();
         for path in &targets {
+            // Does not fit: no folder is rewritten (nor its copy kept aside),
+            // each stays as it was and the exchange says why.
+            if let Some(message) = &too_big_early {
+                report.unwritten.push(path.display().to_string());
+                if !failures.contains(message) {
+                    failures.push(message.clone());
+                }
+                continue;
+            }
             // What the rewrite would drop is kept first, beside it; if that
             // cannot be done, the copy is left as it is.
             if preserve.contains(path) {
@@ -5319,13 +5331,14 @@ impl Store {
             ensure!(
                 !report.written_to.is_empty(),
                 "Nenhuma pasta pôde ser gravada: {}. As alterações continuam guardadas neste computador.",
-                failures.join("; ")
+                failures.join("; ").trim_end_matches('.')
             );
         }
         report.notes.extend(failures);
         // Only now, with the folders written, does this become this
         // computer's last write.
-        if let Some(path) = guard_path {
+        // (A library that does not fit has no guard copy either.)
+        if let Some(path) = guard_path.filter(|_| too_big_early.is_none()) {
             if let Err(error) = sharedfolder::write(path, key, &request, &payload, &blobs) {
                 report.notes.push(format!(
                     "A cópia de segurança deste computador não foi gravada: {error}"
@@ -18601,5 +18614,72 @@ mod tied_mirror_tests {
             "Acervo sincronizado com o computador principal."
         );
         assert!(!quiet.status_summary.contains("passou de"));
+    }
+}
+
+#[cfg(test)]
+mod size_limit_tests {
+    use super::*;
+    use crate::sharedfolder;
+
+    const KEY: &str = "senha-de-teste-123";
+
+    fn config(files: &[String]) -> IntranetConfig {
+        IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: "Servidor A".into(),
+            folder_files: files.to_vec(),
+            folder_key: KEY.into(),
+            ..IntranetConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_library_over_the_limit_is_refused_early_and_nothing_is_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = dir.path().join("Drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        let files = vec![drive.display().to_string()];
+        let mut store = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        store.save_intranet_config(&config(&files)).unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let sync = |store: &mut Store| {
+            let cfg = store.load_intranet_config().unwrap();
+            store.sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+        };
+        sync(&mut store).unwrap();
+        let before = std::fs::read(&drive).unwrap();
+
+        // A change that no longer fits in the file.
+        let owner = crate::attachments::Owner::Document(document);
+        store
+            .add_attachment(owner, "grande.txt", "", &vec![b'x'; 6000])
+            .unwrap();
+        sharedfolder::set_write_limit_for_test(2000);
+        let error = sync(&mut store).unwrap_err().to_string();
+        assert!(
+            error.starts_with("Nenhuma pasta pôde ser gravada: O acervo passa de 512 MB"),
+            "{error}"
+        );
+        assert!(error.contains("Nada foi gravado") && error.contains("esvazie a Lixeira"));
+        assert!(error.contains("anexos grandes") && !error.contains(".."), "{error}");
+        assert!(error.contains("As alterações continuam guardadas neste computador."));
+        // The file in the folder is exactly what it was, with no copy kept
+        // aside and no leftover; the change is still here and still queued.
+        assert_eq!(std::fs::read(&drive).unwrap(), before);
+        assert_eq!(drive.parent().unwrap().read_dir().unwrap().count(), 1);
+        assert_eq!(store.list_attachments(owner).unwrap().len(), 1);
+        assert!(!store.list_offline_outbox().unwrap().is_empty());
+
+        // With room again the same change goes through.
+        sharedfolder::set_write_limit_for_test(sharedfolder::MAX_FILE_BYTES);
+        let report = sync(&mut store).unwrap();
+        assert!(!report.written_to.is_empty());
+        let written = sharedfolder::read(&drive, KEY).unwrap().unwrap();
+        assert_eq!(written.blobs.attachments.len(), 1);
+        assert!(store.list_offline_outbox().unwrap().is_empty());
     }
 }

@@ -19,6 +19,8 @@ pub mod chatgpt;
 pub mod draft_check;
 pub mod export;
 pub mod files;
+/// Size of the shared file and the room left, copies the cloud made beside it, and what never syncs.
+pub mod folder_health;
 pub mod guide;
 #[cfg(feature = "desktop")]
 pub mod help_ui;
