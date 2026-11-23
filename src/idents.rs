@@ -1360,7 +1360,7 @@ pub mod hooks {
         let mut armed = BEFORE_MUTATE.lock().unwrap_or_else(|e| e.into_inner());
         match armed.iter().position(|(p, _)| p == db) {
             Some(at) => {
-                armed.remove(at);
+                drop(armed.remove(at));
                 true
             }
             None => false,
