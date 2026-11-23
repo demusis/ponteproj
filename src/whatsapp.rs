@@ -213,7 +213,7 @@ fn between(c: &[char], p: &mut usize) -> Option<()> {
     (*p > start).then_some(())
 }
 
-fn stamp(inner: &str) -> Option<NaiveDateTime> {
+fn stamp(inner: &str) -> Option<(NaiveDateTime, bool)> {
     let c: Vec<char> = inner.chars().collect();
     let finish = |p: &mut usize| {
         skip_space(&c, p);
@@ -224,7 +224,7 @@ fn stamp(inner: &str) -> Option<NaiveDateTime> {
         if between(&c, &mut p).is_some() {
             if let Some(d) = date(&c, &mut p) {
                 if finish(&mut p) {
-                    return Some(d.and_time(t));
+                    return Some((d.and_time(t), true));
                 }
             }
         }
@@ -233,13 +233,40 @@ fn stamp(inner: &str) -> Option<NaiveDateTime> {
     let d = date(&c, &mut p)?;
     between(&c, &mut p)?;
     let t = time(&c, &mut p)?;
-    finish(&mut p).then(|| d.and_time(t))
+    finish(&mut p).then(|| (d.and_time(t), false))
 }
 
-/// When `line` starts a message: its time and what follows the bracket.
-fn header(line: &str) -> Option<(NaiveDateTime, &str)> {
+/// A message header as read from a line.
+struct Head<'a> {
+    when: NaiveDateTime,
+    /// What follows the stamp.
+    rest: &'a str,
+    /// The time comes first (`[hh:mm, dd/mm/aaaa]`, the WhatsApp Web paste):
+    /// the author rules of the phone exports do not apply to it.
+    web: bool,
+}
+
+/// Which family of headers a whole input uses, decided once.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Style {
+    /// Lines that start with `[`: WhatsApp Web paste and iPhone export.
+    Bracket,
+    /// `dd/mm/aaaa hh:mm - rest`: Android export.
+    Android,
+}
+
+/// Why a line that looks like an Android header was refused.
+enum Refused {
+    /// Month/day order (phone in English).
+    English,
+    /// A date that does not exist.
+    Impossible,
+}
+
+/// When `line` starts a bracketed message: its time and what follows.
+fn bracket_header(line: &str) -> Option<Head<'_>> {
     if !line.starts_with('[') {
-        return android_header(line);
+        return None;
     }
     let end = line
         .char_indices()
@@ -247,14 +274,17 @@ fn header(line: &str) -> Option<(NaiveDateTime, &str)> {
         .take(HEADER_CHARS)
         .find(|(_, c)| *c == ']')?
         .0;
-    Some((stamp(&line[1..end])?, &line[end + 1..]))
+    let (when, web) = stamp(&line[1..end])?;
+    Some(Head {
+        when,
+        rest: &line[end + 1..],
+        web,
+    })
 }
 
-/// The header of the Android export: `dd/mm/aaaa hh:mm - rest`, also with
-/// `dd/mm/aa`, a comma after the date and a 12-hour time (`a.m.`/`p.m.`). The
-/// stamp ends at the first hyphen that has white space on both sides (the
-/// hyphens of a date `12-05-2026` have none), within the first characters.
-fn android_header(line: &str) -> Option<(NaiveDateTime, &str)> {
+/// Position of the hyphen that ends an Android stamp: the first one with
+/// white space on both sides, within the first characters.
+fn android_hyphen(line: &str) -> Option<usize> {
     if !line.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
     }
@@ -262,25 +292,126 @@ fn android_header(line: &str) -> Option<(NaiveDateTime, &str)> {
     let at = (1..chars.len().saturating_sub(1)).find(|&i| {
         chars[i].1 == '-' && chars[i - 1].1.is_whitespace() && chars[i + 1].1.is_whitespace()
     })?;
-    let hyphen = chars[at].0;
-    Some((stamp(&line[..hyphen])?, &line[hyphen + 1..]))
+    Some(chars[at].0)
+}
+
+/// `AM`/`PM`/`am`/`pm` without dots: the marker of a phone in English (the
+/// Portuguese one is `a. m.`/`p. m.`).
+fn english_marker(inner: &str) -> bool {
+    let lower = inner.to_lowercase();
+    let letters: String = lower.chars().filter(|c| c.is_alphabetic()).collect();
+    (letters == "am" || letters == "pm") && !lower.contains("a.") && !lower.contains("p.")
+}
+
+/// The first two numbers of a stamp that has the SHAPE of an Android one
+/// (`n/n/aa[aa]`, then a valid time) whatever their values.
+fn loose_date_first(inner: &str) -> Option<(u32, u32)> {
+    let c: Vec<char> = inner.chars().collect();
+    let mut p = 0;
+    let a = digits(&c, &mut p, 1, 2)?;
+    matches!(c.get(p), Some('/' | '.' | '-')).then(|| p += 1)?;
+    let b = digits(&c, &mut p, 1, 2)?;
+    matches!(c.get(p), Some('/' | '.' | '-')).then(|| p += 1)?;
+    let start = p;
+    digits(&c, &mut p, 2, 4)?;
+    if !matches!(p - start, 2 | 4) {
+        return None;
+    }
+    between(&c, &mut p)?;
+    time(&c, &mut p)?;
+    skip_space(&c, &mut p);
+    (p == c.len()).then_some((a, b))
+}
+
+/// The header of the Android export: `dd/mm/aaaa hh:mm - rest`, also with
+/// `dd/mm/aa`, a comma after the date and a 12-hour time (`a.m.`/`p.m.`).
+/// `Ok(None)` when the line is not a header; an error when it has the shape
+/// of one but its date cannot be read as day/month (English phone, or a date
+/// that does not exist): it is never glued to the message above.
+fn android_header(line: &str) -> std::result::Result<Option<Head<'_>>, Refused> {
+    let Some(hyphen) = android_hyphen(line) else {
+        return Ok(None);
+    };
+    let inner = &line[..hyphen];
+    match stamp(inner) {
+        Some((when, _)) => {
+            if english_marker(inner) {
+                return Err(Refused::English);
+            }
+            Ok(Some(Head {
+                when,
+                rest: &line[hyphen + 1..],
+                web: false,
+            }))
+        }
+        None => match loose_date_first(inner) {
+            Some((a, b)) if b > 12 && a <= 12 => Err(Refused::English),
+            Some(_) => Err(Refused::Impossible),
+            None => Ok(None),
+        },
+    }
+}
+
+/// Phrases of the system lines of the phone exports ("Ana criou o grupo ...",
+/// "Ana adicionou Bruno"...).
+const SYSTEM_PHRASES: &[&str] = &[
+    "criou o grupo",
+    "criou este grupo",
+    "adicionou",
+    "adicionado",
+    "saiu",
+    "removeu",
+    "foi removido",
+    "mudou o nome",
+    "mudou o assunto",
+    "mudou a descri",
+    "mudou o ícone",
+    "mudou a imagem",
+    "mudou o número",
+    "alterou",
+    "entrou usando",
+    "entrou no grupo",
+    "as mensagens e as chamadas",
+    "mensagens e chamadas",
+    "agora é admin",
+    "agora você é",
+];
+
+/// Whether the text before `: ` can be the name of a participant. Only asked
+/// of the phone exports, whose format does not mark system lines.
+fn plausible_author(name: &str) -> bool {
+    if name.contains(['"', '“', '”']) {
+        return false;
+    }
+    let lower = name.to_lowercase();
+    !SYSTEM_PHRASES.iter().any(|phrase| lower.contains(phrase))
 }
 
 /// Author and first line of the text after the bracket.
-fn author_and_text(rest: &str) -> (Option<String>, String) {
+fn author_and_text(rest: &str, web: bool) -> (Option<String>, String) {
     let rest = rest.trim_start();
     if let Some(at) = rest.find(": ") {
         let author = rest[..at].trim();
-        if !author.is_empty() {
+        if !author.is_empty() && (web || plausible_author(author)) {
             return (Some(author.to_owned()), rest[at + 2..].trim().to_owned());
         }
     } else if let Some(name) = rest.trim_end().strip_suffix(':') {
         let author = name.trim();
-        if !author.is_empty() {
+        if !author.is_empty() && (web || plausible_author(author)) {
             return (Some(author.to_owned()), String::new());
         }
     }
     (None, rest.trim().to_owned())
+}
+
+/// The sentence for a line that looks like a header but has a date that
+/// cannot be read as day/month.
+fn refusal(why: Refused, number: usize, line: &str) -> String {
+    let shown: String = line.chars().take(60).collect();
+    match why {
+        Refused::English => format!("Esta conversa parece ter sido exportada com datas no formato mês/dia (celular em inglês). Mude o idioma do WhatsApp para português e exporte de novo, ou cole pelo WhatsApp Web. (Linha {number}: {shown})"),
+        Refused::Impossible => format!("A linha {number} parece o começo de uma mensagem, mas a data não existe: {shown}"),
+    }
 }
 
 /// Reads copied WhatsApp messages.
@@ -291,8 +422,23 @@ pub fn parse(copied: &str) -> Result<Conversation> {
     let text = normalise(copied);
     let mut messages: Vec<Message> = Vec::new();
     let mut preamble: Vec<&str> = Vec::new();
-    for line in text.split('\n') {
-        if let Some((when, rest)) = header(line) {
+    // The format is decided ONCE per input: any valid bracketed header makes
+    // it a bracketed paste (Web or iPhone) and nothing else is a header; with
+    // none, it is read as an Android export.
+    let style = if text.split('\n').any(|line| bracket_header(line).is_some()) {
+        Style::Bracket
+    } else {
+        Style::Android
+    };
+    for (index, line) in text.split('\n').enumerate() {
+        let head = match style {
+            Style::Bracket => bracket_header(line),
+            Style::Android => match android_header(line) {
+                Ok(head) => head,
+                Err(why) => bail!(refusal(why, index + 1, line)),
+            },
+        };
+        if let Some(Head { when, rest, web }) = head {
             if messages.is_empty() {
                 let lead = take_preamble(&mut preamble);
                 if !lead.is_empty() {
@@ -306,7 +452,7 @@ pub fn parse(copied: &str) -> Result<Conversation> {
             if messages.len() >= MAX_MESSAGES {
                 bail!(ERR_COUNT);
             }
-            let (author, first_line) = author_and_text(rest);
+            let (author, first_line) = author_and_text(rest, web);
             messages.push(Message {
                 when: Some(when),
                 author,
@@ -1166,16 +1312,99 @@ segunda linha\n\
     }
 
     #[test]
-    fn invalid_android_dates_or_hyphens_do_not_start_a_message() {
-        // Month 13, no spaces around the hyphen, a number in the text.
-        let text = "12/11/2026 09:20 - Ana: oi\n\
-13/13/2026 09:21 - Bruno: não é mensagem\n\
-12/11/2026 09:22-Bruno: sem espaços\n\
-2026 - foi um bom ano";
+    fn hyphens_and_numbers_in_the_text_do_not_start_an_android_message() {
+        let text = "12/11/2026 09:20 - Ana: oi
+12/11/2026 09:22-Bruno: sem espaços
+2026 - foi um bom ano
+12/11/2026 - sem hora";
         let c = parse(text).unwrap();
         assert_eq!(c.messages.len(), 1);
-        assert!(c.messages[0].text.contains("não é mensagem"));
+        assert!(c.messages[0].text.contains("sem espaços"));
         assert!(c.messages[0].text.contains("foi um bom ano"));
+    }
+
+    #[test]
+    fn the_format_is_decided_once_per_input_a_web_paste_keeps_android_looking_lines() {
+        let paste = "[10:00, 10/11/2026] Ana: lista
+12/11/2026 10:00 - reunião";
+        let c = parse(paste).unwrap();
+        // Exactly what the reader gave before the phone formats existed.
+        assert_eq!(c.messages.len(), 1);
+        assert_eq!(
+            c.messages[0].text,
+            "lista
+12/11/2026 10:00 - reunião"
+        );
+        let record = record_text(&c);
+        assert_eq!(
+            record,
+            "[10/11/2026 10:00] Ana: lista
+    12/11/2026 10:00 - reunião"
+        );
+        // Id computed with the formula of the contract over that record text
+        // (SHA-256, independent of this code), pinned as before this change.
+        assert_eq!(
+            request_id("Equipe", &record),
+            "24dee222-327a-82b8-9d8c-7b36853541b4"
+        );
+        // An iPhone export is bracketed too: the same rule.
+        let ios = "[10/11/2026, 10:00:00] Ana: lista
+12/11/2026 10:00 - reunião";
+        assert_eq!(parse(ios).unwrap().messages.len(), 1);
+    }
+
+    #[test]
+    fn english_exports_are_refused_instead_of_read_with_wrong_dates() {
+        for text in [
+            // AM/PM in English, a date that would be read as December.
+            "11/12/26, 9:15 AM - Ana: oi",
+            "11/12/2026 9:15 pm - Ana: oi",
+            // Month/day: the second field cannot be a month.
+            "12/11/2026 09:20 - Ana: oi
+11/25/26 09:21 - Bruno: olá",
+            "11/25/26, 21:15 - Ana: oi",
+        ] {
+            let error = parse(text).unwrap_err().to_string();
+            assert!(error.contains("mês/dia"), "{text}: {error}");
+            assert!(error.contains("Mude o idioma do WhatsApp para português"));
+        }
+        // The Portuguese marker is still read.
+        assert!(parse("11/12/2026 9:15 p. m. - Ana: oi").is_ok());
+    }
+
+    #[test]
+    fn an_impossible_date_is_refused_naming_the_line_never_glued_to_the_message() {
+        let text = "12/11/2026 09:20 - Ana: oi
+31/02/2026 09:21 - Bruno: nunca existiu";
+        let error = parse(text).unwrap_err().to_string();
+        assert!(error.contains("linha 2"), "{error}");
+        assert!(error.contains("31/02/2026 09:21"));
+    }
+
+    #[test]
+    fn a_system_line_with_a_colon_in_a_group_name_has_no_author() {
+        let text = "12/11/2026 09:15 - Ana criou o grupo \"Obra: Rua X\"
+12/11/2026 09:16 - Ana adicionou Bruno: Silva
+12/11/2026 09:17 - Bruno: Obra: parte 2";
+        let android = parse(text).unwrap();
+        assert_eq!(android.messages[0].author, None);
+        assert_eq!(
+            android.messages[0].text,
+            "Ana criou o grupo \"Obra: Rua X\""
+        );
+        assert_eq!(android.messages[1].author, None);
+        assert_eq!(android.messages[2].author.as_deref(), Some("Bruno"));
+        assert_eq!(android.messages[2].text, "Obra: parte 2");
+        assert_eq!(android.participants, vec!["Bruno"]);
+        // iPhone export (bracketed, date first).
+        let ios = "[12/11/2026, 09:18:00] Ana mudou o nome de \"A: B\" para \"C\"
+[12/11/2026, 09:19:00] Bruno: oi";
+        let c = parse(ios).unwrap();
+        assert_eq!(c.messages[0].author, None);
+        assert_eq!(c.participants, vec!["Bruno"]);
+        // The Web paste keeps its rule: the author is what precedes ": ".
+        let web = parse("[09:20, 12/11/2026] Ana \"x: y").unwrap();
+        assert_eq!(web.messages[0].author.as_deref(), Some("Ana \"x"));
     }
 
     #[test]
