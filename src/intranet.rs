@@ -4990,7 +4990,15 @@ impl Store {
                 _ => None,
             };
             if let Some((seen, level)) = observed {
-                if seen == cfg.folder_lineage {
+                // The lineage this exchange takes: the configured one, else
+                // the first one a configured path holds (this one, when no
+                // path before it held any: the first link).
+                let selected = if cfg.folder_lineage.trim().is_empty() {
+                    seen_lineages.first().unwrap_or(&seen)
+                } else {
+                    &cfg.folder_lineage
+                };
+                if seen == *selected {
                     self.raise_floor(&seen, nine_floor(level))?;
                 }
             }
@@ -5094,6 +5102,26 @@ impl Store {
             .filter(|h| h.lineage == lineage)
             .map(|h| h.level)
             .max();
+        // The guard counts too, read authenticated, when its header says a
+        // level that would raise the floor: before any copy is taken as the
+        // base, so no 9 below it is one.
+        let guard_level = match (&guard_path, &guard_header) {
+            (Some(path), Some(header))
+                if guard_is_nine
+                    && header.level > seen_level.unwrap_or(0)
+                    && header.level > self.floor(&lineage)?.level =>
+            {
+                sharedfolder::read(path, key)
+                    .ok()
+                    .flatten()
+                    .filter(|c| {
+                        c.header.lineage == lineage && c.header.format >= sharedfolder::FORMAT_9
+                    })
+                    .map(|c| c.header.level)
+            }
+            _ => None,
+        };
+        let seen_level = seen_level.max(guard_level);
         if seen_level.is_some() || guard_is_nine {
             self.raise_floor(&lineage, nine_floor(seen_level.unwrap_or(0)))?;
         }
@@ -6916,7 +6944,11 @@ impl Store {
         // 5. Only now, with the folders written, does this become this
         //    computer's last write. An old one (format 8, or a 9 demoted to
         //    a donor), readable or not, is kept aside first.
-        if let Some(path) = guard_path {
+        // No 9 of this build's level confirmed in any folder (every rewrite
+        // failed, with nothing new): the guard stays as it is, never above
+        // what the folders hold (it would raise the floor alone).
+        let unconfirmed = nine_out && self.floor(lineage)?.level < sharedfolder::LEVEL;
+        if let Some(path) = guard_path.filter(|_| !unconfirmed) {
             let old = guard_demoted
                 || sharedfolder::read_header(path)
                     .ok()
@@ -6966,7 +6998,17 @@ impl Store {
         updated.last_sync_at = now_iso();
         updated.folder_lineage = lineage.to_owned();
         updated.folder_identity = sharedfolder::snapshot_identity(&final_snapshot);
-        updated.synced_level = if nine_out { sharedfolder::LEVEL } else { 0 };
+        // The level of what the folders hold now: this build's, once a 9 of
+        // it was read back; otherwise (every rewrite failed, nothing new)
+        // the one of the base still there.
+        updated.synced_level = match (nine_out, published_nine) {
+            (false, _) => 0,
+            (true, true) => sharedfolder::LEVEL,
+            (true, false) => copies
+                .iter()
+                .find(|c| guard_path != Some(c.path.as_path()))
+                .map_or(sharedfolder::LEVEL, |c| c.header.level),
+        };
         let replaced = temp.is_some();
         let promoted = promote.is_some();
         let epoch = final_snapshot.ident_epoch.clone();
