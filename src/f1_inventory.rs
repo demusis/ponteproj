@@ -2709,3 +2709,79 @@ fn f0r_a_corrected_plan_record_still_lets_the_plan_resume() {
         assert!(on_doc.contains(&task.title.trim().to_owned()), "{on_doc:?}");
     }
 }
+
+/// Review 4: A captures a newer version C2 and analyses it offline; B, still
+/// on C1, analyses C1 later by the clock and publishes first. After A's
+/// exchange the current version is C2, so the analysis shown and the facts
+/// given to drafts are those of C2, on both computers.
+#[test]
+fn f0r_the_current_analysis_is_one_of_the_current_version() {
+    let mut p = pair();
+    let doc = p.a.list_documents("").unwrap()[0].id;
+    let c1 = one(
+        &p.b,
+        "SELECT latest_capture_id FROM documents WHERE id=?1",
+        rusqlite::types::Value::Integer(doc),
+    )
+    .unwrap();
+    let mut newer = crate::model::sample_capture();
+    newer.request_id = uuid::Uuid::new_v4().to_string();
+    newer.text = "Versão C2: o prazo para resposta é de dez dias.".into();
+    newer.captured_at = "2026-11-10T12:00:00Z".into();
+    let c2 = p.a.import_capture(&newer).unwrap().capture_id;
+    let analysis = |capture_id: i64, summary: &str, at: &str, quote: &str| crate::model::Analysis {
+        capture_id,
+        summary: summary.into(),
+        reason: "r".into(),
+        model: "modelo-de-teste".into(),
+        created_at: at.into(),
+        priority: "normal".into(),
+        facts: vec![crate::model::Fact {
+            id: "f1".into(),
+            kind: "prazo".into(),
+            statement: "Há um prazo.".into(),
+            quote: quote.into(),
+            checked: crate::model::FactCheck {
+                quote: true,
+                origin: crate::model::Origin::Document,
+                ..Default::default()
+            },
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    p.a.save_analysis(
+        doc,
+        &analysis(
+            c2,
+            "Análise de C2 (A)",
+            "2026-11-10T13:00:00Z",
+            "prazo para resposta",
+        ),
+    )
+    .unwrap();
+    p.b.save_analysis(
+        doc,
+        &analysis(
+            c1,
+            "Análise de C1 (B)",
+            "2026-11-11T09:00:00Z",
+            "texto antigo de C1",
+        ),
+    )
+    .unwrap();
+    sync(&mut p.b);
+    sync(&mut p.a);
+    sync(&mut p.b);
+    for (who, store) in [("A", &p.a), ("B", &p.b)] {
+        let detail = store.load_document(doc).unwrap();
+        assert_eq!(detail.capture.text, newer.text, "{who}: current version");
+        assert_eq!(
+            detail.analysis.as_ref().map(|a| a.summary.as_str()),
+            Some("Análise de C2 (A)"),
+            "{who}"
+        );
+        let materials = store.draft_materials(doc).unwrap();
+        assert_eq!(materials.facts.len(), 1, "{who}: facts of C2 for drafts");
+    }
+}

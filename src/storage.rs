@@ -878,7 +878,7 @@ impl Store {
             .map(|bytes| decode(&bytes))
             .transpose()?
             .unwrap_or_default();
-        let analysis: Option<Analysis> = current_analysis(&self.conn, id)?;
+        let analysis: Option<Analysis> = current_analysis(&self.conn, id, latest_capture_id)?;
         let mut stmt = self.conn.prepare("SELECT id,capture_id,payload,created_at FROM drafts WHERE document_id=?1 ORDER BY id DESC")?;
         let rows = stmt.query_map([id], |row| {
             Ok((
@@ -1146,7 +1146,7 @@ impl Store {
             .unwrap_or_default();
         let work_context = self.load_work_context(document_id)?;
         let context = work_context.analysis_text(&note);
-        let analysis: Option<Analysis> = current_analysis(&self.conn, document_id)?;
+        let analysis: Option<Analysis> = current_analysis(&self.conn, document_id, capture_id)?;
         let facts = analysis
             .filter(|a| {
                 a.capture_id == capture_id
@@ -1525,23 +1525,37 @@ pub(crate) fn newest_capture(conn: &Connection, candidates: &[i64]) -> Result<Op
     Ok(keyed.into_iter().max().map(|(_, id)| id))
 }
 
-/// The current analysis of a document: the one made last by its own time
-/// (`created_at`, the moment the analysis was made, which travels with it),
-/// not the one that reached this library last. Ties by number.
-fn current_analysis(conn: &Connection, document_id: i64) -> Result<Option<Analysis>> {
-    let rows: Vec<(i64, String, Vec<u8>)> = conn
-        .prepare("SELECT id,created_at,payload FROM analyses WHERE document_id=?1")?
-        .query_map([document_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+/// The current analysis of a document: of the analyses of its current
+/// version, the one made last by its own time (`created_at`, the moment the
+/// analysis was made, which travels with it), not the one that reached this
+/// library last; ties by number. Only when the current version has none, the
+/// one made last of any version (shown as made on another version).
+fn current_analysis(
+    conn: &Connection,
+    document_id: i64,
+    current_capture: i64,
+) -> Result<Option<Analysis>> {
+    let rows: Vec<(i64, i64, String, Vec<u8>)> = conn
+        .prepare("SELECT id,capture_id,created_at,payload FROM analyses WHERE document_id=?1")?
+        .query_map([document_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
-    let newest = rows.into_iter().max_by_key(|(id, at, _)| {
-        (
-            chrono::DateTime::parse_from_rfc3339(at.trim())
-                .ok()
-                .map(|t| t.timestamp_micros()),
-            *id,
-        )
-    });
-    newest.map(|(_, _, blob)| decode(&blob)).transpose()
+    let of_current = rows
+        .iter()
+        .any(|(_, capture, _, _)| *capture == current_capture);
+    let newest = rows
+        .into_iter()
+        .filter(|(_, capture, _, _)| !of_current || *capture == current_capture)
+        .max_by_key(|(id, _, at, _)| {
+            (
+                chrono::DateTime::parse_from_rfc3339(at.trim())
+                    .ok()
+                    .map(|t| t.timestamp_micros()),
+                *id,
+            )
+        });
+    newest.map(|(_, _, _, blob)| decode(&blob)).transpose()
 }
 
 fn require_document(conn: &Connection, id: i64) -> Result<()> {
