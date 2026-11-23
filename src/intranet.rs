@@ -2273,7 +2273,7 @@ pub(crate) fn queue_import_locally(
                 created,
                 attempted: false,
                 idents,
-                refs: Some(refs),
+                refs,
             },
         )?;
     }
@@ -2321,7 +2321,7 @@ pub(crate) fn queue_attachment_locally(
             created,
             attempted: false,
             idents,
-            refs: Some(refs),
+            refs,
         },
     )
 }
@@ -7254,7 +7254,7 @@ impl Store {
                     expected_generation: cfg.host_generation.clone(),
                     mutation_uid: uid.clone(),
                     idents: Vec::new(),
-                    refs: Some(refs.clone()),
+                    refs: refs.clone(),
                 },
                 &mut reached,
             )
@@ -7285,7 +7285,7 @@ impl Store {
                         attempted: true,
                         idents: Vec::new(),
                         // The proofs captured before the send.
-                        refs: Some(refs),
+                        refs,
                     },
                 )?;
                 tx.commit()?;
@@ -7868,7 +7868,7 @@ impl Store {
         base: Option<IntranetMutation>,
         created: Vec<crate::idmap::CreatedId>,
         idents: Vec<crate::idents::SlotIdent>,
-        refs: crate::idrefs::Refs,
+        refs: Option<crate::idrefs::Refs>,
         identity: Option<(String, bool)>,
     ) -> Result<()> {
         let existing = self.list_offline_outbox()?;
@@ -7890,7 +7890,7 @@ impl Store {
                 .filter(|e| !e.attempted)
                 // Nor one without proofs (an older Ponte's), nor one made in
                 // another frame: the new edit goes after it instead.
-                .filter(|e| e.refs.as_ref().is_some_and(|r| r.frame == refs.frame))
+                .filter(|e| e.refs.as_ref().map(|r| &r.frame) == refs.as_ref().map(|r| &r.frame))
                 .cloned()
             {
                 // The merged edit keeps the place of the first one (later
@@ -7948,7 +7948,7 @@ impl Store {
                         base,
                         Vec::new(),
                         idents,
-                        Some(refs),
+                        refs,
                         None,
                     )?;
                     return Ok(());
@@ -7956,13 +7956,13 @@ impl Store {
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
                 // The proofs follow what is kept: the new mutation's, and the
                 // base's of the entry whose base is kept.
-                let merged_refs = crate::idrefs::Refs {
+                let merged_refs = refs.map(|refs| crate::idrefs::Refs {
                     base: match (&prev.base, &prev.refs) {
                         (Some(_), Some(kept)) => kept.base.clone(),
                         _ => refs.base,
                     },
                     ..refs
-                };
+                });
                 let updated = OutboxEntry {
                     id: prev.id,
                     created_at: now_iso(),
@@ -7985,7 +7985,7 @@ impl Store {
                     } else {
                         idents
                     },
-                    refs: Some(merged_refs),
+                    refs: merged_refs,
                 };
                 let payload = seal(&serde_json::to_vec(&updated)?)?;
                 if must_move {
@@ -8005,7 +8005,7 @@ impl Store {
                 return Ok(());
             }
         }
-        self.insert_outbox_entry(actor, mutation, base, created, idents, Some(refs), identity)
+        self.insert_outbox_entry(actor, mutation, base, created, idents, refs, identity)
     }
 
     #[allow(clippy::too_many_arguments)]

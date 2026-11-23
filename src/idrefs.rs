@@ -346,7 +346,11 @@ pub(crate) fn frame_tag(conn: &Connection) -> Result<FrameTag> {
 }
 
 /// The proofs of `sites` in the library on `conn` (identities read there).
-fn prove(conn: &Connection, sites: Vec<(IdKind, i64)>, idents: bool) -> Result<Vec<Ref>> {
+fn prove(
+    conn: &Connection,
+    sites: Vec<(IdKind, i64)>,
+    idents: bool,
+) -> Result<Vec<Ref>> {
     sites
         .into_iter()
         .map(|(kind, row)| {
@@ -374,14 +378,20 @@ impl Refs {
 
     /// The proofs of `mutation` and of its `base`, read in the library on
     /// `conn` BEFORE the change runs there (in the same transaction when
-    /// the caller has one), in its frame.
+    /// the caller has one), in its frame. `None` for a library whose
+    /// identities were never shared (provisional: just updated, or not yet
+    /// adopted): no proof of it holds anywhere else, so its changes take
+    /// the legacy route, as an unmapped library's queue does (F3.0a2).
     pub(crate) fn capture(
         conn: &Connection,
         mutation: &IntranetMutation,
         base: Option<&IntranetMutation>,
-    ) -> Result<Refs> {
+    ) -> Result<Option<Refs>> {
+        if crate::idents::origin(conn)?.0 == "provisional" {
+            return Ok(None);
+        }
         let idents = crate::idents::has_idents(conn)?;
-        Ok(Refs {
+        Ok(Some(Refs {
             mutation: prove(conn, sites(mutation), idents)?,
             base: match base {
                 Some(base) => prove(conn, sites(base), idents)?,
@@ -390,7 +400,7 @@ impl Refs {
             // Named by the edit of a manual record (F3.1b1).
             manual_target: None,
             frame: frame_tag(conn)?,
-        })
+        }))
     }
 
     /// Whether these proofs are the proofs of `mutation` and `base`: one per
@@ -414,9 +424,11 @@ impl Refs {
             Some(base) => agree(sites(base), &refs.base),
             None => refs.base.is_empty(),
         };
+        // The target of a numbered manual edit is captured from F3.1b1 on;
+        // until then such an edit goes by its number, as before (F3.0a2).
         let target_ok = match &refs.manual_target {
             Some(target) => numbered_manual(mutation) && target.kind == IdKind::Document,
-            None => !numbered_manual(mutation),
+            None => true,
         };
         if agree(sites(mutation), &refs.mutation) && base_ok && target_ok {
             Ok(())
