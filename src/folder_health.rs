@@ -665,11 +665,12 @@ mod tests {
         assert!(deleted.is_empty() && failed.is_empty());
         assert!(real.exists() && copy.exists() && elsewhere.exists());
         // Not old yet: kept.
-        let (deleted, _) = delete_old_archives(&real, &[old.clone()], SystemTime::now());
+        let (deleted, _) =
+            delete_old_archives(&real, std::slice::from_ref(&old), SystemTime::now());
         assert!(deleted.is_empty() && old.exists());
         // Old: deleted, and only that one.
-        let (deleted, failed) = delete_old_archives(&real, &[old.clone()], later);
-        assert_eq!(deleted, [old.clone()]);
+        let (deleted, failed) = delete_old_archives(&real, std::slice::from_ref(&old), later);
+        assert_eq!(deleted, std::slice::from_ref(&old));
         assert!(failed.is_empty() && !old.exists());
         assert!(real.exists() && copy.exists());
     }
