@@ -97,6 +97,10 @@ mod f2b_rodada2_tests;
 /// F2b of Frente F: acceptance tests of the shared file of format 9.
 #[cfg(test)]
 mod f2b_tests;
+/// F3.0a1 of Frente F: acceptance tests of the level barrier, the floor
+/// observed and the refs of every producer (tests only).
+#[cfg(test)]
+mod f3_tests;
 /// The minimum format of each shared folder this device has seen (F2b).
 pub mod formatfloor;
 /// Identities of the items (library schema 22).

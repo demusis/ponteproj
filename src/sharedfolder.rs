@@ -978,6 +978,60 @@ fn unpack_stub(plain: &[u8]) -> Result<StubBody> {
     Ok(stub)
 }
 
+/// Writes the copy at `path` again at format 9 and `level`, as a Ponte of
+/// that level would have (tests of F3: a file of F2b is a 9 at level 1),
+/// after `edit` changed its header or payload. The moment, writer and
+/// revision stay those of the header unless `edit` changes them; the salt
+/// and nonce are new, so the plain start of the file changes.
+#[cfg(test)]
+pub(crate) fn reseal_for_test(
+    path: &Path,
+    password: &str,
+    level: u32,
+    edit: impl FnOnce(&mut Header, &mut Payload),
+) -> Result<()> {
+    let Some(Found::Copy(mut copy)) = read_any(path, password)? else {
+        anyhow::bail!("{} não é uma cópia.", path.display());
+    };
+    edit(&mut copy.header, &mut copy.payload);
+    let header = copy.header.clone();
+    write_shaped(
+        path,
+        password,
+        &WriteRequest {
+            lineage: &header.lineage,
+            revision: header.revision,
+            writer: &header.writer,
+            writer_name: &header.writer_name,
+            schema_version: header.schema_version,
+        },
+        pack(&copy.payload, &copy.blobs)?,
+        &Shape {
+            format: FORMAT_9,
+            level,
+            points_to: "",
+        },
+        &header.written_at,
+        None,
+    )?;
+    Ok(())
+}
+
+/// The check of [`read_header_up_to`] as a build that reads formats up to
+/// `newest` and levels up to `level` makes it (a Ponte of F2b: 9 and 1).
+#[cfg(test)]
+pub(crate) fn read_header_as(path: &Path, newest: u32, level: u32) -> Result<Option<Header>> {
+    let Some(line) = header_line(path)? else {
+        return Ok(None);
+    };
+    let header: Header = serde_json::from_slice(&line[MAGIC.len()..]).context(DAMAGED)?;
+    ensure!(
+        (1..=newest).contains(&header.format) && header.level <= level,
+        "O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte."
+    );
+    Ok(Some(header))
+}
+
 #[cfg(test)]
 thread_local! {
     static JOURNAL_CAP: std::cell::Cell<usize> =
