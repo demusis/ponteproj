@@ -162,7 +162,13 @@ fn resolve_sites(
                 .row_of(kind, ident)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| UNPROVEN.to_owned())?,
-            Proof::Frame if frame_holds => *id,
+            // A mapped kind's number is this library's own, never the
+            // copy's: it holds nowhere else (obligation (c), F3.1a).
+            Proof::Frame
+                if frame_holds && !crate::mapper::addressed(crate::idents::kind_of(kind)) =>
+            {
+                *id
+            }
             _ => return Err(UNPROVEN.into()),
         };
         *id = row;
@@ -554,9 +560,14 @@ pub(crate) fn prove(
             } else {
                 None
             };
-            // No kind is addressed by identity yet (the mapper, F3.0b):
-            // a row without identity is proved only in its own frame.
-            let proof = ident.map(Proof::Ident).unwrap_or(Proof::Frame);
+            // A row without identity: of a mapped kind, its number here is
+            // not the copy's, so nothing proves it elsewhere (v2 §2.1); of
+            // any other kind, it is proved only in its own frame.
+            let proof = match ident {
+                Some(ident) => Proof::Ident(ident),
+                None if crate::mapper::addressed(crate::idents::kind_of(kind)) => Proof::Unprovable,
+                None => Proof::Frame,
+            };
             Ok(Ref { kind, row, proof })
         })
         .collect()

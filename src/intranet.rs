@@ -5033,12 +5033,19 @@ impl Store {
         // One state of this library: read and, when equal, rekeyed in the
         // same transaction.
         let tx = self.conn.unchecked_transaction()?;
+        // A mapped library numbers the mapped kinds its own way and already
+        // holds their identities: a comparison by number proves nothing
+        // there (F3.1a), so nothing is taken.
+        let numbered_here = crate::idents::is_mapped(&tx)?
+            && crate::idents::KINDS
+                .iter()
+                .any(|(kind, _)| crate::mapper::addressed(kind));
         let here = {
             let mut mine = self.export_snapshot()?;
             mine.revision = snapshot.revision;
             content(&mine)?
         };
-        if here == content(snapshot)? && crate::idents::has_idents(&tx)? {
+        if !numbered_here && here == content(snapshot)? && crate::idents::has_idents(&tx)? {
             crate::idents::adopt_triples(&tx, snapshot)?;
             adopted_from_host(&tx, &snapshot.ident_epoch)?;
             settle_mapping(&tx, !snapshot.ident_epoch.is_empty())?;

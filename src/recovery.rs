@@ -79,6 +79,10 @@ pub const SYNC_TABLES: &[(&str, &str)] = &[
         "ident_state",
         "a origem das identidades dos itens (as identidades ficam)",
     ),
+    (
+        "ident_meta",
+        "o estado do mapeamento dos números dos itens (volta a ser feito na próxima sincronização)",
+    ),
 ];
 
 /// What the chosen file is.

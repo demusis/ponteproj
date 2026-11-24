@@ -619,6 +619,10 @@ pub(crate) struct Removed {
     legacy: BTreeSet<(&'static str, i64)>,
     idents: BTreeSet<(&'static str, String)>,
     uids: BTreeSet<String>,
+    /// What changes that became cards created, by number in the frame of
+    /// the holder they are checked against (this library's own queue, or
+    /// one copy's journal): never a legacy number, whatever the kind.
+    carded: BTreeSet<(&'static str, i64)>,
 }
 
 impl Removed {
@@ -699,7 +703,7 @@ impl Removed {
                 IdKind::Saiop => "saiop",
                 _ => continue,
             };
-            self.removal(kind, c.id, None);
+            self.carded.insert((kind, c.id));
         }
     }
 
@@ -711,12 +715,15 @@ impl Removed {
             legacy: BTreeSet::new(),
             idents: self.idents.clone(),
             uids: self.uids.clone(),
+            carded: BTreeSet::new(),
         }
     }
 
     fn explains(&self, item: &Item) -> bool {
         let removed = |kind: &'static str, id: i64, ident: &Option<String>| {
-            if crate::mapper::addressed(kind) {
+            if self.carded.contains(&(kind, id)) {
+                true
+            } else if crate::mapper::addressed(kind) {
                 ident
                     .as_ref()
                     .is_some_and(|i| self.idents.contains(&(kind, i.clone())))
