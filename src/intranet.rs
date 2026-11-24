@@ -6414,21 +6414,30 @@ impl Store {
                             .entry(index)
                             .or_default()
                             .kept_in_card(&entry.mutation, &entry.created);
+                        // The change, its base and its proofs from ONE
+                        // frame: as resolved here (the proofs' rows
+                        // rewritten to these numbers), or, when it did not
+                        // resolve, as the journal holds them.
+                        let (mutation, base, refs) = match remapped {
+                            Ok(mutation) => (mutation, base, refs),
+                            Err(_) => (
+                                entry.mutation.clone(),
+                                entry.base.clone(),
+                                entry.refs.clone(),
+                            ),
+                        };
                         let as_entry = OutboxEntry {
                             id: 0,
                             created_at: entry.created_at.clone(),
                             actor: entry.actor.clone(),
                             label: format!("[{}] {}", from, entry.label),
-                            mutation: remapped.unwrap_or_else(|_| entry.mutation.clone()),
-                            base: entry.base.as_ref().map(|base| {
-                                ids.remap(base, &source.payload.snapshot, None)
-                                    .unwrap_or_else(|_| base.clone())
-                            }),
+                            mutation,
+                            base,
                             uid: entry.uid.clone(),
                             created: Vec::new(),
                             attempted: false,
                             idents: Vec::new(),
-                            refs: entry.refs.clone(),
+                            refs,
                         };
                         let mut conflict = conflict_for(
                             &as_entry,
