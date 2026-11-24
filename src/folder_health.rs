@@ -416,16 +416,40 @@ fn normal_path(path: &Path) -> String {
 
 /// Every path this computer is configured to use as a shared file or mirror,
 /// in the form [`normal_path`] compares.
+/// The file of format 9 beside each one (`<nome>-formato9.ponte`) is in use
+/// too.
 fn configured_set(paths: &[String]) -> BTreeSet<String> {
-    paths.iter().map(|p| normal_path(Path::new(p))).collect()
+    paths
+        .iter()
+        .flat_map(|p| {
+            let path = Path::new(p);
+            [
+                normal_path(path),
+                normal_path(&crate::sharedfolder::nine_path(path)),
+            ]
+        })
+        .collect()
 }
 
-/// The lineage of the library the shared file at `real` belongs to.
+/// The lineage of the library the shared file at `real` belongs to (read
+/// from the file of format 9 beside it when the name holds no file).
 fn lineage_of(real: &Path) -> Option<String> {
-    crate::sharedfolder::read_header(real)
-        .ok()
-        .flatten()
+    [real.to_path_buf(), crate::sharedfolder::nine_path(real)]
+        .iter()
+        .find_map(|path| crate::sharedfolder::read_header(path).ok().flatten())
         .map(|header| header.lineage)
+}
+
+/// The file that holds the library for the configured path `real`: since
+/// the format 9, the file `<nome>-formato9.ponte` beside it (the name itself
+/// then holds only a small stub that points to it); before it, `real`.
+fn live_file(real: &Path) -> PathBuf {
+    let nine = crate::sharedfolder::nine_path(real);
+    if std::fs::metadata(&nine).is_ok_and(|m| m.is_file()) {
+        nine
+    } else {
+        real.to_path_buf()
+    }
 }
 
 /// The checks that need nothing from the content: not a path this computer
@@ -469,15 +493,19 @@ fn scan_one(
 ) -> FolderScan {
     let mut out = FolderScan {
         path: real.to_path_buf(),
-        size: std::fs::metadata(real)
+        // The size of the file that holds the library (the one of format 9
+        // once the folder moved to it, never its small stub).
+        size: std::fs::metadata(live_file(real))
             .ok()
             .filter(|m| m.is_file())
             .map(|m| m.len()),
         ..FolderScan::default()
     };
     let expected_lineage = lineage_of(real);
-    let (Some(real_name), Some(folder)) = (
+    let nine = crate::sharedfolder::nine_path(real);
+    let (Some(real_name), Some(nine_name), Some(folder)) = (
         real.file_name().and_then(|n| n.to_str()),
+        nine.file_name().and_then(|n| n.to_str()),
         real.parent().filter(|p| !p.as_os_str().is_empty()),
     ) else {
         return out;
@@ -487,7 +515,12 @@ fn scan_one(
     };
     for entry in entries.flatten().take(MAX_ENTRIES) {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(kind) = classify(real_name, &name) else {
+        // A copy of the old name or of the file of format 9 beside it; the
+        // file of format 9 itself is the library, never a copy.
+        if name.eq_ignore_ascii_case(nine_name) {
+            continue;
+        }
+        let Some(kind) = classify(nine_name, &name).or_else(|| classify(real_name, &name)) else {
             continue;
         };
         let path = entry.path();
@@ -996,6 +1029,69 @@ mod tests {
         // Everything is still there: listing deletes nothing.
         assert!(aside.exists());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 6);
+    }
+
+    /// Since the format 9 (0.52.0) the configured name holds only a small
+    /// stub and the library lives in `<nome>-formato9.ponte` beside it: the
+    /// size is that file's, the file itself is never a copy, the copies the
+    /// cloud makes of it are warned about, and an old copy of it kept aside
+    /// is offered like the ones of the old name. The stub is in use too.
+    #[test]
+    fn the_file_of_format_9_is_measured_and_its_copies_are_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join(REAL);
+        let nine = crate::sharedfolder::nine_path(&real);
+        assert_eq!(nine, dir.path().join("ponte-sync-formato9.ponte"));
+        sync_file(&real, LIBRARY, b"stub");
+        sync_file(&nine, LIBRARY, &[7_u8; 5000]);
+        sync_file(
+            &dir.path().join("ponte-sync-formato9 (1).ponte"),
+            LIBRARY,
+            b"y",
+        );
+        sync_file(
+            &dir.path().join("Cópia de ponte-sync-formato9.ponte"),
+            LIBRARY,
+            b"y",
+        );
+        sync_file(&dir.path().join("ponte-sync (1).ponte"), LIBRARY, b"z");
+        let aside = crate::sharedfolder::keep_aside(&nine).unwrap();
+        sync_file(&nine, LIBRARY, &[8_u8; 5000]);
+        let memo = HashMemo::default();
+        let found = scan_all(&paths(&[&real]), later(), &memo).pop().unwrap();
+        assert_eq!(found.path, real, "the card names the configured file");
+        assert_eq!(
+            found.size,
+            Some(std::fs::metadata(&nine).unwrap().len()),
+            "the size is the library's, not the stub's"
+        );
+        let names: Vec<&str> = found
+            .conflict_copies
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Cópia de ponte-sync-formato9.ponte",
+                "ponte-sync (1).ponte",
+                "ponte-sync-formato9 (1).ponte",
+            ]
+        );
+        assert_eq!(found.old_archives.len(), 1, "{found:?}");
+        assert_eq!(found.old_archives[0].path, aside);
+        assert!(found.unrecognised.is_empty(), "{found:?}");
+        // The file of format 9 is a path in use: never offered for deletion,
+        // even when named like a kept copy by hand.
+        assert!(configured_set(&paths(&[&real])).contains(&normal_path(&nine)));
+        // A folder still at the old format: the old name is measured.
+        let old = tempfile::tempdir().unwrap();
+        let real8 = old.path().join(REAL);
+        sync_file(&real8, LIBRARY, &[1_u8; 300]);
+        let found8 = scan_all(&paths(&[&real8]), SystemTime::now(), &memo)
+            .pop()
+            .unwrap();
+        assert_eq!(found8.size, Some(std::fs::metadata(&real8).unwrap().len()));
     }
 
     #[test]
