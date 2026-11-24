@@ -5521,7 +5521,7 @@ impl SaiopPanel {
         } else if close_clicked {
             self.close_ficha();
         } else if revert_clicked {
-            self.editor = self.saved_snapshot.clone();
+            self.revert(store);
         } else if create_task_clicked {
             let title = if self.new_task_title.trim().is_empty() {
                 let what = if ed.reference_raw.is_empty() {
@@ -5539,7 +5539,7 @@ impl SaiopPanel {
             };
             // Unsaved edits of the ficha are saved first; they are never discarded.
             let saved_first = if self.dirty() {
-                match store.save_saiop_attendance(&ed, self.base_version) {
+                match self.save_editor(store, &ed) {
                     Ok(_) => true,
                     Err(e) => {
                         self.set_notice(format!("Não foi possível salvar o atendimento antes de criar a tarefa: {e}"), true);
@@ -5591,12 +5591,60 @@ impl SaiopPanel {
         }
     }
 
+    /// Writes `ed` on the version the ficha read. Refused as a simultaneous
+    /// edit while the atendimento saved now is exactly what the ficha read,
+    /// only its version moved (nothing of anyone would be lost): it is then
+    /// written on the current version. A real change elsewhere stays a
+    /// refusal, and the typing stays in the ficha.
+    fn save_editor(&mut self, store: &mut Store, ed: &SaiopAttendance) -> Result<i64> {
+        let first = store.save_saiop_attendance(ed, self.base_version);
+        let Err(error) = &first else {
+            return first;
+        };
+        if ed.id <= 0 || !format!("{error:#}").contains("Conflito de edição simultânea") {
+            return first;
+        }
+        let current = store
+            .list_saiop_attendances()
+            .ok()
+            .and_then(|list| list.into_iter().find(|a| a.id == ed.id));
+        if current.is_none() || current != self.saved_snapshot {
+            return first;
+        }
+        let version = store.item_version("saiop", ed.id)?.version;
+        self.base_version = Some(version);
+        store.save_saiop_attendance(ed, Some(version))
+    }
+
+    /// "Descartar": the ficha shows the atendimento as it is saved NOW (and
+    /// on its current version), not as it was when the ficha read it.
+    fn revert(&mut self, store: &Store) {
+        let current = self
+            .editor
+            .as_ref()
+            .map(|e| e.id)
+            .filter(|id| *id > 0)
+            .and_then(|id| {
+                store
+                    .list_saiop_attendances()
+                    .ok()
+                    .and_then(|list| list.into_iter().find(|a| a.id == id))
+            });
+        match current {
+            Some(att) => {
+                self.load_into_editor(store, att);
+                self.focus_ficha = false;
+            }
+            None => self.editor = self.saved_snapshot.clone(),
+        }
+    }
+
     /// "Salvar": writes the ficha's atendimento and reloads it as saved.
     fn save_current(&mut self, store: &mut Store) {
         let Some(ed) = self.editor.clone() else {
             return;
         };
-        match store.save_saiop_attendance(&ed, self.base_version) {
+        match self.save_editor(store, &ed) {
             Ok(saved_id) => {
                 if let Ok(updated_list) = store.list_saiop_attendances() {
                     if let Some(reloaded) = updated_list.into_iter().find(|a| a.id == saved_id) {
@@ -7660,6 +7708,52 @@ mod follow_up_panel_tests {
         store
             .save_saiop_attendance(&edited, panel.base_version)
             .unwrap();
+    }
+
+    /// Only the version moved (an exchange rewrote the row with the same
+    /// content): "Salvar" goes through. A real change elsewhere is refused,
+    /// keeps the typing, and "Descartar" shows what is saved now.
+    #[test]
+    fn a_moved_version_is_no_conflict_and_a_real_one_is_never_overwritten() {
+        let (_dir, mut store, id) = setup();
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&store, find(&store, id));
+        let bump = |store: &mut Store| {
+            let tx = store.conn.transaction().unwrap();
+            crate::intranet::record_mutation(&tx, "CARLO", "saiop", id, None, "teste", None, "")
+                .unwrap();
+            tx.commit().unwrap();
+        };
+        bump(&mut store);
+        panel.editor.as_mut().unwrap().subject = "Digitado".into();
+        panel.save_current(&mut store);
+        assert_eq!(find(&store, id).subject, "Digitado");
+        assert!(!panel.dirty());
+
+        // A real change elsewhere.
+        let mut there = find(&store, id);
+        there.assignee = "Ana".into();
+        let v = store.item_version("saiop", id).unwrap().version;
+        store.save_saiop_attendance(&there, Some(v)).unwrap();
+        panel.editor.as_mut().unwrap().subject = "Outro".into();
+        panel.save_current(&mut store);
+        assert_eq!(
+            find(&store, id).subject,
+            "Digitado",
+            "nothing written over it"
+        );
+        assert_eq!(find(&store, id).assignee, "Ana");
+        assert!(panel.dirty(), "the typing stays");
+        panel.revert(&store);
+        assert!(!panel.dirty());
+        assert_eq!(panel.editor.as_ref().unwrap().assignee, "Ana");
+        panel.editor.as_mut().unwrap().subject = "Depois".into();
+        panel.save_current(&mut store);
+        let now = find(&store, id);
+        assert_eq!(
+            (now.subject.as_str(), now.assignee.as_str()),
+            ("Depois", "Ana")
+        );
     }
 
     #[test]

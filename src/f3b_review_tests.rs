@@ -243,6 +243,7 @@ fn f3_0b_r2_host_left_at_21_keeps_the_receipt_of_an_older_ponte() {
                 mutation_uid: uid.clone(),
                 idents: Vec::new(),
                 refs: None,
+                leaves: None,
             },
         )
     };

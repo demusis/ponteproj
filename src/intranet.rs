@@ -983,6 +983,89 @@ pub struct OutboxEntry {
     /// before it ran (level 2). `None`: queued by an older Ponte (legacy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refs: Option<crate::idrefs::Refs>,
+    /// The version the change leaves its item at here, when that is more
+    /// than one past the version it expects: several saves of the same item
+    /// merged into this one change (each moved the version here by one), and
+    /// its replay must leave the item at the same version, never at a lower
+    /// one the screens of this computer have already seen. `None`: the
+    /// replay's own step (one past the expected version).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leaves: Option<i64>,
+}
+
+/// The version a queued change leaves its item at on the computer that
+/// made it: its `leaves`, or one past the version it expects.
+fn leaves_of(mutation: &IntranetMutation, leaves: Option<i64>) -> Option<i64> {
+    leaves.or_else(|| expected_version_of(mutation).map(|v| v + 1))
+}
+
+/// The kind of the version an edit merged by item checks, as
+/// [`record_mutation`] names it (the prefix of [`mutation_target_key`]).
+fn version_kind(mutation: &IntranetMutation) -> Option<String> {
+    mutation_target_key(mutation).and_then(|key| key.split(':').next().map(str::to_owned))
+}
+
+/// The version a replay must leave its item at (see [`OutboxEntry::leaves`]).
+struct LeavesFloor {
+    kind: String,
+    expected: i64,
+    leaves: i64,
+}
+
+thread_local! {
+    /// Set only while a queued change with [`OutboxEntry::leaves`] is
+    /// replayed: [`record_mutation`] of its item (same kind, the version it
+    /// expects found) takes it.
+    static REPLAY_LEAVES: std::cell::RefCell<Option<LeavesFloor>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `replay` (the replay of a queued change) so that the change leaves
+/// its item at `leaves` when it is applied as made: the same version the
+/// computer that made it already shows. A change that does not apply (a
+/// conflict) takes nothing, and nothing outlives the call.
+pub(crate) fn replaying_to<T>(
+    mutation: &IntranetMutation,
+    leaves: Option<i64>,
+    replay: impl FnOnce() -> T,
+) -> T {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            REPLAY_LEAVES.with(|cell| cell.borrow_mut().take());
+        }
+    }
+    let floor = match (
+        version_kind(mutation),
+        expected_version_of(mutation),
+        leaves,
+    ) {
+        (Some(kind), Some(expected), Some(leaves)) if leaves > expected + 1 => Some(LeavesFloor {
+            kind,
+            expected,
+            leaves,
+        }),
+        _ => None,
+    };
+    let _clear = Clear;
+    REPLAY_LEAVES.with(|cell| *cell.borrow_mut() = floor);
+    replay()
+}
+
+/// The version the replay of a queued change must leave this item at, when
+/// the change carries one (see [`replaying_to`]); taken once.
+fn replay_floor(item_kind: &str, expected_version: Option<i64>) -> Option<i64> {
+    REPLAY_LEAVES.with(|cell| {
+        let mut floor = cell.borrow_mut();
+        let matches = floor
+            .as_ref()
+            .is_some_and(|f| f.kind == item_kind && Some(f.expected) == expected_version);
+        if matches {
+            floor.take().map(|f| f.leaves)
+        } else {
+            None
+        }
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1248,6 +1331,11 @@ pub enum RpcRequest {
         /// (level 2); `None` from a change of an older Ponte.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         refs: Option<crate::idrefs::Refs>,
+        /// The version the change leaves its item at on the sender, when
+        /// several of its saves were merged into it (see
+        /// [`OutboxEntry::leaves`]); `None` from a Ponte that does not send it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        leaves: Option<i64>,
     },
     /// Whether the change sent under this identity was applied (level 2,
     /// adendo §6): asked before a change that may already be there is
@@ -2177,6 +2265,18 @@ pub(crate) fn record_mutation(
             } else {
                 &current.updated_by
             };
+            // The same person uses the same name on every computer and on
+            // the phone: "by CARLO" said to CARLO only makes sense as where.
+            if !current.updated_by.trim().is_empty()
+                && current.updated_by.trim().eq_ignore_ascii_case(actor.trim())
+            {
+                bail!(
+                    "Conflito de edição simultânea: este registro já foi atualizado com o seu nome ({}) em outro computador, no celular ou em outra tela (versão #{}, em {}). Atualize ou cancele sua edição para revisar os dados atuais antes de salvar.",
+                    who,
+                    current.version,
+                    crate::labels::datetime(&current.updated_at)
+                );
+            }
             bail!(
                 "Conflito de edição simultânea: este registro já foi atualizado por {} (versão #{}). Atualize ou cancele sua edição para revisar os dados atuais antes de salvar.",
                 who,
@@ -2184,7 +2284,13 @@ pub(crate) fn record_mutation(
             );
         }
     }
-    let next_version = current.version + 1;
+    // The replay of several saves merged into one change leaves the item
+    // where they left it on the computer that made them.
+    let next_version = (current.version + 1).max(
+        replay_floor(item_kind, expected_version)
+            .filter(|_| expected_version == Some(current.version))
+            .unwrap_or(0),
+    );
     let timestamp = now_iso();
     let actor_clean = if actor.trim().is_empty() {
         "Integrante"
@@ -2387,6 +2493,7 @@ pub(crate) fn queue_import_locally(
                 attempted: false,
                 idents,
                 refs,
+                leaves: None,
             },
         )?;
     }
@@ -2436,6 +2543,7 @@ pub(crate) fn queue_attachment_locally(
             attempted: false,
             idents,
             refs,
+            leaves: None,
         },
     )?;
     Ok(uid)
@@ -4788,6 +4896,9 @@ impl Store {
                         // have here: the proof of what depends on them.
                         idents: sent.idents.clone(),
                         refs: sent.refs.clone().map(crate::idrefs::Refs::without_base),
+                        // Several saves merged into it: the main computer
+                        // leaves the item at the version they left here.
+                        leaves: sent.leaves,
                     },
                     &mut reached,
                 ) {
@@ -6064,6 +6175,7 @@ impl Store {
                     idents: entry.idents.clone(),
                     refs: entry.refs.clone(),
                     legacy: entry.refs.is_none(),
+                    leaves: entry.leaves,
                 });
                 processed_outbox.push((entry.id, entry.uid.clone()));
             }
@@ -6367,6 +6479,7 @@ impl Store {
                         attempted: false,
                         idents: Vec::new(),
                         refs: entry.refs.clone(),
+                        leaves: None,
                     };
                     let mut conflict = conflict_for(
                         &as_entry,
@@ -6429,14 +6542,18 @@ impl Store {
                 let outcome = match &remapped {
                     Ok(mutation) => {
                         plain_edit_conflict(mutation, base.as_ref(), &store).and_then(|_| {
-                            match store.execute_carrying(
-                                &entry.actor,
-                                mutation.clone(),
-                                &entry.idents,
-                                refs.as_ref()
-                                    .and_then(crate::idrefs::ManualTarget::of)
-                                    .as_ref(),
-                            ) {
+                            // Saves merged into it leave the item where
+                            // they left it where they were made.
+                            match replaying_to(mutation, entry.leaves, || {
+                                store.execute_carrying(
+                                    &entry.actor,
+                                    mutation.clone(),
+                                    &entry.idents,
+                                    refs.as_ref()
+                                        .and_then(crate::idrefs::ManualTarget::of)
+                                        .as_ref(),
+                                )
+                            }) {
                                 Ok(crate::idents::Carried::Applied(reply, _)) => Ok(reply),
                                 Ok(crate::idents::Carried::Refused(error)) => {
                                     Err(error.to_string())
@@ -6528,6 +6645,7 @@ impl Store {
                             attempted: false,
                             idents: Vec::new(),
                             refs,
+                            leaves: None,
                         };
                         let mut conflict = conflict_for(
                             &as_entry,
@@ -6645,6 +6763,7 @@ impl Store {
                                 idents: Vec::new(),
                                 refs: entry.refs.clone().map(crate::idrefs::Refs::without_base),
                                 legacy: entry.refs.is_none(),
+                                leaves: None,
                             });
                         }
                         applied.insert(entry.uid.clone());
@@ -6732,14 +6851,18 @@ impl Store {
                         plain_edit_conflict(mutation, base.as_ref(), &store).and_then(|_| {
                             // The rows it inserts there take the identities
                             // it gave its rows here.
-                            match store.execute_carrying(
-                                &entry.actor,
-                                mutation.clone(),
-                                &entry.idents,
-                                refs.as_ref()
-                                    .and_then(crate::idrefs::ManualTarget::of)
-                                    .as_ref(),
-                            ) {
+                            // Saves merged into it leave the item where
+                            // they left it where they were made.
+                            match replaying_to(mutation, entry.leaves, || {
+                                store.execute_carrying(
+                                    &entry.actor,
+                                    mutation.clone(),
+                                    &entry.idents,
+                                    refs.as_ref()
+                                        .and_then(crate::idrefs::ManualTarget::of)
+                                        .as_ref(),
+                                )
+                            }) {
                                 Ok(crate::idents::Carried::Applied(reply, _)) => Ok(reply),
                                 Ok(crate::idents::Carried::Refused(error)) => {
                                     Err(error.to_string())
@@ -6790,6 +6913,7 @@ impl Store {
                             // legacy entry stays legacy above `refs_since`.
                             legacy: refs.is_none(),
                             refs: refs.map(|refs| framed(refs, before)),
+                            leaves: entry.leaves,
                         });
                     }
                     (remapped, outcome) => {
@@ -7689,9 +7813,9 @@ impl Store {
             let outcome = match &remapped {
                 Ok(mutation) => plain_edit_conflict(mutation, entry.base.as_ref(), &*store)
                     .and_then(|_| {
-                        let logged = match store
-                            .run_logged(|s| s.execute_mutation(&entry.actor, mutation.clone()))
-                        {
+                        let logged = match replaying_to(mutation, entry.leaves, || {
+                            store.run_logged(|s| s.execute_mutation(&entry.actor, mutation.clone()))
+                        }) {
                             Ok(logged) => logged,
                             Err(error) => {
                                 // The log did not open: nothing was applied.
@@ -7771,6 +7895,7 @@ impl Store {
                         attempted: false,
                         idents: Vec::new(),
                         refs: entry.refs.clone(),
+                        leaves: None,
                     };
                     let content = old_change_content(&entry.mutation);
                     let mut reason = format!(
@@ -8017,6 +8142,7 @@ impl Store {
                     mutation_uid: uid.clone(),
                     idents: Vec::new(),
                     refs: refs.clone(),
+                    leaves: None,
                 },
                 &mut reached,
             )
@@ -8048,6 +8174,7 @@ impl Store {
                         idents: Vec::new(),
                         // The proofs captured before the send.
                         refs,
+                        leaves: None,
                     },
                 )?;
                 tx.commit()?;
@@ -8116,6 +8243,7 @@ impl Store {
                     attempted: false,
                     idents: Vec::new(),
                     refs,
+                    leaves: None,
                 };
                 let mut conflict = build_sync_conflict(&made, &message, None, Named::InCopy);
                 conflict.unresolved = true;
@@ -8727,9 +8855,9 @@ impl Store {
                     {
                         *expected_version = match &prev.mutation {
                             IntranetMutation::SaveTask {
-                                expected_version: Some(v),
+                                expected_version: Some(_),
                                 ..
-                            } => Some(v + 1),
+                            } => leaves_of(&prev.mutation, prev.leaves),
                             _ => None,
                         };
                     }
@@ -8744,7 +8872,18 @@ impl Store {
                     )?;
                     return Ok(());
                 }
+                // The version this save leaves the item at here: one past
+                // the version it was made on. Its replay, merged with the
+                // earlier saves, must leave the item there too, or the
+                // exchange would bring this library's version back below
+                // what its screens hold (a false "edição simultânea" and,
+                // once the number is reached again, an edit of another
+                // computer saved over without a question).
+                let made_on = expected_version_of(&mutation);
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
+                let leaves = made_on.map(|v| v + 1).filter(|&leaves| {
+                    expected_version_of(&coalesced).is_some_and(|e| leaves > e + 1)
+                });
                 // The proofs follow what is kept: the new mutation's, and the
                 // base's of the entry whose base is kept.
                 let merged_refs = refs.map(|refs| crate::idrefs::Refs {
@@ -8777,6 +8916,7 @@ impl Store {
                         idents
                     },
                     refs: merged_refs,
+                    leaves,
                 };
                 let payload = seal(&serde_json::to_vec(&updated)?)?;
                 if must_move {
@@ -8800,10 +8940,7 @@ impl Store {
             // applies it once, whatever edits were merged into it here, so
             // this one expects the version that entry leaves, never the
             // local one (review F3.0a1, finding 4).
-            if let Some(after) = last
-                .and_then(|prev| expected_version_of(&prev.mutation))
-                .map(|v| v + 1)
-            {
+            if let Some(after) = last.and_then(|prev| leaves_of(&prev.mutation, prev.leaves)) {
                 if let Some(expected) = expected_version_mut(&mut mutation) {
                     if expected.is_some() {
                         *expected = Some(after);
@@ -8839,6 +8976,7 @@ impl Store {
             attempted,
             idents,
             refs,
+            leaves: None,
         };
         insert_outbox_row(&self.conn, &entry)
     }
@@ -13290,6 +13428,7 @@ fn process_rpc_at(
             mutation_uid,
             idents,
             refs,
+            leaves,
         } => {
             ensure!(
                 !actor.trim().is_empty()
@@ -13348,8 +13487,9 @@ fn process_rpc_at(
             if durable {
                 crate::idents::open_carry(&store.conn, &mutation_uid, &idents)?;
             }
-            let logged =
-                store.run_logged(|store| store.execute_bound(&actor, mutation, target.as_ref()));
+            let logged = replaying_to(&applied, leaves, || {
+                store.run_logged(|store| store.execute_bound(&actor, mutation, target.as_ref()))
+            });
             let carry_closed = crate::idents::close_carry(&store.conn);
             let logged = logged?;
             let reply = match logged.result {
@@ -18353,6 +18493,7 @@ anual 05-02 Recesso
                 idents: Vec::new(),
                 refs: None,
                 legacy: false,
+                leaves: None,
             });
         let h = &copy.header;
         let req = crate::sharedfolder::WriteRequest {
@@ -20046,6 +20187,7 @@ mod resources_sync_tests {
             mutation: before[0].mutation.clone(),
             idents: Vec::new(),
             refs: None,
+            leaves: None,
         };
         assert!(matches!(
             send_rpc_classified(&cfg, &request),
@@ -20152,6 +20294,7 @@ mod resources_sync_tests {
             },
             idents: Vec::new(),
             refs: None,
+            leaves: None,
         };
         assert!(
             matches!(send_rpc_classified(&cfg, &request), Err(RpcError::Rejected(message)) if message.contains("Atualize o Ponte"))
@@ -20250,6 +20393,7 @@ mod resources_sync_tests {
                     mutation,
                     idents: Vec::new(),
                     refs: None,
+                    leaves: None,
                 },
             );
             assert!(
@@ -20273,6 +20417,7 @@ mod resources_sync_tests {
                 },
                 idents: Vec::new(),
                 refs: None,
+                leaves: None,
             },
         );
         assert!(matches!(in_project, Err(RpcError::Rejected(_))));
@@ -20290,6 +20435,7 @@ mod resources_sync_tests {
                 },
                 idents: Vec::new(),
                 refs: None,
+                leaves: None,
             },
         );
         assert!(matches!(ordinary, Err(RpcError::Rejected(_))));
@@ -20393,6 +20539,7 @@ mod resources_sync_tests {
                 mutation,
                 idents: Vec::new(),
                 refs: None,
+                leaves: None,
             },
         );
         assert!(
@@ -20414,6 +20561,7 @@ mod resources_sync_tests {
                 },
                 idents: Vec::new(),
                 refs: None,
+                leaves: None,
             },
         );
         // Since F2b, what an older main computer cannot read waits too
@@ -20529,6 +20677,7 @@ mod resources_sync_tests {
                     mutation,
                     idents: Vec::new(),
                     refs: None,
+                    leaves: None,
                 },
             )
         };
@@ -21211,6 +21360,7 @@ mod host_history_tests {
                 mutation_uid: String::new(),
                 idents: Vec::new(),
                 refs: None,
+                leaves: None,
             },
         )
         .unwrap();
@@ -21741,6 +21891,7 @@ Connection: close
             mutation_uid: "cccccccc-1".into(),
             idents: Vec::new(),
             refs: None,
+            leaves: None,
         };
         let created_of = |response: RpcResponse| match response {
             RpcResponse::Mutated {
@@ -21924,6 +22075,7 @@ Connection: close
                 mutation_uid: uid.into(),
                 idents: Vec::new(),
                 refs: None,
+                leaves: None,
             }
         };
         let id_of = |response: RpcResponse| match response {

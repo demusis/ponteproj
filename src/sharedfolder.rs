@@ -173,6 +173,12 @@ pub struct JournalEntry {
     /// read as damaged (F3.0a2).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub legacy: bool,
+    /// The version the change leaves its item at, when several saves were
+    /// merged into it (see [`crate::intranet::OutboxEntry::leaves`]): every
+    /// replay of it leaves the item there too. A Ponte that does not know
+    /// the field reads the change as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leaves: Option<i64>,
 }
 
 /// Encrypted part of the file.

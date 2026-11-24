@@ -6364,6 +6364,7 @@ mod tests {
                 idents: Vec::new(),
                 refs: None,
                 legacy: false,
+                leaves: None,
             });
             ponteproj::sharedfolder::write(
                 path,
@@ -6558,6 +6559,7 @@ mod tests {
                     idents: Vec::new(),
                     refs: None,
                     legacy: false,
+                    leaves: None,
                 });
             }
             let path = dir.0.join(format!("pendente-novo-{n}.ponte"));
@@ -6654,6 +6656,7 @@ dia 2026-12-26 Recesso do celular
             idents: Vec::new(),
             refs: None,
             legacy: false,
+            leaves: None,
         });
         let pending = dir.0.join("pendente.ponte");
         ponteproj::sharedfolder::write(

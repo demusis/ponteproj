@@ -74,7 +74,8 @@ fn pair() -> Pair {
     sync(&mut a);
     sync(&mut a);
     let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
-    b.save_intranet_config(&folder_config(OWNER, files)).unwrap();
+    b.save_intranet_config(&folder_config(OWNER, files))
+        .unwrap();
     sync(&mut b);
     sync(&mut a);
     assert_eq!(task_version(&a, task), task_version(&b, task));
@@ -170,10 +171,9 @@ fn the_note_of_a_document_and_a_project_keep_their_version_too() {
         p.a.save_note_checked(doc, note, Some(base)).unwrap();
         base = p.a.item_version("note", doc).unwrap().version;
     }
-    let project = p
-        .a
-        .save_project(&crate::projects::Project::new("Projeto X"))
-        .unwrap();
+    let project =
+        p.a.save_project(&crate::projects::Project::new("Projeto X"))
+            .unwrap();
     sync(&mut p.a);
     let mut pbase = p.a.project_version(&project.uid).unwrap();
     let mut edited = p.a.get_project(&project.uid).unwrap().unwrap();
@@ -223,7 +223,10 @@ fn salvar_e_continuar_goes_through_when_only_the_version_changed() {
         "the task did not change: first try {first:?}, retry {retry:?}"
     );
     assert!(!panel.dirty());
-    assert_eq!(get(&p.a, id).title, "BNBO: solicitar o cruzamento — revisado");
+    assert_eq!(
+        get(&p.a, id).title,
+        "BNBO: solicitar o cruzamento — revisado"
+    );
 }
 
 /// (b) The same, through the real path: two saves, an exchange, and then
@@ -268,7 +271,10 @@ fn a_real_edit_elsewhere_is_never_overwritten_and_discarding_shows_it() {
     sync(&mut p.b);
     sync(&mut p.a);
     let error = panel.save_draft(&mut p.a).unwrap_err();
-    assert!(error.contains("Conflito") || error.contains("alterada"), "{error}");
+    assert!(
+        error.contains("Conflito") || error.contains("alterada"),
+        "{error}"
+    );
     assert!(panel.dirty(), "the typing stays");
     assert_eq!(get(&p.a, id).due_date, "2026-12-01");
     assert_eq!(get(&p.a, id).title, TITLE);
@@ -282,4 +288,214 @@ fn a_real_edit_elsewhere_is_never_overwritten_and_discarding_shows_it() {
     let now = get(&p.a, id);
     assert_eq!(now.due_date, "2026-12-01", "the other edit survives");
     assert_eq!(now.title, "de novo");
+}
+
+/// A real edit elsewhere and the person's typing in other fields: "Juntar
+/// as duas versões" brings what changed there into the form, keeps what
+/// was typed, leaves it unsaved for review, and the save keeps both. The
+/// sentence says where it came from in words that make sense when the
+/// name is the person's own.
+#[test]
+fn juntar_brings_the_other_edit_into_the_form_and_keeps_the_typing() {
+    let mut p = pair();
+    let id = p.task;
+    let mut panel = TaskPanel::default();
+    assert!(panel.open_task(&get(&p.a, id), &p.a));
+    panel.set_draft_title("o título que eu digitei");
+    let mut there = get(&p.b, id);
+    there.due_date = "2026-12-01".into();
+    there.notes = "anotado no outro computador".into();
+    let v = task_version(&p.b, id);
+    p.b.save_task_checked(&there, Some(v)).unwrap();
+    sync(&mut p.b);
+    sync(&mut p.a);
+
+    let error = panel.save_draft(&mut p.a).unwrap_err();
+    assert!(
+        error.contains("com o seu nome (CARLO) em outro computador, no celular ou em outra tela"),
+        "{error}"
+    );
+    assert!(
+        error.contains("Prazo") && error.contains("Observações"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("Título"),
+        "the title did not change there: {error}"
+    );
+    let conflict = panel.edit_conflict().expect("the version found is kept");
+    assert_eq!(conflict.current.due_date, "2026-12-01");
+    // Saving again before choosing writes nothing over the other edit.
+    assert!(panel.save_draft(&mut p.a).is_err());
+    assert_eq!(get(&p.a, id).title, TITLE);
+
+    assert!(panel.merge_conflict());
+    assert!(panel.edit_conflict().is_none());
+    assert!(
+        panel.dirty(),
+        "joined, it waits for the person to review and save"
+    );
+    assert_eq!(
+        panel.editing_title().as_deref(),
+        Some("o título que eu digitei")
+    );
+    panel
+        .save_draft(&mut p.a)
+        .expect("on the current version now");
+    let now = get(&p.a, id);
+    assert_eq!(now.title, "o título que eu digitei");
+    assert_eq!(now.due_date, "2026-12-01");
+    assert_eq!(now.notes, "anotado no outro computador");
+    sync(&mut p.a);
+    sync(&mut p.b);
+    let on_b = get(&p.b, id);
+    assert_eq!(on_b.title, "o título que eu digitei");
+    assert_eq!(on_b.due_date, "2026-12-01");
+}
+
+/// The same field changed on both sides: the join keeps the person's
+/// value and names the other one, so nothing is lost unseen.
+#[test]
+fn a_field_changed_on_both_sides_is_named_with_the_other_value() {
+    let mut p = pair();
+    let id = p.task;
+    let mut panel = TaskPanel::default();
+    assert!(panel.open_task(&get(&p.a, id), &p.a));
+    panel.set_draft_title("o meu título");
+    let mut there = get(&p.b, id);
+    there.title = "o título de lá".into();
+    let v = task_version(&p.b, id);
+    p.b.save_task_checked(&there, Some(v)).unwrap();
+    sync(&mut p.b);
+    sync(&mut p.a);
+    assert!(panel.save_draft(&mut p.a).is_err());
+    assert!(panel.merge_conflict());
+    assert_eq!(panel.editing_title().as_deref(), Some("o meu título"));
+    // The notice of the join says what the other side had.
+    let notice = panel.message_for_test();
+    assert!(
+        notice.contains("Título (lá estava “o título de lá”)"),
+        "{notice}"
+    );
+    panel.save_draft(&mut p.a).unwrap();
+    assert_eq!(get(&p.a, id).title, "o meu título");
+}
+
+/// "Ficar com a versão de lá" (and "Descartar as minhas" in the question)
+/// shows the task as saved now; the typing goes only by that choice.
+#[test]
+fn ficar_com_a_versao_de_la_shows_the_saved_task() {
+    let mut p = pair();
+    let id = p.task;
+    let mut panel = TaskPanel::default();
+    assert!(panel.open_task(&get(&p.a, id), &p.a));
+    panel.set_draft_title("digitado");
+    let mut there = get(&p.b, id);
+    there.due_date = "2026-12-01".into();
+    let v = task_version(&p.b, id);
+    p.b.save_task_checked(&there, Some(v)).unwrap();
+    sync(&mut p.b);
+    sync(&mut p.a);
+    assert!(panel.save_draft(&mut p.a).is_err());
+    assert!(panel.take_theirs());
+    assert!(!panel.dirty());
+    assert!(panel.edit_conflict().is_none());
+    panel.set_draft_title("agora sim");
+    panel.save_draft(&mut p.a).unwrap();
+    let now = get(&p.a, id);
+    assert_eq!(
+        (now.title.as_str(), now.due_date.as_str()),
+        ("agora sim", "2026-12-01")
+    );
+}
+
+/// The refusal of the library itself (what projects, notes and the other
+/// screens show) says where the edit came from when the name is the
+/// person's own, and keeps naming another member as before.
+#[test]
+fn the_refusal_names_the_place_when_the_author_is_the_person_itself() {
+    let mut p = pair();
+    let id = p.task;
+    let base = task_version(&p.a, id);
+    bump_without_change(&mut p.a, id);
+    let mut t = get(&p.a, id);
+    t.notes = "x".into();
+    let own =
+        p.a.save_task_checked(&t, Some(base))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        own.starts_with("Conflito de edição simultânea: este registro já foi atualizado com o seu nome (CARLO) em outro computador, no celular ou em outra tela (versão #"),
+        "{own}"
+    );
+    let tx = p.a.conn.transaction().unwrap();
+    crate::intranet::record_mutation(&tx, "Ana", "task", id, None, "teste", None, "").unwrap();
+    tx.commit().unwrap();
+    let other =
+        p.a.save_task_checked(&t, Some(base + 1))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        other.starts_with(
+            "Conflito de edição simultânea: este registro já foi atualizado por Ana (versão #"
+        ),
+        "{other}"
+    );
+}
+
+/// Main computer and a computer of the same person, offline in between:
+/// two saves queued there are merged into one change, and the main
+/// computer leaves the task at the version they left there.
+#[test]
+fn the_main_computer_leaves_merged_saves_at_the_senders_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let host_db = dir.path().join("host.sqlite3");
+    let token = crate::intranet::generate_token();
+    let mut host = Store::open(&host_db).unwrap();
+    host.save_intranet_config(&IntranetConfig {
+        mode: IntranetMode::Host,
+        member_name: OWNER.into(),
+        bind_addr: "127.0.0.1:0".into(),
+        cabinet_token: token.clone(),
+        ..IntranetConfig::default()
+    })
+    .unwrap();
+    let mut t = Task::blank(None);
+    t.title = TITLE.into();
+    let id = host.save_task(&t).unwrap();
+    let mut server = crate::intranet::HostServer::start(host_db.clone(), "127.0.0.1:0").unwrap();
+    let mut client = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+    client
+        .save_intranet_config(&IntranetConfig {
+            mode: IntranetMode::Client,
+            member_name: OWNER.into(),
+            host_url: format!("http://{}", server.local_addr()),
+            cabinet_token: token,
+            ..IntranetConfig::default()
+        })
+        .unwrap();
+    assert!(client.sync_from_host(false).unwrap());
+    server.stop();
+    let mut base = task_version(&client, id);
+    for notes in ["primeira", "segunda"] {
+        let mut t = get(&client, id);
+        t.notes = notes.into();
+        client.save_task_checked(&t, Some(base)).unwrap();
+        base = task_version(&client, id);
+    }
+    assert_eq!(client.list_offline_outbox().unwrap().len(), 1, "merged");
+    let mut server = crate::intranet::HostServer::start(host_db.clone(), "127.0.0.1:0").unwrap();
+    let mut cfg = client.load_intranet_config().unwrap();
+    cfg.host_url = format!("http://{}", server.local_addr());
+    client.save_intranet_config(&cfg).unwrap();
+    assert!(client.sync_from_host(false).unwrap());
+    assert!(client.list_offline_outbox().unwrap().is_empty());
+    assert_eq!(task_version(&host, id), base);
+    assert_eq!(task_version(&client, id), base);
+    let mut t = get(&client, id);
+    t.notes = "terceira".into();
+    client
+        .save_task_checked(&t, Some(base))
+        .expect("no other edit happened");
+    server.stop();
 }

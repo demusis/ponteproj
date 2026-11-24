@@ -1138,6 +1138,7 @@ mod tests {
             mutation_uid: String::new(),
             idents: Vec::new(),
             refs: None,
+            leaves: None,
         })
         .unwrap();
         json["Mutate"]
@@ -1226,6 +1227,7 @@ mod tests {
                 mutation_uid: String::new(),
                 idents: Vec::new(),
                 refs: None,
+                leaves: None,
             },
         )
         .unwrap();

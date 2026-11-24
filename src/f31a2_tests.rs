@@ -430,6 +430,7 @@ fn f3_1a_a_card_finds_the_record_by_its_identity_in_every_frame() {
             attempted: false,
             idents: Vec::new(),
             refs: None,
+            leaves: None,
         };
         build_sync_conflict(&entry, "motivo", Some(&copy), named).host_summary
     };

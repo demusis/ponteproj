@@ -110,6 +110,7 @@ fn entry(
         idents: Vec::new(),
         refs: None,
         legacy: false,
+        leaves: None,
     }
 }
 
