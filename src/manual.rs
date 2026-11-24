@@ -229,12 +229,11 @@ impl Store {
                 }
             }
         }
-        let receipt = self.import_capture(&capture)?;
-        ensure!(
-            receipt.document_id == id,
-            "O registro editado não corresponde ao documento aberto."
-        );
-        Ok(receipt)
+        // Written only to the record opened, found by its identity inside
+        // the import's transaction, under the number it has then (adendo
+        // §9): never to whatever holds the number by then.
+        let target = crate::idrefs::ManualTarget::here(&self.conn, id)?;
+        self.import_capture_to(&capture, Some(&target))
     }
 }
 

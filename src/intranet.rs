@@ -2312,7 +2312,7 @@ fn insert_outbox_row(conn: &Connection, entry: &OutboxEntry) -> Result<()> {
     Ok(())
 }
 
-/// What `queue_locally` leaves in the queue for an import and then one
+/// What `queue_locally_as` leaves in the queue for an import and then one
 /// `AddAttachment` per file stored (`added`: index in `files`, attachment
 /// id), written inside the caller's transaction: the same entries, in the
 /// same order, with the same content. `capture` is the capture as requested
@@ -2377,7 +2377,7 @@ pub(crate) fn queue_import_locally(
     Ok(())
 }
 
-/// What `queue_locally` leaves in the queue for one `AddAttachment` (the file
+/// What `queue_locally_as` leaves in the queue for one `AddAttachment` (the file
 /// stored as attachment `attachment_id` of document `document_id`), written
 /// inside the caller's transaction: the same entry, with the same content.
 pub(crate) fn queue_attachment_locally(
@@ -3884,15 +3884,26 @@ impl Store {
         actor: &str,
         mutation: IntranetMutation,
     ) -> Result<MutationReply> {
+        self.execute_bound(actor, mutation, None)
+    }
+
+    /// [`Store::execute_mutation`], a numbered manual edit written only to
+    /// the record `target` names (adendo §9 rule 3: every executor).
+    pub(crate) fn execute_bound(
+        &mut self,
+        actor: &str,
+        mutation: IntranetMutation,
+        target: Option<&crate::idrefs::ManualTarget>,
+    ) -> Result<MutationReply> {
         let prev_suppress = self.suppress_remote;
         let prev_actor = std::mem::replace(&mut self.actor_override, actor.trim().to_owned());
         self.suppress_remote = true;
         let result = match mutation {
-            IntranetMutation::ImportCapture { capture } => {
-                self.import_capture(&capture).map(MutationReply::Receipt)
-            }
+            IntranetMutation::ImportCapture { capture } => self
+                .import_capture_to(&capture, target)
+                .map(MutationReply::Receipt),
             IntranetMutation::ImportBundle { capture, files } => self
-                .import_bundle(&capture, &files)
+                .import_bundle_to(&capture, &files, target)
                 .map(MutationReply::Receipt),
             IntranetMutation::SaveNote {
                 document_id,
@@ -4665,19 +4676,18 @@ impl Store {
                         .map(|a| (a as &dyn crate::idrefs::IdentFrame, holds)),
                     (&ids, &*self, host.map(|s| s as &dyn crate::idmap::Frame)),
                 )
-                .and_then(|(mutation, base, refs)| {
-                    // An edit of a manual record is addressed by number: it
-                    // follows the number the main computer gave the record,
-                    // before anything is sent.
-                    crate::renumber::retarget_manual_edit(
-                        mutation,
+                .and_then(|routed| {
+                    // An edit of a manual record goes to the record it names
+                    // (by its number only when it names none: legacy), in
+                    // the main computer's numbers, before anything is sent.
+                    crate::renumber::route_manual_edit(
+                        routed,
+                        entry.refs.as_ref(),
                         &edit_source,
                         &ids,
-                        host_frame
-                            .as_deref()
-                            .map(|s| s as &dyn crate::renumber::Records),
+                        host.map(|s| s as &dyn crate::renumber::Records),
+                        host.map_or("", |s| s.ident_epoch.as_str()),
                     )
-                    .map(|mutation| (mutation, base, refs))
                 });
                 // An edit without a version of its own is not sent over a
                 // newer value the main computer already holds.
@@ -6358,34 +6368,35 @@ impl Store {
                         .refs_since
                         .is_some_and(|since| entry.revision <= since);
                 let before = store.cabinet_revision()?;
+                let epoch_here = crate::idents::origin(&store.conn)?.2.unwrap_or_default();
                 let routed = route_change(
                     (&entry.mutation, entry.base.as_ref()),
                     entry.refs.as_ref().filter(|_| use_refs),
                     legacy,
                     Some((&store.conn, false)),
                     (&ids, &source.payload.snapshot, Some(&store)),
-                );
+                )
+                .and_then(|routed| {
+                    // That copy's own record of the edit says which
+                    // document of its library the edit landed on.
+                    crate::renumber::route_manual_edit(
+                        routed,
+                        entry.refs.as_ref().filter(|_| use_refs),
+                        &edit_source,
+                        &ids,
+                        Some(&store),
+                        &epoch_here,
+                    )
+                });
                 let (base, refs) = match &routed {
                     Ok((_, base, refs)) => (base.clone(), refs.clone()),
                     Err(_) => (None, None),
                 };
-                let remapped = routed
-                    .map(|(mutation, ..)| mutation)
-                    .and_then(|mutation| {
-                        store
-                            .keep_unseen_fields(mutation, source.header.schema_version)
-                            .map_err(|e| e.to_string())
-                    })
-                    .and_then(|mutation| {
-                        // That copy's own record of the edit says which
-                        // document of its library the edit landed on.
-                        crate::renumber::retarget_manual_edit(
-                            mutation,
-                            &edit_source,
-                            &ids,
-                            Some(&store),
-                        )
-                    });
+                let remapped = routed.map(|(mutation, ..)| mutation).and_then(|mutation| {
+                    store
+                        .keep_unseen_fields(mutation, source.header.schema_version)
+                        .map_err(|e| e.to_string())
+                });
                 // The rows it inserts take the identities it carries (a
                 // copy of format 9); a failure of the identities after the
                 // change may have been applied stops the whole exchange.
@@ -6397,6 +6408,9 @@ impl Store {
                                 &entry.actor,
                                 mutation.clone(),
                                 &entry.idents,
+                                refs.as_ref()
+                                    .and_then(crate::idrefs::ManualTarget::of)
+                                    .as_ref(),
                             ) {
                                 Ok(crate::idents::Carried::Applied(reply, _)) => Ok(reply),
                                 Ok(crate::idents::Carried::Refused(error)) => {
@@ -6654,34 +6668,35 @@ impl Store {
                 // entry through the translation of numbers, as before.
                 let before = store.cabinet_revision()?;
                 let holds = own_frame && entry.refs.as_ref().is_some_and(|r| r.frame == own_tag);
+                let epoch_here = crate::idents::origin(&store.conn)?.2.unwrap_or_default();
                 let routed = route_change(
                     (&entry.mutation, entry.base.as_ref()),
                     entry.refs.as_ref().filter(|_| use_refs),
                     !use_refs || !crate::idents::is_mapped(&self.conn)?,
                     Some((&store.conn, holds)),
                     (&ids, &*self, Some(&store)),
-                );
+                )
+                .and_then(|routed| {
+                    // The edit was written here, against a record of this
+                    // library.
+                    crate::renumber::route_manual_edit(
+                        routed,
+                        entry.refs.as_ref().filter(|_| use_refs),
+                        &edit_source,
+                        &ids,
+                        Some(&store),
+                        &epoch_here,
+                    )
+                });
                 let (base, refs) = match &routed {
                     Ok((_, base, refs)) => (base.clone(), refs.clone()),
                     Err(_) => (None, None),
                 };
-                let remapped = routed
-                    .map(|(mutation, ..)| mutation)
-                    .and_then(|mutation| {
-                        store
-                            .keep_unseen_fields(mutation, crate::storage::SCHEMA_VERSION)
-                            .map_err(|e| e.to_string())
-                    })
-                    .and_then(|mutation| {
-                        // The edit was written here, against a record of
-                        // this library.
-                        crate::renumber::retarget_manual_edit(
-                            mutation,
-                            &edit_source,
-                            &ids,
-                            Some(&store),
-                        )
-                    });
+                let remapped = routed.map(|(mutation, ..)| mutation).and_then(|mutation| {
+                    store
+                        .keep_unseen_fields(mutation, crate::storage::SCHEMA_VERSION)
+                        .map_err(|e| e.to_string())
+                });
                 // A failure of the identities after the change may have been
                 // applied in the temporary library is not a refusal of the
                 // change: the whole exchange stops here, before anything is
@@ -6696,6 +6711,9 @@ impl Store {
                                 &entry.actor,
                                 mutation.clone(),
                                 &entry.idents,
+                                refs.as_ref()
+                                    .and_then(crate::idrefs::ManualTarget::of)
+                                    .as_ref(),
                             ) {
                                 Ok(crate::idents::Carried::Applied(reply, _)) => Ok(reply),
                                 Ok(crate::idents::Carried::Refused(error)) => {
@@ -7831,17 +7849,34 @@ impl Store {
         cfg: &IntranetConfig,
         mutation: IntranetMutation,
     ) -> Result<MutationReply> {
+        self.remote_mutate_to(cfg, mutation, None)
+    }
+
+    /// [`Store::remote_mutate`] of a numbered manual edit of the record
+    /// `target` names; without one, of the record its number names here
+    /// now. Every proof, send, queue and local write carries that record.
+    pub(crate) fn remote_mutate_to(
+        &mut self,
+        cfg: &IntranetConfig,
+        mutation: IntranetMutation,
+        target: Option<&crate::idrefs::ManualTarget>,
+    ) -> Result<MutationReply> {
         cfg.validate()?;
         let actor = cfg.member_name.trim().to_owned();
         // What the project of a task means is settled here, where the person
         // saw it, before the change is sent or queued.
         let mutation = self.settle_project_link(mutation);
+        let named = match target {
+            None => crate::idrefs::ManualTarget::named(&self.conn, &mutation)?,
+            Some(_) => None,
+        };
+        let target = target.or(named.as_ref());
         if cfg.mode == IntranetMode::SharedFolder {
             // There is no host to ask: every change is applied here and
             // queued for the next exchange through the folders. This is the
             // normal way of working, so nothing is announced: there is no
             // main computer to be out of reach.
-            let reply = self.queue_locally(&actor, mutation)?;
+            let reply = self.queue_locally_as(&actor, mutation, None, target)?;
             self.offline_queued = self.offline_queued.saturating_sub(1);
             return Ok(reply);
         }
@@ -7851,7 +7886,7 @@ impl Store {
             // the change is kept here, in the queue, exactly as when the
             // main computer is out of reach (without saying it is). After a
             // confirmed replacement it becomes a conflict to redo or discard.
-            let reply = self.queue_locally(&actor, mutation)?;
+            let reply = self.queue_locally_as(&actor, mutation, None, target)?;
             self.offline_queued = self.offline_queued.saturating_sub(1);
             return Ok(reply);
         }
@@ -7859,14 +7894,15 @@ impl Store {
             // Older changes still wait (or this library still uses its own
             // numbers): this one goes after them, in order, with the next
             // synchronization.
-            return self.queue_locally(&actor, mutation);
+            return self.queue_locally_as(&actor, mutation, None, target);
         }
         // The identity is made before the first attempt: if the answer is
         // lost, the queue sends the very same change under the same identity
         // and the main computer recognizes it. So are the proofs of the
         // items it names, in this library's frame, before it is sent.
         let uid = uuid::Uuid::new_v4().simple().to_string();
-        let refs = crate::idrefs::Refs::capture(&self.conn, &mutation, None)?;
+        let refs = crate::idrefs::Refs::capture(&self.conn, &mutation, None)?
+            .map(|refs| with_target(refs, target));
         let mut reached = false;
         let attempt = if self.host_known_unreachable() {
             Err(RpcError::Unreachable(
@@ -7992,7 +8028,7 @@ impl Store {
             Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message))
                 if message == HISTORY_CHANGED =>
             {
-                self.queue_locally_as(&actor, mutation, Some((uid, false)))
+                self.queue_locally_as(&actor, mutation, Some((uid, false)), target)
             }
             Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
                 bail!("{message}")
@@ -8004,7 +8040,7 @@ impl Store {
                 // Se o pedido pode ter chegado (a resposta é que se perdeu), a
                 // fila guarda a mesma identidade para o envio seguinte.
                 self.note_host_reachability(false);
-                self.queue_locally_as(&actor, mutation, Some((uid, reached)))
+                self.queue_locally_as(&actor, mutation, Some((uid, reached)), target)
             }
         }
     }
@@ -8090,25 +8126,24 @@ impl Store {
     }
 
     /// Applies the change here and queues it, keeping the state before the
-    /// change as the common ancestor for a field-by-field merge later.
-    fn queue_locally(&mut self, actor: &str, mutation: IntranetMutation) -> Result<MutationReply> {
-        self.queue_locally_as(actor, mutation, None)
-    }
-
-    /// [`Store::queue_locally`] for a change that was already given its
-    /// identity (`uid`) and, when `attempted`, may have reached the main
-    /// computer without the answer coming back.
+    /// change as the common ancestor for a field-by-field merge later. The
+    /// change may already have its identity (`uid`) and, when `attempted`,
+    /// may have reached the main computer without the answer coming back;
+    /// a numbered manual edit goes with the record it is written to
+    /// (`target`).
     fn queue_locally_as(
         &mut self,
         actor: &str,
         mutation: IntranetMutation,
         identity: Option<(String, bool)>,
+        target: Option<&crate::idrefs::ManualTarget>,
     ) -> Result<MutationReply> {
         let queued_mutation = self.prepare_mutation_for_outbox(mutation.clone());
         let base = self.snapshot_for_mutation(&queued_mutation);
         // The proofs of what the change and its base name, before it runs.
-        let refs = crate::idrefs::Refs::capture(&self.conn, &queued_mutation, base.as_ref())?;
-        let logged = self.run_logged(|store| store.execute_mutation(actor, mutation))?;
+        let refs = crate::idrefs::Refs::capture(&self.conn, &queued_mutation, base.as_ref())?
+            .map(|refs| with_target(refs, target));
+        let logged = self.run_logged(|store| store.execute_bound(actor, mutation, target))?;
         let reply = match logged.result {
             Ok(reply) => reply,
             Err(error) => {
@@ -8743,7 +8778,7 @@ impl Store {
             self.suppress_remote = true;
             self.actor_override = actor.clone();
         }
-        let result = self.import_capture_core(capture, &[], Some(&extras));
+        let result = self.import_capture_core(capture, &[], Some(&extras), None);
         self.suppress_remote = prev_suppress;
         self.actor_override = prev_actor;
         result.map(Some)
@@ -8847,30 +8882,30 @@ impl Store {
                 // Mantém a versão que já está no anfitrião (e sincronizada localmente) e remove o alerta de choque.
             }
             ConflictResolution::KeepLocal => {
-                // An edit of a manual record is addressed by number: it is
-                // applied again only to the record it was written against.
-                let mutation = self
+                // An edit of a manual record is applied again only to the
+                // record it was written against, with the card's target.
+                let (mutation, target) = self
                     .revalidated_manual_edit(&conflict)
                     .map_err(anyhow::Error::msg)?;
                 let rebased = self.rebase_mutation_to_current(mutation)?;
                 let cfg = self.load_intranet_config()?;
                 if cfg.mode.queues_changes() {
-                    self.remote_mutate(&cfg, rebased)?;
+                    self.remote_mutate_to(&cfg, rebased, target.as_ref())?;
                 } else {
-                    self.execute_mutation(&conflict.actor, rebased)?;
+                    self.execute_bound(&conflict.actor, rebased, target.as_ref())?;
                 }
             }
             ConflictResolution::Merge => {
-                let mutation = self
+                let (mutation, target) = self
                     .revalidated_manual_edit(&conflict)
                     .map_err(anyhow::Error::msg)?;
                 let merged =
                     self.build_merged_mutation(&conflict.actor, mutation, conflict.base.as_ref())?;
                 let cfg = self.load_intranet_config()?;
                 if cfg.mode.queues_changes() {
-                    self.remote_mutate(&cfg, merged)?;
+                    self.remote_mutate_to(&cfg, merged, target.as_ref())?;
                 } else {
-                    self.execute_mutation(&conflict.actor, merged)?;
+                    self.execute_bound(&conflict.actor, merged, target.as_ref())?;
                 }
             }
         }
@@ -11983,9 +12018,21 @@ impl PlainEditFrame for CabinetSnapshot {
     }
 }
 
+/// `refs` naming, for a numbered manual edit, the record `target` names
+/// (the one the person opened) instead of the one its number names.
+fn with_target(
+    mut refs: crate::idrefs::Refs,
+    target: Option<&crate::idrefs::ManualTarget>,
+) -> crate::idrefs::Refs {
+    if let (Some(named), Some(target)) = (refs.manual_target.as_mut(), target) {
+        *named = target.target.clone();
+    }
+    refs
+}
+
 /// A change and its base in the numbers of a receiving frame, with its
 /// proofs rewritten to them (`None`: taken by the legacy route).
-type Routed = (
+pub(crate) type Routed = (
     IntranetMutation,
     Option<IntranetMutation>,
     Option<crate::idrefs::Refs>,
@@ -13147,7 +13194,7 @@ fn process_rpc_at(
             // resolved here, before anything runs (frozen rules 5–7): a
             // number without identity holds only in the very frame it was
             // captured in. `None` is a change an older Ponte queued.
-            let mutation = match &refs {
+            let (mutation, target) = match &refs {
                 Some(refs) => {
                     let here = crate::idrefs::FrameTag {
                         epoch: epoch.clone(),
@@ -13155,13 +13202,17 @@ fn process_rpc_at(
                     };
                     let holds = refs.frame == here;
                     match refs.resolve(&mutation, None, &store.conn, holds) {
-                        Ok((mutation, ..)) => mutation,
+                        // A manual edit's record is bound in the import's
+                        // own transaction (adendo §9).
+                        Ok((mutation, _, refs)) => {
+                            (mutation, crate::idrefs::ManualTarget::of(&refs))
+                        }
                         // Said as such, so the sender keeps it as a card
                         // without any number (review F3.0a2, finding 7).
                         Err(message) => return Ok(RpcResponse::ProofRefused { message }),
                     }
                 }
-                None => mutation,
+                None => (mutation, None),
             };
             let mutation = store.keep_unseen_fields(mutation, client_schema)?;
             let applied = mutation.clone();
@@ -13172,7 +13223,8 @@ fn process_rpc_at(
             if durable {
                 crate::idents::open_carry(&store.conn, &mutation_uid, &idents)?;
             }
-            let logged = store.run_logged(|store| store.execute_mutation(&actor, mutation));
+            let logged =
+                store.run_logged(|store| store.execute_bound(&actor, mutation, target.as_ref()));
             let carry_closed = crate::idents::close_carry(&store.conn);
             let logged = logged?;
             let reply = match logged.result {

@@ -212,32 +212,11 @@ fn resolve_sites(
         if *id <= 0 {
             return Ok(());
         }
-        let site = proofs.next().ok_or_else(|| DAMAGED.to_owned())?;
-        // A link whose identity is not there (each device derived it with
-        // one of its own, or it had none): the one link of the same ends
-        // and kind, never one of two (v2 §2.1).
-        let by_ends = || match site.link.as_ref().filter(|_| kind == IdKind::Link) {
-            Some(proof) => frame
-                .link_by_ends(proof)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| UNPROVEN.to_owned()),
-            None => Err(UNPROVEN.to_owned()),
-        };
-        let row = match &site.proof {
-            Proof::Ident(ident) => match frame.row_of(kind, ident).map_err(|e| e.to_string())? {
-                Some(row) => row,
-                None => by_ends()?,
-            },
-            // A mapped kind's number is this library's own, never the
-            // copy's: it holds nowhere else (obligation (c), F3.1a).
-            Proof::Frame
-                if frame_holds && !crate::mapper::addressed(crate::idents::kind_of(kind)) =>
-            {
-                *id
-            }
-            Proof::Unprovable => by_ends()?,
-            Proof::Frame => return Err(UNPROVEN.into()),
-        };
+        let site = proofs
+            .next()
+            .filter(|site| site.kind == kind && site.row == *id)
+            .ok_or_else(|| DAMAGED.to_owned())?;
+        let row = resolve_ref(site, frame, frame_holds)?;
         *id = row;
         proved.push(Ref {
             row,
@@ -246,6 +225,36 @@ fn resolve_sites(
         Ok(())
     })?;
     Ok((out, proved))
+}
+
+/// The number in `frame` of the item `site` proves (its kind and number
+/// already checked against the change). A card, never the number, when it
+/// cannot be told.
+fn resolve_ref(site: &Ref, frame: &dyn IdentFrame, frame_holds: bool) -> Result<i64, String> {
+    let kind = site.kind;
+    // A link whose identity is not there (each device derived it with one
+    // of its own, or it had none): the one link of the same ends and kind,
+    // never one of two (v2 §2.1).
+    let by_ends = || match site.link.as_ref().filter(|_| kind == IdKind::Link) {
+        Some(proof) => frame
+            .link_by_ends(proof)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| UNPROVEN.to_owned()),
+        None => Err(UNPROVEN.to_owned()),
+    };
+    match &site.proof {
+        Proof::Ident(ident) => match frame.row_of(kind, ident).map_err(|e| e.to_string())? {
+            Some(row) => Ok(row),
+            None => by_ends(),
+        },
+        // A mapped kind's number is this library's own, never the copy's:
+        // it holds nowhere else (obligation (c), F3.1a).
+        Proof::Frame if frame_holds && !crate::mapper::addressed(crate::idents::kind_of(kind)) => {
+            Ok(site.row)
+        }
+        Proof::Unprovable => by_ends(),
+        Proof::Frame => Err(UNPROVEN.into()),
+    }
 }
 
 /// What a walk does with one site: its kind and its number, which it may
@@ -593,14 +602,80 @@ pub(crate) fn translate_reply(
 }
 
 /// Whether `mutation` is the edit of a manual record that already has its
-/// number (its target is named by `Refs::manual_target`).
+/// number (its target is named by `Refs::manual_target`): an import, or a
+/// bundle without files, which the native host queues for the same thing.
 fn numbered_manual(mutation: &IntranetMutation) -> bool {
-    matches!(
-        mutation,
+    manual_number(mutation).is_some()
+}
+
+/// The number a numbered manual edit carries.
+fn manual_number(mutation: &IntranetMutation) -> Option<&str> {
+    match mutation {
         IntranetMutation::ImportCapture { capture }
+        | IntranetMutation::ImportBundle { capture, .. }
             if capture.is_manual()
-                && capture.document_number.trim() != crate::model::MANUAL_PENDING
-    )
+                && capture.document_number.trim() != crate::model::MANUAL_PENDING =>
+        {
+            Some(&capture.document_number)
+        }
+        _ => None,
+    }
+}
+
+/// What the import of a manual edit says when its record cannot be bound
+/// (adendo §9 rule 1): the edit is not written anywhere.
+pub const TARGET_GONE: &str = "O registro desta edição não está mais disponível (foi excluído, está na Lixeira ou não pôde ser reconhecido com certeza). A edição não foi gravada em nenhum registro.";
+
+/// The record a numbered manual edit is written to (adendo §9): its proof
+/// and, on the library that made the edit, the frame it was proved in.
+#[derive(Clone, Debug)]
+pub(crate) struct ManualTarget {
+    pub target: Ref,
+    /// The library that made the edit: a number without identity holds
+    /// there while its frame is still this one. `None` for a receiver,
+    /// which binds by identity only (frozen rule 6, a mapped kind).
+    pub own: Option<FrameTag>,
+}
+
+impl ManualTarget {
+    /// The edit of record `row`, made now in the library on `conn`.
+    pub(crate) fn here(conn: &Connection, row: i64) -> Result<Self> {
+        let idents = crate::idents::has_idents(conn)?;
+        let target = prove(conn, vec![(IdKind::Document, row)], idents)?
+            .pop()
+            .expect("one site");
+        Ok(Self {
+            target,
+            own: Some(frame_tag(conn)?),
+        })
+    }
+
+    /// The record a numbered manual edit names here by its number, now.
+    pub(crate) fn named(conn: &Connection, mutation: &IntranetMutation) -> Result<Option<Self>> {
+        match manual_number(mutation) {
+            Some(number) => crate::storage::doc_by_number(conn, number)?
+                .map(|row| Self::here(conn, row))
+                .transpose(),
+            None => Ok(None),
+        }
+    }
+
+    /// The target a receiver binds, from the proofs it resolved.
+    pub(crate) fn of(refs: &Refs) -> Option<Self> {
+        refs.manual_target
+            .clone()
+            .map(|target| Self { target, own: None })
+    }
+
+    /// The record named, in the library on `conn`, read inside the
+    /// import's transaction (adendo §9 rule 1); `None`: not proven there.
+    pub(crate) fn bind(&self, conn: &Connection) -> Result<Option<i64>> {
+        Ok(match (&self.target.proof, &self.own) {
+            (Proof::Ident(ident), _) => conn.row_of(IdKind::Document, ident)?,
+            (_, Some(tag)) if frame_tag(conn)? == *tag => Some(self.target.row),
+            _ => None,
+        })
+    }
 }
 
 /// The frame of the library on `conn`: the epoch of its identities and the
@@ -704,8 +779,16 @@ impl Refs {
                 Some(base) => prove(conn, sites(base), idents)?,
                 None => Vec::new(),
             },
-            // Named by the edit of a manual record (F3.1b1).
-            manual_target: None,
+            // The record a numbered manual edit names here by the number
+            // it carries; an edit the person makes names the record that
+            // was opened instead (`Store::import_capture_to`).
+            manual_target: match manual_number(mutation) {
+                Some(number) => match crate::storage::doc_by_number(conn, number)? {
+                    Some(row) => prove(conn, vec![(IdKind::Document, row)], idents)?.pop(),
+                    None => None,
+                },
+                None => None,
+            },
             frame: frame_tag(conn)?,
         }))
     }
@@ -745,12 +828,20 @@ impl Refs {
         if !same {
             return Err(UNPROVEN.into());
         }
+        // The record of a manual edit in these numbers, for the republished
+        // proofs (rule 8); row 0 when its proof is not there: it is bound,
+        // or refused, inside the import's transaction (adendo §9).
+        let manual_target = self.manual_target.as_ref().map(|target| Ref {
+            row: resolve_ref(target, frame, frame_holds).unwrap_or(0),
+            ..target.clone()
+        });
         Ok((
             mutation,
             base,
             Refs {
                 mutation: proved,
                 base: base_proved,
+                manual_target,
                 ..self.clone()
             },
         ))
@@ -777,11 +868,11 @@ impl Refs {
             Some(base) => agree(sites(base), &refs.base),
             None => refs.base.is_empty(),
         };
-        // The target of a numbered manual edit is captured from F3.1b1 on;
-        // until then such an edit goes by its number, as before (F3.0a2).
+        // Exactly a numbered manual edit names its record (F3.1b1): without
+        // it the edit could only go by its number.
         let target_ok = match &refs.manual_target {
             Some(target) => numbered_manual(mutation) && target.kind == IdKind::Document,
-            None => true,
+            None => !numbered_manual(mutation),
         };
         if agree(sites(mutation), &refs.mutation) && base_ok && target_ok {
             Ok(())

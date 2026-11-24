@@ -257,7 +257,10 @@ fn f3_1a_r2_tied_analyses_replayed_in_opposite_orders_agree() {
                 document_id: receipt.document_id,
                 analysis: analysis_of(receipt.capture_id, &format!("análise {text}"), at),
             };
-            match store.execute_carrying("Casa", mutation, &carried).unwrap() {
+            match store
+                .execute_carrying("Casa", mutation, &carried, None)
+                .unwrap()
+            {
                 crate::idents::Carried::Applied(..) => {}
                 crate::idents::Carried::Refused(e) => panic!("{e}"),
             }

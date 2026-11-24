@@ -873,25 +873,37 @@ impl Store {
     /// atendimento and its juntada links. Idempotent by `request_id`; on a
     /// client computer it is sent to the main one.
     pub fn import_capture(&mut self, capture: &Capture) -> Result<ImportReceipt> {
+        self.import_capture_to(capture, None)
+    }
+
+    /// [`Store::import_capture`] of a numbered manual edit written to the
+    /// record `target` names (adendo §9): sent, queued and applied with it.
+    pub(crate) fn import_capture_to(
+        &mut self,
+        capture: &Capture,
+        target: Option<&crate::idrefs::ManualTarget>,
+    ) -> Result<ImportReceipt> {
         if let Some(cfg) = self.client_config()? {
-            match self.remote_mutate(
+            match self.remote_mutate_to(
                 &cfg,
                 crate::intranet::IntranetMutation::ImportCapture {
                     capture: capture.clone(),
                 },
+                target,
             )? {
                 crate::intranet::MutationReply::Receipt(r) => return Ok(r),
                 _ => anyhow::bail!("O computador principal respondeu de forma inesperada ao importar o documento. Tente de novo."),
             }
         }
-        self.import_capture_with_files(capture, &[])
+        self.import_capture_with_files(capture, &[], target)
     }
     pub(crate) fn import_capture_with_files(
         &mut self,
         capture: &Capture,
         files: &[crate::files::PreparedFile],
+        target: Option<&crate::idrefs::ManualTarget>,
     ) -> Result<ImportReceipt> {
-        self.import_capture_core(capture, files, None)
+        self.import_capture_core(capture, files, None, target)
             .map(|(receipt, _)| receipt)
     }
 
@@ -899,11 +911,17 @@ impl Store {
     /// of the record (and, in shared-folder mode, the queued copies of the
     /// changes) written in the very same transaction: all of it is in the
     /// library or none of it. Also answers how many attachments were stored.
+    ///
+    /// A numbered manual edit with a `target` is written only to the record
+    /// the target names, bound inside this transaction (adendo §9 rule 1):
+    /// a live manual record, whose own number the version takes; otherwise
+    /// it is refused ([`crate::idrefs::TARGET_GONE`]).
     pub(crate) fn import_capture_core(
         &mut self,
         capture: &Capture,
         files: &[crate::files::PreparedFile],
         extras: Option<&ImportExtras<'_>>,
+        target: Option<&crate::idrefs::ManualTarget>,
     ) -> Result<(ImportReceipt, usize)> {
         capture.validate()?;
         let queued_capture = capture;
@@ -928,6 +946,15 @@ impl Store {
         // A manual record created without a number (connected computer, or
         // first creation here) gets the next one now, inside the transaction.
         let pending_manual = capture.is_manual() && capture.document_number == MANUAL_PENDING;
+        let bound = match target.filter(|_| capture.is_manual() && !pending_manual) {
+            Some(target) => {
+                let row = target.bind(&tx)?.context(crate::idrefs::TARGET_GONE)?;
+                crate::trash::require_active_document(&tx, row)?;
+                let number = manual_number_of(&tx, row)?.context(crate::idrefs::TARGET_GONE)?;
+                Some((row, number))
+            }
+            None => None,
+        };
         let assigned;
         let capture: &Capture = if pending_manual {
             ensure!(
@@ -938,6 +965,10 @@ impl Store {
                 capture,
                 &next_manual_number(&tx, crate::model::manual_prefix_for(capture))?,
             );
+            &assigned
+        } else if let Some((_, number)) = &bound {
+            // The number the record has now, read from it.
+            assigned = with_manual_number(capture, number);
             &assigned
         } else {
             capture
@@ -951,6 +982,12 @@ impl Store {
             [&request_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         ).optional()?;
         if let Some((document_id, capture_id, old_identity, old_content)) = prior {
+            // The request is on another record: refused, never answered as
+            // a repeat (adendo §9 rule 2).
+            ensure!(
+                bound.as_ref().is_none_or(|(row, _)| *row == document_id),
+                "Este identificador de importação já foi usado em outro registro; a edição não foi gravada."
+            );
             // A replayed manual creation was numbered on its first arrival;
             // the stored copy is the one that counts.
             ensure!(
@@ -994,6 +1031,7 @@ impl Store {
         {
             Some(id) => id,
             None => {
+                ensure!(bound.is_none(), crate::idrefs::TARGET_GONE);
                 tx.execute(
                     "INSERT INTO documents(identity_hash,last_seen_at) VALUES(?1,?2)",
                     params![identity_hash, seen],
@@ -1002,6 +1040,11 @@ impl Store {
                 tx.last_insert_rowid()
             }
         };
+        // Its number selects the bound record itself.
+        ensure!(
+            bound.as_ref().is_none_or(|(row, _)| *row == document_id),
+            crate::idrefs::TARGET_GONE
+        );
         crate::trash::require_active_document(&tx, document_id)?;
         let existing: Option<(i64, String)> = tx
             .query_row(
@@ -1162,14 +1205,7 @@ impl Store {
     /// The document that holds a manual number in this library (trashed
     /// ones included), by the number alone.
     pub(crate) fn document_id_by_number(&self, number: &str) -> Result<Option<i64>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT id FROM documents WHERE identity_hash=?1",
-                [identity_hash_for_number(number)],
-                |row| row.get(0),
-            )
-            .optional()?)
+        doc_by_number(&self.conn, number)
     }
 
     /// The number of a document as its latest version tells it (trashed
@@ -2673,6 +2709,36 @@ pub mod test_numbers {
         )
         .unwrap()
     }
+}
+
+/// The document that holds a manual number in the library on `conn`
+/// (trashed ones included), by the number alone.
+pub(crate) fn doc_by_number(conn: &Connection, number: &str) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM documents WHERE identity_hash=?1",
+            [identity_hash_for_number(number)],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// The number of document `id` as its current version tells it, when it is
+/// a manual record.
+fn manual_number_of(conn: &Connection, id: i64) -> Result<Option<String>> {
+    let blob: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id WHERE d.id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(match blob {
+        Some(blob) => Some(decode::<Capture>(&blob)?)
+            .filter(Capture::is_manual)
+            .map(|c| c.document_number),
+        None => None,
+    })
 }
 
 fn with_manual_number(capture: &Capture, number: &str) -> Capture {

@@ -111,6 +111,8 @@ pub(crate) trait Records {
     fn doc_of_request(&self, request: &str) -> Result<Option<i64>, String>;
     /// Every request id of a document's versions.
     fn requests_of_doc(&self, doc: i64) -> Result<Vec<String>, String>;
+    /// The identity of a document (`item_ident`), when it has one.
+    fn ident_of_doc(&self, doc: i64) -> Result<Option<String>, String>;
 }
 
 impl Records for Store {
@@ -144,6 +146,9 @@ impl Records for Store {
             .map_err(|e| e.to_string())?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())
+    }
+    fn ident_of_doc(&self, doc: i64) -> Result<Option<String>, String> {
+        crate::idents::ident_of(&self.conn, "document", doc).map_err(|e| e.to_string())
     }
 }
 
@@ -184,6 +189,13 @@ impl Records for CabinetSnapshot {
             .filter(|r| r.document_id == doc)
             .map(|r| r.request_id.clone())
             .collect())
+    }
+    fn ident_of_doc(&self, doc: i64) -> Result<Option<String>, String> {
+        Ok(self
+            .idents
+            .iter()
+            .find(|r| r.0 == "document" && r.1 == doc)
+            .map(|r| r.2.clone()))
     }
 }
 
@@ -488,6 +500,93 @@ pub(crate) fn retarget_manual_edit(
     }
 }
 
+/// [`retarget_manual_edit`] for a routed change (F3.1b1). A numbered manual
+/// edit that names its record (`manual_target`) goes to that record, bound
+/// again inside the import's transaction (adendo §9), never by its number:
+/// - found in `target` by its identity: it takes the number it has there;
+/// - not found, in the epoch of identities its proof was made in: the
+///   record is gone there, and the importer refuses the edit (a card);
+/// - not found, in another epoch (the identities were drawn again): the one
+///   record its creation in this exchange (step 2), or all of its request
+///   ids (step 3), lead to there, by its identity there. Steps 0, 1 and 4
+///   (a request id alone, the source's deletion, the number) never decide.
+///
+/// `original`: the proofs as the edit was made (the record's number in the
+/// library it was written in). A change without proofs keeps the legacy
+/// route.
+pub(crate) fn route_manual_edit(
+    (mutation, base, mut refs): crate::intranet::Routed,
+    original: Option<&crate::idrefs::Refs>,
+    source: &EditSource<'_>,
+    ids: &crate::idmap::IdMap,
+    target: Option<&dyn Records>,
+    epoch_there: &str,
+) -> Result<crate::intranet::Routed, String> {
+    let named = refs.as_ref().and_then(|r| r.manual_target.clone());
+    let (Some(named), Some(capture)) = (named, manual_edit(&mutation).cloned()) else {
+        return retarget_manual_edit(mutation, source, ids, target).map(|m| (m, base, refs));
+    };
+    let Some(t) = target else {
+        return Ok((mutation, base, refs));
+    };
+    let cannot = || not_applied(&capture, CANNOT_TELL);
+    let doc =
+        if named.row > 0 {
+            named.row
+        } else {
+            let made_in = refs.as_ref().map_or("", |r| r.frame.epoch.as_str());
+            if made_in == epoch_there {
+                return Ok((mutation, base, refs));
+            }
+            let local = original
+                .and_then(|r| r.manual_target.as_ref())
+                .ok_or_else(cannot)?
+                .row;
+            let creation = source.creations.get(&local).copied().or_else(|| {
+                match ids.learned_document(local) {
+                    Some(Some(there)) => Some(CreationOutcome::Applied(there)),
+                    _ => None,
+                }
+            });
+            let doc = match creation {
+                Some(CreationOutcome::Refused) => return Err(not_applied(&capture, REFUSED)),
+                Some(CreationOutcome::Applied(there)) => there,
+                None => {
+                    let own = normalized_request(&capture.request_id);
+                    let mut same = BTreeSet::new();
+                    for request in source
+                        .records
+                        .requests_of_doc(local)
+                        .map_err(|_| cannot())?
+                        .iter()
+                        .filter(|r| Some(*r) != own.as_ref())
+                    {
+                        if let Some(doc) = t.doc_of_request(request).map_err(|_| cannot())? {
+                            same.insert(doc);
+                        }
+                    }
+                    match same.into_iter().collect::<Vec<_>>()[..] {
+                        [one] => one,
+                        _ => return Err(cannot()),
+                    }
+                }
+            };
+            let ident = t
+                .ident_of_doc(doc)
+                .map_err(|_| cannot())?
+                .ok_or_else(cannot)?;
+            if let Some(named) = refs.as_mut().and_then(|r| r.manual_target.as_mut()) {
+                (named.row, named.proof) = (doc, crate::idrefs::Proof::Ident(ident));
+            }
+            doc
+        };
+    let mutation = match t.number_of_doc(doc) {
+        Ok(Some(number)) => readdress(mutation, &number),
+        _ => mutation,
+    };
+    Ok((mutation, base, refs))
+}
+
 /// What a refused edit of a manual record said, to be shown (and copied) on
 /// its conflict card: the text is the person's own work.
 pub struct RefusedEdit {
@@ -693,31 +792,64 @@ impl Store {
     /// the record it was written against, found by identity, is the one that
     /// holds the number (or the edit goes to the number it has). `Err` when
     /// that cannot be established: it is then never applied by number.
+    ///
+    /// A card that keeps the record its edit names (F3.1b1) re-applies it
+    /// to that record, by its identity here (adendo §9 rule 3), and answers
+    /// it as the target the edit is written to; in another epoch of
+    /// identities, the one record all its request ids lead to.
     pub(crate) fn revalidated_manual_edit(
         &self,
         conflict: &crate::intranet::SyncConflict,
-    ) -> Result<IntranetMutation, String> {
+    ) -> Result<(IntranetMutation, Option<crate::idrefs::ManualTarget>), String> {
         let Some(capture) = manual_edit(&conflict.mutation) else {
-            return Ok(conflict.mutation.clone());
+            return Ok((conflict.mutation.clone(), None));
         };
         let cannot = not_applied(
             capture,
             "não foi possível confirmar que o registro que ela corrige ainda é o que tem esse número.",
         );
+        if let Some(refs) = conflict.refs.as_ref().filter(|r| r.manual_target.is_some()) {
+            use crate::idrefs::IdentFrame;
+            let found = match refs.manual_target.as_ref().map(|t| &t.proof) {
+                Some(crate::idrefs::Proof::Ident(ident)) => self
+                    .conn
+                    .row_of(crate::idmap::IdKind::Document, ident)
+                    .map_err(|e| e.to_string())?,
+                _ => None,
+            };
+            let epoch = crate::idents::origin(&self.conn)
+                .map_err(|e| e.to_string())?
+                .2
+                .unwrap_or_default();
+            let doc = match found {
+                Some(doc) => doc,
+                None if refs.frame.epoch != epoch => {
+                    document_of_identity(&self.conn, &conflict.identity)
+                        .ok()
+                        .flatten()
+                        .ok_or_else(|| cannot.clone())?
+                }
+                None => return Err(cannot),
+            };
+            let number = self.number_of_doc(doc)?.ok_or_else(|| cannot.clone())?;
+            let target =
+                crate::idrefs::ManualTarget::here(&self.conn, doc).map_err(|e| e.to_string())?;
+            return Ok((readdress(conflict.mutation.clone(), &number), Some(target)));
+        }
         // A conflict stored by an earlier version (or of a record with no
         // identity) has nothing to check: it behaves as it always did.
         if conflict.identity.is_empty() {
-            return Ok(conflict.mutation.clone());
+            return Ok((conflict.mutation.clone(), None));
         }
         let Ok(Some(doc)) = document_of_identity(&self.conn, &conflict.identity) else {
             return Err(cannot);
         };
         let holder = self.doc_by_number(&capture.document_number)?;
         if holder == Some(doc) {
-            return Ok(conflict.mutation.clone());
+            return Ok((conflict.mutation.clone(), None));
         }
         match self.number_of_doc(doc)? {
-            Some(number) => Ok(readdress(conflict.mutation.clone(), &number)),
+            Some(number) => Ok((readdress(conflict.mutation.clone(), &number), None)),
             None => Err(cannot),
         }
     }

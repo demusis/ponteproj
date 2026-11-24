@@ -1571,15 +1571,16 @@ impl Store {
         actor: &str,
         mutation: IntranetMutation,
         carried: &[SlotIdent],
+        target: Option<&crate::idrefs::ManualTarget>,
     ) -> Result<Carried> {
         if carried.is_empty() {
-            return Ok(match self.execute_mutation(actor, mutation) {
+            return Ok(match self.execute_bound(actor, mutation, target) {
                 Ok(reply) => Carried::Applied(reply, Rekeyed::default()),
                 Err(error) => Carried::Refused(error),
             });
         }
         let applied = mutation.clone();
-        let logged = self.run_logged(|store| store.execute_mutation(actor, mutation))?;
+        let logged = self.run_logged(|store| store.execute_bound(actor, mutation, target))?;
         let reply = match logged.result {
             Ok(reply) => reply,
             Err(error) => {
@@ -1612,7 +1613,7 @@ pub mod hooks {
         /// Sees the temporary library of a folder exchange right before it
         /// is exported.
         pub static PEEK_TEMP: RefCell<Option<Peek>> = RefCell::new(None);
-        /// Runs once in `queue_locally`, after the change was applied (and
+        /// Runs once in `queue_locally_as`, after the change was applied (and
         /// committed) and before what it created is captured.
         pub static AFTER_LOCAL_COMMIT: RefCell<Option<Pause>> = RefCell::new(None);
         /// Runs once right after the current analysis of a document was

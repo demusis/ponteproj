@@ -270,7 +270,7 @@ fn replay_marked(
             .remap(&entry.mutation, source, Some(&*target))
             .unwrap_or_else(|e| panic!("{}: {e}", entry.label));
         let carried = target
-            .execute_carrying(&entry.actor, mutation.clone(), &entry.idents)
+            .execute_carrying(&entry.actor, mutation.clone(), &entry.idents, None)
             .unwrap_or_else(|e| panic!("{}: {e}", entry.label));
         let (reply, rekeyed) = match carried {
             crate::idents::Carried::Applied(reply, rekeyed) => (reply, rekeyed),

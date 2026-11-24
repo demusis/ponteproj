@@ -78,13 +78,24 @@ impl Store {
         original: &Capture,
         inputs: &[FileInput],
     ) -> Result<ImportReceipt> {
+        self.import_bundle_to(original, inputs, None)
+    }
+
+    /// [`Store::import_bundle`] bound to the record a manual edit names.
+    pub(crate) fn import_bundle_to(
+        &mut self,
+        original: &Capture,
+        inputs: &[FileInput],
+        target: Option<&crate::idrefs::ManualTarget>,
+    ) -> Result<ImportReceipt> {
         if let Some(cfg) = self.client_config()? {
-            match self.remote_mutate(
+            match self.remote_mutate_to(
                 &cfg,
                 crate::intranet::IntranetMutation::ImportBundle {
                     capture: original.clone(),
                     files: inputs.to_vec(),
                 },
+                target,
             )? {
                 crate::intranet::MutationReply::Receipt(r) => return Ok(r),
                 _ => anyhow::bail!("O computador principal respondeu de forma inesperada ao importar os arquivos. Tente de novo."),
@@ -190,7 +201,7 @@ impl Store {
                 capture.coverage.pending.push("Há referências a arquivos que não foram baixados; confira as pendências específicas".into());
             }
         }
-        self.import_capture_with_files(&capture, &files)
+        self.import_capture_with_files(&capture, &files, target)
     }
     pub fn list_files(&self, capture_id: i64) -> Result<Vec<FileSummary>> {
         let rows = self

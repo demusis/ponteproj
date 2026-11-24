@@ -254,6 +254,7 @@ fn f3_1a_versions_of_one_moment_follow_their_stored_time() {
                 capture: version("V3"),
             },
             &carried,
+            None,
         )
         .unwrap()
     {
