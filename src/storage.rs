@@ -677,8 +677,17 @@ impl Store {
             version == LIBRARY_SCHEMA,
             "Este acervo foi alterado por outra versão do Ponte enquanto abria; feche o Ponte e abra de novo."
         );
-        for (name, sql) in stale(&tx)? {
+        let repairs = stale(&tx)?;
+        for (name, sql) in &repairs {
             tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {sql}"))?;
+        }
+        // Pointers kept by other triggers (an older build's) are read again
+        // by this build's order, with the triggers that keep them.
+        if repairs
+            .iter()
+            .any(|(name, _)| name.starts_with("ponte_pointer_"))
+        {
+            crate::idents::refresh_pointers(&tx)?;
         }
         tx.commit()?;
         Ok(())
@@ -1030,22 +1039,38 @@ impl Store {
         // Identical to an older version: that version becomes current again,
         // without storing anything new.
         let duplicate = existing.is_some();
+        let capture_id = match &existing {
+            Some((id, _)) => *id,
+            None => {
+                // Stored after the current version (a clock behind, or the
+                // same millisecond): the order of versions places a new
+                // version captured at the same moment after it, everywhere.
+                let current: Option<String> = match latest {
+                    Some(current) => Some(tx.query_row(
+                        "SELECT created_at FROM captures WHERE id=?1",
+                        [current],
+                        |r| r.get(0),
+                    )?),
+                    None => None,
+                };
+                let stored = moment_after(current.as_deref());
+                tx.execute("INSERT INTO captures(document_id,content_hash,payload,created_at) VALUES(?1,?2,?3,?4)", params![document_id, content_hash, payload, stored])?;
+                tx.last_insert_rowid()
+            }
+        };
         // The current version follows the document's own time, not the order
         // in which the versions reached this library: a version captured
         // before the current one (an import replayed late by a
         // synchronization) is kept in the history and the current one stays.
+        // At an equal moment of capture the one order of versions (adendo
+        // §8) decides by the moment stored, and a new version was stored
+        // after the current one: it becomes current, as an identical older
+        // version brought back does.
         let becomes_current = match latest {
-            Some(current) if Some(current) != existing.as_ref().map(|(id, _)| *id) => {
+            Some(current) if current != capture_id => {
                 !capture_order(&tx, current)?.is_after(&CaptureOrder::of(capture))
             }
             _ => true,
-        };
-        let capture_id = match &existing {
-            Some((id, _)) => *id,
-            None => {
-                tx.execute("INSERT INTO captures(document_id,content_hash,payload,created_at) VALUES(?1,?2,?3,?4)", params![document_id, content_hash, payload, seen])?;
-                tx.last_insert_rowid()
-            }
         };
         if becomes_current {
             tx.execute(
@@ -1241,11 +1266,9 @@ impl Store {
         let capture: Capture = decode(&blob)?;
         let note: String = self
             .conn
-            .query_row(
-                "SELECT payload FROM notes WHERE document_id=?1 ORDER BY id DESC LIMIT 1",
-                [id],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
+            .query_row(&current_note_query(&self.conn)?, [id], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
             .optional()?
             .map(|bytes| decode(&bytes))
             .transpose()?
@@ -1396,9 +1419,27 @@ impl Store {
             Some(id),
             &format!("Atualizou notas do documento #{id}"),
         )?;
+        // Never before the current note (a clock behind another computer's):
+        // the note saved is the current one, here and wherever its moment
+        // travels (the order of versions starts by it).
+        let current: Option<String> = tx
+            .query_row(
+                &format!(
+                    "SELECT n.created_at FROM notes n WHERE n.document_id=?1 ORDER BY {} LIMIT 1",
+                    crate::idents::version_order(
+                        "note",
+                        "n",
+                        "created_at",
+                        crate::idents::has_idents(&tx)?
+                    )
+                ),
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
         tx.execute(
             "INSERT INTO notes(document_id,payload,created_at) VALUES(?1,?2,?3)",
-            params![id, payload, now()],
+            params![id, payload, moment_after(current.as_deref())],
         )?;
         tx.commit()?;
         Ok(())
@@ -1507,11 +1548,9 @@ impl Store {
         let capture: Capture = decode(&blob)?;
         let note: String = self
             .conn
-            .query_row(
-                "SELECT payload FROM notes WHERE document_id=?1 ORDER BY id DESC LIMIT 1",
-                [document_id],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
+            .query_row(&current_note_query(&self.conn)?, [document_id], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
             .optional()?
             .map(|bytes| decode(&bytes))
             .transpose()?
@@ -1886,22 +1925,64 @@ pub(crate) fn capture_order(conn: &Connection, capture_id: i64) -> Result<Captur
     Ok(CaptureOrder::of(&capture))
 }
 
-/// Of `candidates` (versions of one document), the one captured last by the
-/// document's own time, ties (and unreadable times, which come first) by
-/// number, as before; `None` when there is none.
+/// Of `candidates` (versions of one document), the newest by the one order
+/// of versions (adendo §8): the time (the document's own moment, then the
+/// moment the version was stored; both travel with it, and unreadable ones
+/// come first), then the identity, then the number; `None` when there is
+/// none.
 pub(crate) fn newest_capture(conn: &Connection, candidates: &[i64]) -> Result<Option<i64>> {
     let mut keyed = Vec::with_capacity(candidates.len());
     for &id in candidates {
-        keyed.push((capture_order(conn, id)?.at, id));
+        keyed.push(version_key(conn, id)?);
     }
-    Ok(keyed.into_iter().max().map(|(_, id)| id))
+    Ok(keyed.into_iter().max().map(|(_, _, id)| id))
+}
+
+/// Where the version `capture` stands in the one order of versions: its
+/// time, then its identity, then its number.
+type VersionKey = (VersionTime, Option<String>, i64);
+
+/// The time of a version: the moment it was captured, then the one it was
+/// stored at (a version captured in the same second as another, as a
+/// manual record edited twice, is placed by when it was stored, wherever
+/// the two are; only an equal pair goes to the identity).
+type VersionTime = (Option<chrono::DateTime<chrono::FixedOffset>>, Option<i64>);
+
+fn version_time(conn: &Connection, capture: i64) -> Result<VersionTime> {
+    let stored: String = conn.query_row(
+        "SELECT created_at FROM captures WHERE id=?1",
+        [capture],
+        |r| r.get(0),
+    )?;
+    Ok((
+        capture_order(conn, capture)?.at,
+        crate::idents::analysis_micros(&stored),
+    ))
+}
+
+fn version_key(conn: &Connection, capture: i64) -> Result<VersionKey> {
+    Ok((
+        version_time(conn, capture)?,
+        crate::idents::ident_of(conn, "capture", capture)?,
+        capture,
+    ))
+}
+
+/// The statement that reads the payload of the current note of the
+/// document `?1` (the order of [`crate::idents::version_order`]).
+fn current_note_query(conn: &Connection) -> Result<String> {
+    Ok(format!(
+        "SELECT n.payload FROM notes n WHERE n.document_id=?1 ORDER BY {} LIMIT 1",
+        crate::idents::version_order("note", "n", "created_at", crate::idents::has_idents(conn)?)
+    ))
 }
 
 /// The current analysis of a document: of the analyses of its current
 /// version, the one made last by its own time (`created_at`, the moment the
 /// analysis was made, which travels with it), not the one that reached this
-/// library last; ties by number. Only when the current version has none, the
-/// one made last of any version (shown as made on another version).
+/// library last; ties by identity, then by number (adendo §8). Only when the
+/// current version has none, the one made last of any version (shown as
+/// made on another version).
 fn current_analysis(
     conn: &Connection,
     document_id: i64,
@@ -1919,10 +2000,14 @@ pub(crate) fn current_analysis_row(
     document_id: i64,
     current_capture: i64,
 ) -> Result<Option<(i64, Analysis)>> {
-    let rows: Vec<(i64, i64, String, Vec<u8>)> = conn
-        .prepare("SELECT id,capture_id,created_at,payload FROM analyses WHERE document_id=?1")?
+    let ident = crate::idents::ident_sql("analysis", "a.id", crate::idents::has_idents(conn)?);
+    type Row = (i64, i64, String, Option<String>, Vec<u8>);
+    let rows: Vec<Row> = conn
+        .prepare(&format!(
+            "SELECT a.id,a.capture_id,a.created_at,{ident},a.payload FROM analyses a WHERE a.document_id=?1"
+        ))?
         .query_map([document_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
     #[cfg(any(test, feature = "test-support"))]
@@ -1932,12 +2017,15 @@ pub(crate) fn current_analysis_row(
     }
     let of_current = rows
         .iter()
-        .any(|(_, capture, _, _)| *capture == current_capture);
+        .any(|(_, capture, _, _, _)| *capture == current_capture);
     rows.into_iter()
-        .filter(|(_, capture, _, _)| !of_current || *capture == current_capture)
-        // The same converter the triggers of `current_pointer` call.
-        .max_by_key(|(id, _, at, _)| (crate::idents::analysis_micros(at), *id))
-        .map(|(id, _, _, blob)| decode(&blob).map(|analysis| (id, analysis)))
+        .filter(|(_, capture, _, _, _)| !of_current || *capture == current_capture)
+        // The order of the triggers of `current_pointer`, with the same
+        // converter of the time.
+        .max_by_key(|(id, _, at, ident, _)| {
+            (crate::idents::analysis_micros(at), ident.clone(), *id)
+        })
+        .map(|(id, _, _, _, blob)| decode(&blob).map(|analysis| (id, analysis)))
         .transpose()
 }
 
@@ -1985,6 +2073,21 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 
 fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// Now, or a millisecond after `previous` (the moment of the current
+/// version) when that is not before now: a version made here is always
+/// after the current one in the order of versions.
+fn moment_after(previous: Option<&str>) -> String {
+    match previous
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t.trim()).ok())
+        .map(|t| t.with_timezone(&Utc))
+    {
+        Some(t) if t >= Utc::now() => {
+            (t + chrono::Duration::milliseconds(1)).to_rfc3339_opts(SecondsFormat::Millis, true)
+        }
+        _ => now(),
+    }
 }
 
 fn identity_hash(capture: &Capture) -> Vec<u8> {

@@ -12027,10 +12027,23 @@ fn build_sync_conflict(
         } => {
             let host_note = host_snapshot
                 .and_then(|s| {
+                    // The current note there, by the order of versions.
+                    let ident = |id: i64| {
+                        s.idents
+                            .iter()
+                            .find(|r| r.0 == "note" && r.1 == id)
+                            .map(|r| r.2.clone())
+                    };
                     s.notes
                         .iter()
                         .filter(|n| n.document_id == *document_id)
-                        .max_by_key(|n| n.id)
+                        .max_by_key(|n| {
+                            (
+                                crate::idents::analysis_micros(&n.created_at),
+                                ident(n.id),
+                                n.id,
+                            )
+                        })
                 })
                 .map(|n| n.note.clone())
                 .unwrap_or_else(|| "(vazia no computador principal)".into());

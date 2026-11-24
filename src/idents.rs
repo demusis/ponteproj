@@ -4,9 +4,9 @@
 //! `ident` (`item_ident`), given by a trigger in the same statement that
 //! inserts the row and removed with it, so no path that writes rows can
 //! forget it. The current note and the current analysis of each document
-//! are kept in `current_pointer` by triggers too (the rule of today: the
-//! newest note by number; the analysis made last by its own time, as
-//! `storage::current_analysis` chooses it). `ident_state` will say where
+//! are kept in `current_pointer` by triggers too, by the one order of the
+//! versions ([`version_order`]: time, identity, number), as the reads
+//! choose them. `ident_state` will say where
 //! the identities came from; nothing writes it yet.
 //!
 //! Each connection also logs, in TEMP tables of its own, the rows it
@@ -563,18 +563,60 @@ pub(crate) fn analysis_time(column: &str) -> String {
     format!("ponte_analysis_micros({column})")
 }
 
+/// The identity of row `row` (an SQL expression) of `kind`, for the tie of
+/// [`version_order`]; `NULL` in a library left at schema 21 (no identity
+/// there: the number alone breaks the tie, as before F3).
+pub(crate) fn ident_sql(kind: &str, row: &str, idents: bool) -> String {
+    if idents {
+        format!("(SELECT i.ident FROM item_ident i WHERE i.kind='{kind}' AND i.row_id={row})")
+    } else {
+        "NULL".to_owned()
+    }
+}
+
+/// The one order of the versions of an item (adendo §8, frozen rule 17),
+/// newest first, as an SQL `ORDER BY` over the rows `alias` of `kind`
+/// whose moment is the column `at`: by that moment (unreadable ones count
+/// as the oldest), then by identity, then by number. The identity travels
+/// with the row, so every device that holds the same rows chooses the
+/// same one, whatever their numbers here.
+pub(crate) fn version_order(kind: &str, alias: &str, at: &str, idents: bool) -> String {
+    let at = analysis_time(&format!("{alias}.{at}"));
+    let ident = ident_sql(kind, &format!("{alias}.id"), idents);
+    format!("{at} IS NULL, {at} DESC, {ident} DESC, {alias}.id DESC")
+}
+
+/// The current note of the document `document` (an SQL expression): the
+/// newest by [`version_order`].
+pub(crate) fn current_note_sql(document: &str, idents: bool) -> String {
+    format!(
+        "(SELECT n.id FROM notes n WHERE n.document_id={document} ORDER BY {} LIMIT 1)",
+        version_order("note", "n", "created_at", idents)
+    )
+}
+
 /// The current analysis of the document `document` (an SQL expression), as
 /// `storage::current_analysis_row`: of the analyses of its current version
-/// (`documents.latest_capture_id`), the one made last by its own time,
-/// unreadable times first, ties by number; only when the current version
-/// has none, the same choice among all of them.
+/// (`documents.latest_capture_id`), the newest by [`version_order`]; only
+/// when the current version has none, the same choice among all of them.
 fn current_analysis_sql(document: &str) -> String {
-    let at = analysis_time("a.created_at");
     format!(
         "(SELECT a.id FROM analyses a WHERE a.document_id={document} \
          ORDER BY coalesce(a.capture_id=(SELECT d.latest_capture_id FROM documents d WHERE d.id={document}),0) DESC, \
-         {at} IS NULL, {at} DESC, a.id DESC LIMIT 1)"
+         {} LIMIT 1)",
+        version_order("analysis", "a", "created_at", true)
     )
+}
+
+/// Every pointer of `current_pointer` read again by [`version_order`] (a
+/// library whose pointers an older build's triggers kept).
+pub(crate) fn refresh_pointers(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&format!(
+        "UPDATE current_pointer SET note_id={}, analysis_id={};",
+        current_note_sql("current_pointer.document_id", true),
+        current_analysis_sql("current_pointer.document_id")
+    ))?;
+    Ok(())
 }
 
 /// Every row of the twelve kinds gets an identity, and every document its
@@ -588,7 +630,8 @@ pub(crate) fn backfill_sql() -> String {
         ));
     }
     sql.push_str(&format!(
-        "INSERT INTO current_pointer(document_id,note_id,analysis_id) SELECT d.id,(SELECT max(n.id) FROM notes n WHERE n.document_id=d.id),{} FROM documents d;\n",
+        "INSERT INTO current_pointer(document_id,note_id,analysis_id) SELECT d.id,{},{} FROM documents d;\n",
+        current_note_sql("d.id", true),
         current_analysis_sql("d.id")
     ));
     sql
@@ -630,8 +673,7 @@ pub(crate) fn triggers() -> Vec<(String, String)> {
             pointer_of("NEW.id")
         ),
     );
-    let newest_note =
-        |doc: &str| format!("(SELECT max(n.id) FROM notes n WHERE n.document_id={doc})");
+    let newest_note = |doc: &str| current_note_sql(doc, true);
     // A document that changes number takes its pointer row along, read
     // again for the new number (its notes and analyses may have moved
     // first, with the foreign keys off).
@@ -649,8 +691,9 @@ pub(crate) fn triggers() -> Vec<(String, String)> {
         &mut out,
         "ponte_pointer_notes_insert",
         format!(
-            "AFTER INSERT ON notes BEGIN {} UPDATE current_pointer SET note_id=NEW.id WHERE document_id=NEW.document_id AND (note_id IS NULL OR note_id<NEW.id); END;",
-            pointer_of("NEW.document_id")
+            "AFTER INSERT ON notes BEGIN {} UPDATE current_pointer SET note_id={} WHERE document_id=NEW.document_id; END;",
+            pointer_of("NEW.document_id"),
+            newest_note("NEW.document_id")
         ),
     );
     push(
@@ -665,7 +708,7 @@ pub(crate) fn triggers() -> Vec<(String, String)> {
         &mut out,
         "ponte_pointer_notes_update",
         format!(
-            "AFTER UPDATE OF id,document_id ON notes BEGIN UPDATE current_pointer SET note_id={} WHERE document_id IN (OLD.document_id,NEW.document_id); END;",
+            "AFTER UPDATE OF id,document_id,created_at ON notes BEGIN UPDATE current_pointer SET note_id={} WHERE document_id IN (OLD.document_id,NEW.document_id); END;",
             newest_note("current_pointer.document_id")
         ),
     );
@@ -705,6 +748,26 @@ pub(crate) fn triggers() -> Vec<(String, String)> {
             current_analysis_sql("NEW.id")
         ),
     );
+    // The identity breaks a tie of time (adendo §8): a row that gets its
+    // identity after its insert (the trigger above, an adoption's triples,
+    // a replay's rekey, the cut of a promotion) has the pointer of its
+    // document read again, in the very statement that changed it.
+    for (event, name) in [
+        ("INSERT", "ponte_pointer_item_ident_insert"),
+        ("UPDATE OF ident", "ponte_pointer_item_ident_update"),
+    ] {
+        push(
+            &mut out,
+            name,
+            format!(
+                "AFTER {event} ON item_ident WHEN NEW.kind IN ('note','analysis') BEGIN \
+                 UPDATE current_pointer SET note_id={} WHERE NEW.kind='note' AND document_id=(SELECT n.document_id FROM notes n WHERE n.id=NEW.row_id); \
+                 UPDATE current_pointer SET analysis_id={} WHERE NEW.kind='analysis' AND document_id=(SELECT a.document_id FROM analyses a WHERE a.id=NEW.row_id); END;",
+                newest_note("current_pointer.document_id"),
+                current_analysis_sql("current_pointer.document_id")
+            ),
+        );
+    }
     out
 }
 

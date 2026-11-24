@@ -213,59 +213,39 @@ fn f3_1a_tied_captures_choose_the_same_current_version() {
     }
 }
 
-/// R2-08 / frozen rule 17: the import uses the comparator only to break
-/// an equal time. A version captured at the same moment as the current
-/// one becomes current only when it is after it by (identity, number):
-/// never when the current one has the highest identity; and, replayed
-/// with the identity it carries, by that final identity (not the one the
-/// insert gave it for a moment).
+/// R2-08 / frozen rule 17, with the time of a version taken as the moment
+/// it was captured, then the one it was stored at (both travel with it).
+/// A re-import captured in the same second is stored after the current
+/// version, so it is current, here and replayed with the identity it
+/// carries (a guard: as before). Among versions of one moment, the one
+/// stored last takes over from the Lixeira, on A and on B, whatever their
+/// numbers and identities.
 ///
-/// Red on `258b37a`: at an equal time the newcomer always becomes current.
+/// Red on `258b37a`: the promotion breaks the tie of the moment of capture
+/// by number, so A and B promote different versions.
 #[test]
-fn f3_1a_import_tie_follows_version_order() {
+fn f3_1a_versions_of_one_moment_follow_their_stored_time() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open(&dir.path().join("a.sqlite3")).unwrap();
-    let version = |number: &str, text: &str| {
-        let mut c = capture(number, text);
+    let mut store = Store::open(&dir.path().join("c.sqlite3")).unwrap();
+    let version = |text: &str| {
+        let mut c = capture("SEFAZ-PRO-2026/04001", text);
         c.captured_at = "2030-01-01T10:00:00Z".into();
         c.request_id = uuid::Uuid::new_v4().to_string();
         c
     };
-    let first = store
-        .import_capture(&version("SEFAZ-PRO-2026/04001", "V1"))
-        .unwrap();
-    set_ident(&store, "capture", first.capture_id, &same('f'));
-    let second = store
-        .import_capture(&version("SEFAZ-PRO-2026/04001", "V2"))
-        .unwrap();
-    assert_ne!(second.capture_id, first.capture_id);
-    assert_eq!(
-        latest(&store, first.document_id),
-        first.capture_id,
-        "the highest identity stays current"
-    );
-    set_ident(&store, "capture", first.capture_id, &same('0'));
-    let third = store
-        .import_capture(&version("SEFAZ-PRO-2026/04001", "V3"))
-        .unwrap();
-    assert_eq!(latest(&store, first.document_id), third.capture_id);
-
-    // Replayed: the final identity decides.
-    let other = store
-        .import_capture(&version("SEFAZ-PRO-2026/04002", "W1"))
-        .unwrap();
-    let below_top = format!("{}e", "f".repeat(31));
-    set_ident(&store, "capture", other.capture_id, &below_top);
+    let first = store.import_capture(&version("V1")).unwrap();
+    let second = store.import_capture(&version("V2")).unwrap();
+    assert_eq!(latest(&store, first.document_id), second.capture_id);
     let carried = vec![SlotIdent {
         kind: "capture".into(),
         slot: String::new(),
-        ident: same('f'),
+        ident: same('0'),
     }];
     match store
         .execute_carrying(
             "Casa",
             IntranetMutation::ImportCapture {
-                capture: version("SEFAZ-PRO-2026/04002", "W2"),
+                capture: version("V3"),
             },
             &carried,
         )
@@ -274,12 +254,35 @@ fn f3_1a_import_tie_follows_version_order() {
         crate::idents::Carried::Applied(..) => {}
         crate::idents::Carried::Refused(e) => panic!("{e}"),
     }
-    let w2 = row_of(&store, "capture", &same('f'));
-    assert_eq!(
-        latest(&store, other.document_id),
-        w2,
-        "by its final identity"
-    );
+    let third = row_of(&store, "capture", &same('0'));
+    assert_eq!(latest(&store, first.document_id), third, "replayed too");
+
+    let (_dir, _path, mut a, mut b) = two();
+    let doc = a.list_documents("").unwrap()[0].id;
+    let stored = |mut copy: CabinetSnapshot, later: i64| {
+        for row in &mut copy.captures {
+            if row.id == later {
+                row.created_at = "2030-01-01T10:00:05Z".into();
+            }
+        }
+        copy
+    };
+    // V2 (the lower identity, stored later) is the higher number on A,
+    // the lower on B.
+    let on_a = stored(versions_copy(&a, 200, 201), 201);
+    let on_b = stored(versions_copy(&a, 201, 200), 200);
+    adopt(&mut a, &on_a);
+    adopt(&mut b, &on_b);
+    for store in [&mut a, &mut b] {
+        store
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Capture,
+                id: 202,
+            })
+            .unwrap();
+        let v2 = row_of(store, "capture", &same('3'));
+        assert_eq!(latest(store, doc), v2, "V2, stored last, takes over");
+    }
 }
 
 // -------------------------------- plano-frente-f §9 obligations --

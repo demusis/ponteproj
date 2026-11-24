@@ -1177,7 +1177,7 @@ fn f2a_m4_a_process_that_started_at_21_never_writes_after_another_migrated() {
         "DELETE FROM notes",
     ] {
         let error = old.execute(sql, []).expect_err(sql);
-        assert!(error.to_string().contains(GUARD_MESSAGE), "{sql}: {error}");
+        assert!(fenced(&error), "{sql}: {error}");
     }
 }
 
