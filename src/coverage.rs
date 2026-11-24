@@ -31,6 +31,7 @@
 //! item, so a match needs one of the proofs above.
 
 use crate::idmap::{CreatedId, IdKind};
+use crate::idrefs::Proof;
 use crate::intranet::{CabinetSnapshot, IntranetMutation};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
@@ -56,6 +57,11 @@ pub(crate) struct Item {
     /// Proofs valid only in the same numbering.
     frame_keys: Vec<String>,
     parent: Option<Parent>,
+    /// The identities of the item and of its parent in the holder (v2
+    /// §2.6), and whether the holder is this library (not a copy).
+    ident: Option<String>,
+    parent_ident: Option<String>,
+    here: bool,
     label: String,
     /// The keys and label still to be read (a library reads them only for
     /// the items the cheap keys did not find).
@@ -71,9 +77,28 @@ impl Item {
             keys: Vec::new(),
             frame_keys: Vec::new(),
             parent,
+            ident: None,
+            parent_ident: None,
+            here: false,
             label: String::new(),
             complete: true,
         }
+    }
+}
+
+/// Gives `items` their identities and their parents', as `ident_of` reads
+/// them in their holder (`here`: this library).
+fn with_idents(items: &mut [Item], here: bool, ident_of: impl Fn(&str, i64) -> Option<String>) {
+    for item in items {
+        item.here = here;
+        if item.id > 0 {
+            item.ident = ident_of(item.kind, item.id);
+        }
+        item.parent_ident = match &item.parent {
+            Some(Parent::Document(doc)) => ident_of("document", *doc),
+            Some(Parent::Batch(batch)) => ident_of("saiop_batch", *batch),
+            _ => None,
+        };
     }
 }
 
@@ -268,6 +293,14 @@ impl Holder for SnapshotHolder<'_> {
                 format!("exemplo “{}”", e.value.title.trim()),
             );
         }
+        let idents: HashMap<(&str, i64), &str> = s
+            .idents
+            .iter()
+            .map(|crate::idents::IdentRow(k, row, i)| ((k.as_str(), *row), i.as_str()))
+            .collect();
+        with_idents(&mut out, false, |k, row| {
+            idents.get(&(k, row)).map(|i| i.to_string())
+        });
         Ok(out)
     }
 
@@ -424,6 +457,20 @@ impl Holder for LibraryHolder<'_> {
                 out.push(item);
             }
         }
+        let mut idents: HashMap<(String, i64), String> = HashMap::new();
+        if crate::idents::has_idents(self.conn)? {
+            let mut statement = self.conn.prepare(
+                "SELECT kind,row_id,ident FROM item_ident WHERE kind IN ('document','task','saiop','saiop_batch')",
+            )?;
+            let rows = statement.query_map([], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?;
+            for row in rows {
+                let (key, ident) = row?;
+                idents.insert(key, ident);
+            }
+        }
+        with_idents(&mut out, true, |k, row| {
+            idents.get(&(k.to_owned(), row)).cloned()
+        });
         Ok(out)
     }
 
@@ -561,34 +608,54 @@ impl Replayed {
     }
 }
 
-/// The removals a journal records: by number (in the numbering of the copy
-/// the entry was written for) and by uid.
+/// The removals a journal records: by uid; for a kind mapped here (v2
+/// §2.6), by the identity the entry's proof names, or, from an entry
+/// without proofs (an older Ponte's), by number for the items of a copy
+/// only; for any other kind, by number (in the numbering of the copy the
+/// entry was written for).
 #[derive(Default)]
 pub(crate) struct Removed {
     ids: BTreeSet<(&'static str, i64)>,
+    legacy: BTreeSet<(&'static str, i64)>,
+    idents: BTreeSet<(&'static str, String)>,
     uids: BTreeSet<String>,
-    batches: BTreeSet<i64>,
 }
 
 impl Removed {
+    /// The removal of row `id` of `kind` (an ident kind), proved by `proof`
+    /// (`None`: an entry without proofs).
+    fn removal(&mut self, kind: &'static str, id: i64, proof: Option<Option<&Proof>>) {
+        if !crate::mapper::addressed(kind) {
+            self.ids.insert((kind, id));
+            return;
+        }
+        match proof {
+            None => drop(self.legacy.insert((kind, id))),
+            Some(Some(Proof::Ident(ident))) => drop(self.idents.insert((kind, ident.clone()))),
+            // Proved by no identity: it explains nothing.
+            Some(_) => {}
+        }
+    }
+
     pub(crate) fn note(&mut self, mutation: &IntranetMutation, refs: Option<&crate::idrefs::Refs>) {
-        let _ = refs;
         use IntranetMutation as M;
+        // A removal names one site.
+        let proof = refs.map(|r| r.mutation.first().map(|site| &site.proof));
         match mutation {
             M::PurgeTrash { kind, id } if kind == "document" => {
-                self.ids.insert(("document", *id));
+                self.removal("document", *id, proof);
             }
             M::PurgeTrash { kind, id } if kind == "task" => {
-                self.ids.insert(("task", *id));
+                self.removal("task", *id, proof);
             }
             M::DeleteDocument { id } => {
-                self.ids.insert(("document", *id));
+                self.removal("document", *id, proof);
             }
             M::DeleteSaiopAttendance { id } => {
-                self.ids.insert(("saiop", *id));
+                self.removal("saiop", *id, proof);
             }
             M::UndoSaiopBatch { batch_id } => {
-                self.batches.insert(*batch_id);
+                self.removal("saiop_batch", *batch_id, proof);
             }
             M::DeleteTemplate { uid }
             | M::DeleteBlock { uid }
@@ -628,7 +695,7 @@ impl Removed {
                 IdKind::Saiop => "saiop",
                 _ => continue,
             };
-            self.ids.insert((kind, c.id));
+            self.removal(kind, c.id, None);
         }
     }
 
@@ -637,18 +704,29 @@ impl Removed {
     pub(crate) fn by_uid_only(&self) -> Self {
         Self {
             ids: BTreeSet::new(),
+            legacy: BTreeSet::new(),
+            idents: self.idents.clone(),
             uids: self.uids.clone(),
-            batches: BTreeSet::new(),
         }
     }
 
     fn explains(&self, item: &Item) -> bool {
-        (item.id > 0 && self.ids.contains(&(item.kind, item.id)))
+        let removed = |kind: &'static str, id: i64, ident: &Option<String>| {
+            if crate::mapper::addressed(kind) {
+                ident
+                    .as_ref()
+                    .is_some_and(|i| self.idents.contains(&(kind, i.clone())))
+                    || (!item.here && self.legacy.contains(&(kind, id)))
+            } else {
+                self.ids.contains(&(kind, id))
+            }
+        };
+        (item.id > 0 && removed(item.kind, item.id, &item.ident))
             || (!item.uid.is_empty() && self.uids.contains(&item.uid))
             || match &item.parent {
-                Some(Parent::Document(doc)) => self.ids.contains(&("document", *doc)),
+                Some(Parent::Document(doc)) => removed("document", *doc, &item.parent_ident),
                 Some(Parent::Uid(uid)) => self.uids.contains(uid),
-                Some(Parent::Batch(batch)) => self.batches.contains(batch),
+                Some(Parent::Batch(batch)) => removed("saiop_batch", *batch, &item.parent_ident),
                 None => false,
             }
     }

@@ -7346,13 +7346,13 @@ impl Store {
                 self.keep_conflicts(&conflicts)?;
                 return Err(error);
             }
-            for (kind, id, meta) in &final_snapshot.item_versions {
-                if kind == "cabinet" {
+            for (key, version) in &self.version_map()? {
+                if key.0 == "cabinet" {
                     continue;
                 }
-                match before.get(&(kind.clone(), *id)) {
+                match before.get(key) {
                     None => report.imported_new += 1,
-                    Some(version) if *version != meta.version => report.imported_changed += 1,
+                    Some(before) if before != version => report.imported_changed += 1,
                     _ => {}
                 }
             }
@@ -7696,20 +7696,30 @@ impl Store {
         Ok(())
     }
 
-    fn version_map(&self) -> Result<BTreeMap<(String, i64), i64>> {
+    /// The version of each item here, keyed by its kind and its key: for a
+    /// row key of a mapped kind, the identity of the row (v2 §2.6: before
+    /// and after an adoption that may give it another number), otherwise
+    /// the key as it is.
+    fn version_map(&self) -> Result<BTreeMap<(String, String), i64>> {
         let mut statement = self
             .conn
             .prepare("SELECT kind,item_id,version FROM item_versions")?;
         let rows = statement.query_map([], |r| {
             Ok((
-                (r.get::<_, String>(0)?, r.get::<_, i64>(1)?),
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
                 r.get::<_, i64>(2)?,
             ))
         })?;
         let mut out = BTreeMap::new();
         for row in rows {
-            let (key, version) = row?;
-            out.insert(key, version);
+            let (kind, id, version) = row?;
+            let ident = match crate::mapper::row_kind(&kind).filter(|k| crate::mapper::addressed(k))
+            {
+                Some(row_kind) => crate::idents::ident_of(&self.conn, row_kind, id)?,
+                None => None,
+            };
+            out.insert((kind, ident.unwrap_or_else(|| id.to_string())), version);
         }
         Ok(out)
     }

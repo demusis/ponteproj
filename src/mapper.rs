@@ -147,7 +147,7 @@ fn own_ids<'a>(s: &'a mut CabinetSnapshot, kind: &str) -> Vec<&'a mut i64> {
 
 /// The ident kind whose number keys a version row of `kind` (v2 §2.8: the
 /// row keys), `None` for the cabinet counter and the uid or setting keys.
-fn row_kind(kind: &str) -> Option<&'static str> {
+pub(crate) fn row_kind(kind: &str) -> Option<&'static str> {
     let (_, table) = crate::intranet::ROW_VERSION_KINDS
         .iter()
         .find(|(k, _)| *k == kind)?;
