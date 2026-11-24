@@ -2079,14 +2079,19 @@ fn now() -> String {
 /// version) when that is not before now: a version made here is always
 /// after the current one in the order of versions.
 fn moment_after(previous: Option<&str>) -> String {
+    moment_after_at(previous, Utc::now())
+}
+
+/// [`moment_after`] with the clock read as `now`.
+pub(crate) fn moment_after_at(previous: Option<&str>, now: chrono::DateTime<Utc>) -> String {
     match previous
         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t.trim()).ok())
         .map(|t| t.with_timezone(&Utc))
     {
-        Some(t) if t >= Utc::now() => {
+        Some(t) if t >= now => {
             (t + chrono::Duration::milliseconds(1)).to_rfc3339_opts(SecondsFormat::Millis, true)
         }
-        _ => now(),
+        _ => now.to_rfc3339_opts(SecondsFormat::Millis, true),
     }
 }
 

@@ -101,6 +101,11 @@ mod f2b_tests;
 /// identity (tests only).
 #[cfg(test)]
 mod f31a2_tests;
+/// Review of F3.1a-i: the moment of a new version, the pointers after a
+/// replay and an equal snapshot, the oracle of the note rule and what Ponte
+/// 0.51 showed kept by the update (tests only).
+#[cfg(test)]
+mod f31a_review_tests;
 /// F3.1a of Frente F: acceptance tests of the comparator of versions, the
 /// pointers on final identities and the obligations of the record kinds
 /// (tests only).
