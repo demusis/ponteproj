@@ -130,6 +130,22 @@ fn f3_1a_reopen_recomputes_stale_pointers() {
             .document_id;
         a.save_note(doc, "Primeira.").unwrap();
         a.save_note(doc, "Segunda.").unwrap();
+        // Saved back to back, often in the same millisecond: the second is
+        // stored strictly after the first all the same (review F3.1a-i,
+        // finding 1), so it is the newest by time AND by number.
+        let moments: Vec<String> = a
+            .conn
+            .prepare("SELECT created_at FROM notes ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            crate::idents::analysis_micros(&moments[1])
+                > crate::idents::analysis_micros(&moments[0]),
+            "{moments:?}"
+        );
         a.conn
             .execute_batch(
                 "DROP TRIGGER ponte_pointer_notes_insert;

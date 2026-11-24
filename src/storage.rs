@@ -2077,13 +2077,17 @@ fn now() -> String {
 
 /// Now, or a millisecond after `previous` (the moment of the current
 /// version) when that is not before now: a version made here is always
-/// after the current one in the order of versions.
+/// strictly after the current one in the order of versions.
 fn moment_after(previous: Option<&str>) -> String {
     moment_after_at(previous, Utc::now())
 }
 
-/// [`moment_after`] with the clock read as `now`.
+/// [`moment_after`] with the clock read as `now`. Now is taken at the
+/// precision a moment is stored at (milliseconds) before it is compared:
+/// a clock a fraction of a millisecond after the current version would
+/// otherwise be stored as that very moment.
 pub(crate) fn moment_after_at(previous: Option<&str>, now: chrono::DateTime<Utc>) -> String {
+    let now = chrono::DateTime::<Utc>::from_timestamp_millis(now.timestamp_millis()).unwrap_or(now);
     match previous
         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t.trim()).ok())
         .map(|t| t.with_timezone(&Utc))
