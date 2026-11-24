@@ -162,6 +162,8 @@ struct PasteStep {
     title_edited: bool,
     /// Reading of `text`; recomputed when the text changes.
     parsed: Option<Result<crate::whatsapp::Conversation, String>>,
+    /// Why the chosen file could not be read (shown under the buttons).
+    file_error: String,
 }
 
 impl PasteStep {
@@ -173,6 +175,34 @@ impl PasteStep {
             title: String::new(),
             title_edited: false,
             parsed: None,
+            file_error: String::new(),
+        }
+    }
+
+    /// Takes the conversation from an exported `.txt` file: the file is read
+    /// and decoded here, then goes through the same reading as a paste.
+    fn load_file(&mut self, path: &std::path::Path) {
+        self.file_error.clear();
+        let result = (|| -> anyhow::Result<String> {
+            let size = std::fs::metadata(path)?.len();
+            anyhow::ensure!(
+                size <= 2 * crate::model::MAX_CAPTURE_TEXT_BYTES as u64,
+                "O arquivo passa do limite de um registro (500 KB). Exporte a conversa em partes menores."
+            );
+            crate::whatsapp::decode_export(&std::fs::read(path)?)
+        })();
+        match result {
+            Ok(text) => {
+                self.text = text;
+                if self.chat.trim().is_empty() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        self.chat = crate::whatsapp::chat_from_file_name(name);
+                    }
+                }
+                self.title_edited = false;
+                self.reread();
+            }
+            Err(error) => self.file_error = error.to_string(),
         }
     }
 
@@ -1018,6 +1048,8 @@ enum WorkResult {
     /// "Exportar cópia portátil…": the file written.
     PortableExport(std::result::Result<crate::portable_copy::Exported, String>),
     Export(std::result::Result<crate::export::ExportReport, String>),
+    /// "Exportar tudo em pasta aberta…".
+    OpenExport(std::result::Result<crate::open_export::OpenExportReport, String>),
     MailFolders(std::result::Result<Vec<crate::imap::Folder>, String>),
     MailMessages(std::result::Result<Vec<crate::imap::MessageSummary>, String>),
     /// Raw messages by uid, to be imported on the window's thread.
@@ -1039,6 +1071,9 @@ enum WorkKind {
     /// Building a recovery library (Ajustes ▸ Cópia de segurança).
     Recovery,
     Export,
+    /// "Exportar tudo em pasta aberta…": it reads the library for a while and
+    /// counts as backup work (no automatic copy starts meanwhile).
+    OpenExport,
     /// Talking to a mailbox (folders, list, fetch).
     Mail,
     /// "Testar a IA com casos fictícios".
@@ -3022,6 +3057,44 @@ impl PonteApp {
         );
     }
 
+    /// "Exportar tudo em pasta aberta…": an empty folder is chosen, then the
+    /// library is written there on the worker, with steps and a cancel.
+    pub(super) fn export_open(&mut self, ctx: &egui::Context) {
+        if self.copy_job_blocked() {
+            return;
+        }
+        if self.worker.is_some() {
+            self.error("Há outro trabalho em andamento. Espere terminar, ou cancele o atual, e tente de novo.");
+            return;
+        }
+        let Some(folder) = crate::windows_ui::pick_folder(
+            "Escolha uma pasta VAZIA para a exportação aberta (sem senha)",
+        ) else {
+            return;
+        };
+        if let Err(error) = crate::open_export::check_target_folder(&folder) {
+            self.error(format!("{error}"));
+            return;
+        }
+        let db_path = self.db_path.clone();
+        self.spawn(
+            "Exportando o acervo em pasta aberta…".into(),
+            WorkKind::OpenExport,
+            move |reporter| {
+                let result = Store::open_read_only(&db_path).and_then(|store| {
+                    crate::open_export::export_open(
+                        &store,
+                        &folder,
+                        &|step| reporter.step(step),
+                        &|| reporter.cancelled(),
+                    )
+                });
+                WorkResult::OpenExport(result.map_err(|e| format!("{e:#}")))
+            },
+            ctx,
+        );
+    }
+
     fn poll_worker(&mut self) {
         if let Some(worker) = &mut self.worker {
             // Keep only the latest step; the channel may hold several.
@@ -3051,11 +3124,13 @@ impl PonteApp {
                 WorkResult::Draft { .. } => "Geração da minuta cancelada; nada foi alterado.",
                 WorkResult::AiTest(_) => "Teste da IA cancelado.",
                 WorkResult::Conference { .. } => "Conferência da minuta cancelada.",
+                WorkResult::OpenExport(_) => "Exportação cancelada. A pasta ficou marcada com EXPORTACAO-INCOMPLETA.txt: não use o que está nela; apague-a e exporte de novo numa pasta vazia.",
                 _ => "Operação cancelada.",
             };
             let finished_anyway = match &result {
                 WorkResult::Analysis { result, .. } => result.is_ok(),
                 WorkResult::Draft { result, .. } => result.is_ok(),
+                WorkResult::OpenExport(result) => result.is_ok(),
                 _ => false,
             };
             if !finished_anyway {
@@ -3230,6 +3305,32 @@ impl PonteApp {
             }
             WorkResult::Recovery(result) => self.accept_recovery(result),
             WorkResult::PortableExport(result) => self.accept_portable_export(result),
+            WorkResult::OpenExport(result) => match result {
+                Ok(report) => {
+                    let mut text = format!(
+                        "Exportação aberta concluída em {}: {} (mais {} da Lixeira), {}, {}, {}, {} e {}. Lembrete: a pasta NÃO é criptografada; quem a tiver lê tudo.",
+                        report.folder.display(),
+                        plural(report.documents, "documento", "documentos"),
+                        report.trashed_documents,
+                        plural(report.tasks, "tarefa", "tarefas"),
+                        plural(report.projects, "projeto", "projetos"),
+                        plural(report.attendances, "atendimento", "atendimentos"),
+                        plural(report.resources, "recurso", "recursos"),
+                        plural(report.categories, "categoria", "categorias"),
+                    );
+                    if !report.warnings.is_empty() {
+                        text.push_str(&format!(
+                            " Atenção: {} item(ns) não puderam ser gravados; veja os AVISOS no LEIA-ME.txt.",
+                            report.warnings.len()
+                        ));
+                    }
+                    self.message(text);
+                    crate::windows_ui::reveal_in_explorer(&report.folder);
+                }
+                Err(error) => self.error(format!(
+                    "A exportação aberta não terminou: {error}. A pasta ficou marcada com EXPORTACAO-INCOMPLETA.txt; não use o que está nela."
+                )),
+            },
             WorkResult::Export(result) => match result {
                 Ok(report) => {
                     self.message(format!(
@@ -4113,13 +4214,18 @@ impl eframe::App for PonteApp {
                             | WorkKind::Draft
                             | WorkKind::AiTest
                             | WorkKind::Conference
+                            | WorkKind::OpenExport
                     ) {
                         cancel = ui
                             .add_enabled(
                                 !worker.cancelling(),
                                 widgets::quiet("Cancelar"),
                             )
-                            .on_hover_text("Interrompe a IA na próxima etapa. Nada é salvo.")
+                            .on_hover_text(if worker.kind == WorkKind::OpenExport {
+                                "Interrompe a exportação ao fim do documento atual. A pasta fica marcada como incompleta."
+                            } else {
+                                "Interrompe a IA na próxima etapa. Nada é salvo."
+                            })
                             .clicked();
                     }
                 });

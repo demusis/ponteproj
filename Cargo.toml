@@ -1,6 +1,6 @@
 [package]
 name = "ponteproj"
-version = "0.50.0"
+version = "0.51.0"
 edition = "2021"
 description = "Assistente local SIGADOC com captura pelo navegador"
 authors = ["Carlo Ralph De Musis", "João Gabriel Bezerra Estrela"]
@@ -38,7 +38,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"], opt
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Foundation", "Data_Pdf", "Storage_Streams", "Win32_System_WinRT", "Graphics_Imaging", "Media_Ocr", "Globalization", "Win32_Foundation", "Win32_System_Registry", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_Networking_WinHttp"] }
+windows = { version = "0.62.2", features = ["Foundation", "Data_Pdf", "Storage_Streams", "Win32_System_WinRT", "Graphics_Imaging", "Media_Ocr", "Globalization", "Win32_Foundation", "Win32_System_Registry", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_Networking_WinHttp"] }
 
 [features]
 default = ["desktop"]

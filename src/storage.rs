@@ -467,6 +467,44 @@ impl Store {
         Self::open_with(path, false, true)
     }
 
+    /// Opens the library only to be read (the open export): a read-only
+    /// connection to a file that must already exist, with no migration, no
+    /// `ensure_*` step and no write of any kind. The library must already be
+    /// in the schema of this version (the window opened it); otherwise it is
+    /// refused rather than read with tables that may be missing.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        ensure!(path.is_file(), "O acervo não foi encontrado.");
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .context("Não foi possível abrir o acervo só para leitura.")?;
+        conn.busy_timeout(Duration::from_secs(5))?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        // The library file of this build (22), or one whose step to it
+        // could not be done yet and that opened as it was (21).
+        ensure!(
+            version == SCHEMA_VERSION || version == LIBRARY_SCHEMA,
+            "O acervo não está na versão desta cópia do Ponte (abra o Ponte e deixe-o atualizar o acervo antes de exportar)."
+        );
+        Ok(Self {
+            conn,
+            suppress_remote: true,
+            actor_override: String::new(),
+            offline_queued: 0,
+            host_unreachable_until: None,
+            cascade_suppressed: false,
+            cascade_notes: Vec::new(),
+            read_cache: Default::default(),
+            transport_off: true,
+            replacement_notes: Default::default(),
+            accept_bad_safety_copy: false,
+            upgrade_notice: None,
+            device_dir: None,
+            folder_role: crate::formatfloor::FolderRole::Desktop,
+        })
+    }
+
     fn open_with(path: &Path, link_juntadas: bool, upgrade: bool) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).context("Não foi possível criar a pasta do acervo.")?;

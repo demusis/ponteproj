@@ -150,10 +150,12 @@ impl PonteApp {
     /// or the window is switching libraries: no automatic copy starts.
     pub(super) fn maintenance_running(&self) -> bool {
         self.library.switching_to.is_some()
-            || self
-                .worker
-                .as_ref()
-                .is_some_and(|worker| matches!(worker.kind, WorkKind::Recovery | WorkKind::Backup))
+            || self.worker.as_ref().is_some_and(|worker| {
+                matches!(
+                    worker.kind,
+                    WorkKind::Recovery | WorkKind::Backup | WorkKind::OpenExport
+                )
+            })
     }
 }
 

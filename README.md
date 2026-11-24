@@ -18,7 +18,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
 | **Celular (Android)** | **Ponte de bolso**, que acompanha o Ponte pela pasta compartilhada: [`mobile/README.md`](mobile/README.md) |
 | **Para quem mexe no código** | [`CONTRIBUINDO.md`](CONTRIBUINDO.md): módulos, build, testes e publicação |
-| **Versão** | 0.50.0 (extensão 0.4.1; Ponte de bolso 0.26.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.51.0 (extensão 0.4.1; Ponte de bolso 0.27.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -65,7 +65,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.50.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.51.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -156,13 +156,13 @@ Na área **Modelos**, **Ctrl+F** (buscar modelo), **Ctrl+N** (**Novo modelo**), 
 
 | Seção | Para quê |
 |---|---|
-| **Equipe e sincronização** | Trabalhar em equipe ou em mais de um computador; conflitos de edição e alterações a enviar ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) |
+| **Equipe e sincronização** | Trabalhar em equipe ou em mais de um computador; conflitos de edição e alterações a enviar; no modo pasta compartilhada, o tamanho do arquivo, as cópias criadas pela nuvem e o que não sincroniza ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada), [8.7](#87-tamanho-do-arquivo-cópias-criadas-pela-nuvem-e-o-que-não-sincroniza)) |
 | **E-mail** | Contas, pasta e filtro, lista de mensagens e importação, tudo na própria página, e o botão **Importar um e-mail salvo em arquivo (.eml)…** ([5.5](#55-registros-manuais)) |
 | **Importação do SIGADOC** | Criar atendimento ao importar do SIGADOC ([7.1](#71-de-onde-vêm-os-atendimentos)) |
 | **Lembretes** | Resumo diário de prazos e avisos das tarefas, no Windows: ligar ou desligar, **Horário do resumo diário** e **Mostrar um aviso de teste** ([6.6](#66-lembretes-de-prazos)) |
 | **Feriados** | O **Estado**, para contar também os feriados estaduais, e **Outros dias sem expediente** (feriado da cidade, recesso, ponto facultativo; **Todo ano** vale o dia e o mês de todos os anos). Vale para todos os aparelhos que sincronizam o acervo ([6.8](#68-planejar-o-trabalho)) |
 | **Inteligência artificial** | Escolher onde a IA roda ([seção 9](#9-ia-opcional)). Salva com **Salvar** ou ao sair da seção |
-| **Cópia de segurança e exportação** | **Fazer cópia agora**, a cópia automática por dia, onde as cópias ficam (**Abrir pasta**), **Restaurar cópia…**, **Exportar cópia portátil…** e **Importar cópia portátil…**, **Acervos deste computador**, **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) e o card **Calendário (.ics)** ([6.9](#69-calendário-ics)) |
+| **Cópia de segurança e exportação** | **Fazer cópia agora**, a cópia automática por dia, onde as cópias ficam (**Abrir pasta**), **Restaurar cópia…**, **Exportar cópia portátil…** e **Importar cópia portátil…**, **Acervos deste computador**, **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)), **Exportar tudo em pasta aberta…** ([10.5](#105-exportar-dados-csv)) e o card **Calendário (.ics)** ([6.9](#69-calendário-ics)) |
 | **Categorias** | criar, renomear, colorir, arquivar e apagar as categorias de tarefas e documentos ([6.7](#67-categorias)) |
 | **Lixeira** | Restaurar itens excluídos e definir o prazo de limpeza |
 | **Aparência** | Tema: *Como o Windows*, *Claro* ou *Escuro*; **Tamanho do texto**: *Normal*, *Grande* ou *Maior* |
@@ -403,6 +403,15 @@ Uma conversa do WhatsApp pode ficar guardada no Ponte, junto dos documentos, com
 4. Se quiser, ajuste **Conversa com** (nome da pessoa ou do grupo) e o **Título** (sugerido como "Conversa com <nome> — data da última mensagem"; pelo menos 3 caracteres).
 5. **Criar registro**.
 
+**Pelo arquivo da conversa (.txt).** Na mesma janela, **Colar conversa do WhatsApp**, o botão **Importar arquivo de conversa (.txt)…** lê o arquivo gerado pelo WhatsApp em **Exportar conversa ▸ Sem mídia**, no Android ou no iPhone. Leve o arquivo ao computador, clique no botão e escolha o `.txt`; o resto segue como na colagem (prévia, **Conversa com**, **Título**, **Criar registro**).
+
+- Se o WhatsApp entregar um **`.zip`**, extraia-o antes e escolha o `.txt` de dentro; o Ponte diz *Este arquivo é um .zip. Extraia-o e escolha o arquivo .txt que está dentro dele.*
+- O arquivo precisa estar em **UTF-8**. Se não estiver, o Ponte avisa (*O arquivo não está em UTF-8…*): abra-o no Bloco de Notas, salve como UTF-8 e escolha-o de novo.
+- Valem os mesmos limites do texto colado: até 500 mensagens e 500 KB. Se passar, o Ponte diz *O arquivo passa do limite de um registro (500 KB). Exporte a conversa em partes menores.*
+- A mesma conversa não é importada duas vezes (veja **Repetição**, abaixo).
+- Um arquivo exportado com as datas em **mês/dia** (celular com o WhatsApp em inglês) é **recusado**, com a instrução: *Esta conversa parece ter sido exportada com datas no formato mês/dia (celular em inglês). Mude o idioma do WhatsApp para português e exporte de novo, ou cole pelo WhatsApp Web.*
+- **Limite conhecido:** um iPhone em inglês não é detectado, e as datas podem sair trocadas. Confira a prévia.
+
 **Segunda forma: pela extensão (0.4.0), no WhatsApp Web.** O recurso vem desligado. Para ligar, uma única vez: clique no ícone da extensão ▸ **Usar no WhatsApp Web**, aceite a pergunta do Chrome (acesso a web.whatsapp.com). Com a extensão 0.4.1 o painel abre sozinho na página já aberta; com a 0.4.0, recarregue a página do WhatsApp Web. A página ganha o botão **Guardar no Ponte** (na 0.4.0, menor, escrito **Ponte**), no canto inferior esquerdo, que abre o painel **Guardar no Ponte**. Então:
 
 1. Arraste o mouse sobre as mensagens e clique em **Trecho selecionado**; ou clique em **Mensagens visíveis na tela**.
@@ -422,7 +431,7 @@ Se a página não for reconhecida (*O Ponte não reconheceu esta página do What
 | Arquivos | até 8 MB cada, 10 por envio pelo painel, 16 MB juntos; o registro aceita até 20 anexos ([5.6](#56-anexos)) |
 | Sem legenda | fotos e arquivos sem legenda entram sem o nome do autor; se a data não puder ser conhecida com certeza, entram como `[sem data]`, e o painel avisa |
 | Arquivos da página | PDF, Word etc. não são lidos da página: baixe-os no WhatsApp e solte-os no painel, ou junte-os depois em **Anexos**. As fotos das mensagens escolhidas são lidas |
-| Repetição | a mesma seleção enviada duas vezes pelo painel, ou o mesmo texto colado duas vezes, com o mesmo **Conversa com**, não duplica (os arquivos de uma conversa que já existia não são juntados de novo). Uma conversa guardada pelo painel e depois colada da cópia do WhatsApp pode ficar duas vezes, porque os dois textos não são idênticos |
+| Repetição | a mesma seleção enviada duas vezes pelo painel, ou o mesmo texto colado duas vezes (ou o mesmo arquivo importado duas vezes), com o mesmo **Conversa com**, não duplica (os arquivos de uma conversa que já existia não são juntados de novo). Uma conversa guardada pelo painel e depois colada da cópia do WhatsApp pode ficar duas vezes, porque os dois textos não são idênticos |
 | Lixeira | se a mesma conversa foi guardada antes e está na Lixeira, o Ponte avisa; restaure-a em **Ajustes ▸ Lixeira** |
 
 **O que a extensão não faz.** Lê só as mensagens escolhidas, só quando você clica (nada em segundo plano, ao abrir a página ou ao rolar). Não lê outras conversas nem contatos, não envia, altera nem apaga nada no WhatsApp e fica desligada até você ligar. O que você escolheu só sai da página em **Enviar ao Ponte** e vai somente ao Ponte deste computador ([10.6](#106-o-que-sai-do-computador)).
@@ -619,7 +628,7 @@ Um **projeto** reúne as tarefas de um mesmo objetivo (a organização de uma re
 
 ### 6.11 Atualizar entre versões: formato do acervo
 
-Algumas versões mudam o formato do acervo (o arquivo do Ponte no computador) e o do arquivo da pasta compartilhada. Desde a 0.48.0 o acervo está no formato **21** e o arquivo da pasta, no **8** (a 0.48.0 trouxe os projetos; as versões 0.48.1 a 0.50.0 não mudaram o formato). O que fazer:
+Algumas versões mudam o formato do acervo (o arquivo do Ponte no computador) e o do arquivo da pasta compartilhada. Desde a 0.48.0 o acervo está no formato **21** e o arquivo da pasta, no **8** (a 0.48.0 trouxe os projetos; as versões 0.48.1 a 0.51.0 não mudaram o formato). O que fazer:
 
 1. **Atualize primeiro o computador principal**, depois os outros computadores e o celular. Com a pasta compartilhada, atualize todos os aparelhos que usam a pasta.
 2. Uma versão mais antiga **recusa o acervo e o arquivo novos e não muda nada neles**: o Ponte 0.47.x e o Ponte de bolso 0.20.x dizem para atualizar (*Este acervo foi criado por uma versão mais nova do Ponte; atualize o Ponte antes de abri-lo.*, ou *O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte.*). Nada se perde: instale a versão nova e abra de novo.
@@ -800,6 +809,8 @@ Um conflito acontece só quando o **mesmo item** foi alterado nos dois lados enq
 
 Todas pedem confirmação.
 
+**Alteração sua recusada ao juntar as cópias da pasta.** Se, ao juntar as cópias das pastas, uma alteração sua for recusada (o item mudou em outro computador depois da versão sobre a qual você a fez), ela chega a você como um **cartão de conflito** na sincronização seguinte, e não some. Um cartão que você já resolveu não volta de uma cópia antiga da pasta.
+
 Um caso especial: se o computador principal recusou a criação de um item feito sem conexão (por exemplo, a tarefa de um documento que um colega mandou para a lixeira), as alterações seguintes desse item não têm onde cair. Elas aparecem como aviso (no cartão *Alterações a enviar*, da mesma seção), sem as opções acima, só com **Dispensar o aviso**: refaça a alteração à mão, se ainda for necessária.
 
 ### 8.4 O indicador na barra inferior
@@ -837,7 +848,7 @@ e continua: *Nada foi enviado nem substituído aqui: as alterações deste compu
 
 Quando não precisar mais dessas cópias, pode apagar a pasta.
 
-**Pasta compartilhada: uma cópia "divergente".** Se, ao sincronizar, a cópia que está numa pasta tinha alterações que não puderam ser reaplicadas (por exemplo, dois aparelhos gravaram sem se ver), o Ponte primeiro guarda essa cópia ao lado, com o nome do arquivo seguido de `-divergente-` e um código (`ponte-sync-divergente-a1b2c3d4e5f60789.ponte`), e só então a regrava. O aviso diz: *A cópia de … tinha alterações que não puderam ser reaplicadas; ela foi guardada em …*. O arquivo `-divergente-` é uma cópia de segurança comum (cifrada com a mesma senha): o Ponte não o usa nas sincronizações seguintes e não o apaga. Guarde-o até conferir que nada faltou no acervo; depois pode apagá-lo.
+**Pasta compartilhada: uma cópia "divergente".** Se, ao sincronizar, a cópia que está numa pasta tinha alterações que não puderam ser reaplicadas (por exemplo, dois aparelhos gravaram sem se ver), o Ponte primeiro guarda essa cópia ao lado, com o nome do arquivo seguido de `-divergente-` e um código (`ponte-sync-divergente-a1b2c3d4e5f60789.ponte`), e só então a regrava. O aviso diz: *A cópia de … tinha alterações que não puderam ser reaplicadas; ela foi guardada em …*. O arquivo `-divergente-` é uma cópia de segurança comum (cifrada com a mesma senha): o Ponte não o usa nas sincronizações seguintes e não o apaga sozinho (depois de 90 dias, oferece apagá-lo, com a sua confirmação: [8.7](#87-tamanho-do-arquivo-cópias-criadas-pela-nuvem-e-o-que-não-sincroniza)). Guarde-o até conferir que nada faltou no acervo; depois pode apagá-lo.
 
 **Uma pasta que não foi regravada.** Quando uma pasta não pôde ser gravada (sem espaço, somente leitura, Drive travado) ou a cópia de segurança dela não pôde ser feita, o resumo da sincronização traz *⚠ N pasta(s) não regravada(s)* (por exemplo, `gravado em 1 pasta • ⚠ 1 pasta não regravada (revisão 42)`) e uma nota *… não foi regravada, para não perder o que só ela tem: <motivo>*. Nada se perde: a pasta fica como estava e as alterações continuam neste computador. Resolva o motivo mostrado e sincronize de novo.
 
@@ -854,6 +865,42 @@ Um registro manual criado sem acesso à cópia compartilhada (sem o computador p
 - **Com o formulário do registro aberto**, se a sincronização mudar o registro por baixo, **Salvar** grava no registro certo e avisa quando o número mudou. Se o Ponte não consegue confirmar que é o mesmo registro, não grava e mantém o texto na janela: copie-o, reabra o registro e cole.
 
 **Limites conhecidos.** Se um registro manual é apagado de vez (da Lixeira) e o número dele é dado a um registro novo enquanto uma edição do registro antigo ainda está a caminho, essa edição pode ser gravada no registro novo: a edição leva só o número do registro, não a identidade dele, e corrigir isso exigiria mudar o formato, o que fica para uma versão futura. Registros que ainda estão na Lixeira mantêm o número e não são afetados. O mesmo vale quando a criação de um registro foi renumerada por outro computador, já saiu do diário da pasta e a única versão que os dois computadores ainda tinham em comum foi apagada. Um aviso antigo pode perder o botão **Abrir o registro** se todas as versões que identificavam o registro forem apagadas de vez.
+
+### 8.7 Tamanho do arquivo, cópias criadas pela nuvem e o que não sincroniza
+
+Três avisos do modo pasta compartilhada, que aparecem em **Ajustes ▸ Equipe e sincronização**, junto das pastas. O Ponte só olha e avisa: nada disso muda o seu acervo.
+
+**O tamanho do arquivo da pasta.** O arquivo `ponte-sync.ponte` pode ter até **512 MB**. Abaixo de cada pasta o Ponte mostra o tamanho atual e quanto ainda cabe, por exemplo: *Tamanho do arquivo: 120 MB de 512 MB (23%). Cabem mais 392 MB.*
+
+- **A partir de 70%**, aparece um aviso: *O arquivo da pasta está com 359 MB de 512 MB (70%). Perto do limite, o que for acrescentado pode não caber.* Ao chegar ao limite, a frase passa a dizer *Ele chegou ao limite: o que for acrescentado talvez não caiba.* Os dois avisos terminam com o conselho: *Para liberar espaço, esvazie a Lixeira (Ajustes ▸ Lixeira) e remova os anexos grandes que não precisam ir para os outros aparelhos.*
+- **Se o acervo passa de 512 MB**, o Ponte recusa a gravação **antes de gravar qualquer coisa** e diz: *O acervo passa de 512 MB e não cabe no arquivo de sincronização (daria 600 MB). Nada foi gravado.*, com o mesmo conselho. A pasta continua como estava e o acervo deste computador não é tocado. Esvazie a Lixeira ou remova anexos grandes e sincronize de novo.
+- **No celular**, **Ajustes ▸ Sincronização** mostra a mesma linha de tamanho e o aviso (*O arquivo do Drive está com …*). O celular não tem Lixeira nem tela de anexos: para liberar espaço, use o Ponte do computador.
+
+**Cópias criadas pela nuvem.** Quando dois aparelhos gravam o arquivo ao mesmo tempo, o Google Drive ou o OneDrive pode guardar a gravação de um deles como um arquivo ao lado, com nomes como `ponte-sync (1).ponte`, `ponte-sync (cópia em conflito de …).ponte`, `Cópia de ponte-sync.ponte` ou `ponte-sync-NOME-DO-COMPUTADOR.ponte`. O Ponte procura esses arquivos nas pastas configuradas (no máximo uma vez por minuto) e, se achar, avisa: *Há um arquivo ao lado de ponte-sync.ponte que parece uma cópia feita pela nuvem quando dois aparelhos gravaram ao mesmo tempo: …*
+
+- **O Ponte não usa nem junta essas cópias.** Elas podem ter alterações de outro aparelho que não chegaram ao acervo.
+- **Não apague agora.** Sincronize também nos outros aparelhos (cada um recupera o que gravou), confira se nada faltou no acervo e só então apague a cópia, você mesmo.
+- **Cópias `-divergente-` antigas.** As cópias que o Ponte mesmo guardou ([8.5](#85-quando-a-sincronização-pede-confirmação-ou-deixa-algo-de-lado)) com mais de **90 dias** ganham, quando o Ponte confere que são dele (mesmo acervo, fora de uso neste computador e com o conteúdo batendo com o código do nome), o botão **Apagar estas cópias antigas…**. Ele mostra o nome, o tamanho e a idade de cada uma e pede confirmação (**Apagar** ou **Cancelar**). Elas não vão para a Lixeira do Windows e não voltam. Um arquivo que mudou antes de ser apagado é mantido.
+- **O que o Ponte não reconhece.** Um arquivo com nome de cópia `-divergente-` e mais de 90 dias que o Ponte não consegue confirmar como cópia dele aparece numa lista, com o motivo (*… que o Ponte não reconhece como cópia que ele mesmo guardou*). Para esses, o Ponte **não oferece apagar**: se quiser tirá-los, confira o que são e apague você mesmo.
+- **O celular não vê essas cópias**: ele só tem permissão para o arquivo que você escolheu, não para a pasta. Quem avisa de cópias criadas pela nuvem é o Ponte do computador.
+
+**O que não sincroniza.** Cada aparelho guarda sozinho algumas coisas, que não vão para os outros. Uma linha em letra pequena, nos modos pasta compartilhada e conectado ao principal, lembra quais:
+
+- **No computador:** *a chave e as configurações da IA, as contas de e-mail, os lembretes e avisos deste aparelho, as conferências de minuta, a permissão de enviar documentos à IA, o prazo de guarda da Lixeira, a aparência e os filtros guardados.*
+- **No celular** (Ajustes ▸ Sincronização): *as contas de e-mail, os avisos de prazos e os lembretes deste aparelho, a ligação com a agenda do celular, o bloqueio do aplicativo, o seu nome nas tarefas e os filtros guardados.*
+
+Configure essas coisas em cada aparelho que for usá-las.
+
+### 8.8 Quando a sincronização guarda uma cópia à parte, ou para
+
+Nada some em silêncio. O que a pessoa vê:
+
+- **Um item que só uma das cópias tinha.** Se a sincronização fizesse desaparecer um item que apenas uma das cópias guardava, o Ponte guarda antes uma **cópia conferida** à parte e diz quais são os itens e onde está a cópia: *A cópia de segurança deste computador tinha … que não estão no resultado desta sincronização: …. Ela foi guardada em …; nada foi reinserido no acervo.* (para uma pasta: *A cópia de … tinha … Ela foi guardada em … antes de ser regravada…*; para o acervo daqui: *Uma cópia do acervo daqui, de antes da sincronização, foi guardada em …*). Nada é reinserido sozinho: confira, e só então apague a cópia.
+- **A sincronização para quando a cópia de segurança não pode ser guardada.** Sem espaço, a mensagem diz a causa e o que fazer, por exemplo *Falta espaço no disco: libere espaço e sincronize de novo.*; em outros casos, pede para conferir as permissões da pasta. *Nada foi gravado nem substituído; a próxima sincronização tenta de novo.*
+- **Versão e análise de um documento.** A versão e a análise mostradas são as capturadas ou feitas por último, e não as que chegaram por último à sincronização.
+- **Descrição de anexo alterada sem conexão.** Se outro computador mudou a descrição depois, a sua alteração não sobrescreve a mudança mais nova: vira um cartão de conflito (*Este item foi alterado em outro computador depois da versão sobre a qual esta alteração foi feita; ela não foi aplicada para não desfazer a outra. Confira o item e refaça a alteração, se ainda for o caso.*). **Limite conhecido:** ligar e desligar o vínculo de um anexo continua como antes, sem esse cartão.
+- **No celular**, as cópias pendentes a mais são lidas de novo na sincronização seguinte, e cada uma só é apagada quando o conteúdo dela está seguro. O que foi guardado à parte aparece na mensagem da sincronização, sob *Atenção (nada foi apagado):* ([`mobile/README.md`](mobile/README.md)).
+- **`--import-plan` retomado.** Ao retomar um plano interrompido ([13](#13-para-desenvolvedores)), o Ponte confere o registro antes: se o identificador do pedido, o recibo guardado ou uma tarefa apontarem para outro documento, **nada é gravado** e a mensagem diz o que conferir.
 
 ---
 
@@ -1076,6 +1123,27 @@ Excluir documento, tarefa, anexo ou versão importada pede confirmação e manda
 
 Formato: UTF-8, separador `;`, datas `AAAA-MM-DD` e uma coluna "Mês" para séries mensais. **Não saem** textos de documentos, notas, minutas, observações nem anexos (o *objetivo* de cada projeto, em `projetos.csv`, é o único texto livre que sai). Em `usos-de-recursos.csv`, os horários são os do relógio do computador, sem fuso. Os arquivos abrem no Excel e servem de entrada para painéis: marque a coluna `ID` como identificador para reimportar sem duplicar.
 
+#### Exportação aberta do acervo
+
+Para **ler seus dados fora do Ponte** (num editor de texto, no Word, em outro programa, ou para guardá-los de um jeito que não dependa do Ponte), use **Ajustes ▸ Cópia de segurança e exportação ▸ Exportar tudo em pasta aberta…** (cartão **Exportação aberta do acervo**). O Ponte pede uma pasta **vazia** (se não estiver, não grava nada: ele nunca mistura nem sobrescreve arquivos que já existem) e grava ali:
+
+| O quê | Onde |
+|---|---|
+| Um arquivo Markdown por documento (dados, texto atual, histórico de versões, nota e seu histórico, minutas, análise, tarefas e anexos) | `documentos\número - título\documento.md` |
+| O texto de cada versão importada | `documentos\…\versoes\01.md`, `02.md`… |
+| Os PDFs do SIGADOC e os anexos do documento, com o nome original | `documentos\…\anexos\` |
+| Tarefas, projetos, atendimentos, recursos e categorias | `tarefas.md`, `projetos.md`, `atendimentos.md`, `recursos.md`, `categorias.md` (anexos de tarefas e de atendimentos, se houver, em `anexos-de-tarefas\` e `anexos-de-atendimentos\`) |
+| Tudo em um só arquivo, para programas | `acervo.json` |
+| O que estava na Lixeira, em seção separada | `lixeira\` |
+| Uma explicação da pasta, com o que ficou de fora e a lista de **AVISOS** (o que não pôde ser lido ou gravado) | `LEIA-ME.txt` |
+
+- **A pasta NÃO é criptografada.** Quem tiver a pasta lê tudo o que há nela: textos, notas, minutas, anexos e PDFs. Guarde-a em lugar seguro e apague-a quando não precisar mais. É o contrário da cópia portátil ([10.3](#103-backup)), que leva senha.
+- **O que não vai:** senhas, chaves da IA, contas e senhas de e-mail, ajustes do Ponte e a configuração de equipe e de sincronização. O `LEIA-ME.txt` lista o que ficou de fora e por quê.
+- **Só lê o acervo.** A exportação não altera o seu acervo, e nada é enviado a lugar nenhum.
+- **Se você cancelar, ou se der erro**, a pasta fica marcada com `EXPORTACAO-INCOMPLETA.txt`: **não use o que está nela**. Apague-a e exporte de novo, numa pasta vazia. O arquivo só desaparece quando tudo foi gravado.
+- **Um item que não puder ser lido** não impede os outros: ele entra nos **AVISOS** do `LEIA-ME.txt`, e a mensagem final avisa quando houver algum.
+- **Caminhos longos:** o Windows limita o comprimento do caminho de um arquivo. Com uma pasta escolhida muito funda e títulos de documentos longos, alguns arquivos podem não ser gravados (e aparecem nos AVISOS). Escolha uma pasta curta, como `C:\Exportacao`.
+
 ### 10.6 O que sai do computador
 
 Por padrão, nada. O que pode sair, e só por escolha sua:
@@ -1092,6 +1160,7 @@ Por padrão, nada. O que pode sair, e só por escolha sua:
 | Os avisos de prazos do Windows ([6.6](#66-lembretes-de-prazos)) | Uma vez por dia | Para ninguém: são só contagens, mostradas neste computador. Nenhum título ou número de documento entra no aviso |
 | Os avisos de cada tarefa ([6.6](#66-lembretes-de-prazos)) | Antes do início ou do prazo, nos tempos que você marcou | Para ninguém: são mostrados neste computador, sem título na notificação do sistema |
 | O calendário `.ics` ([6.9](#69-calendário-ics)) | Só ao clicar em **Exportar calendário…** | O arquivo `.ics` na pasta que você escolher, **fora do acervo protegido** e em texto aberto; sem títulos, finalidades e notas, a menos que você marque **Incluir títulos, finalidades e notas no arquivo exportado**. Nada é enviado: o arquivo é uma cópia, não uma sincronização |
+| A exportação aberta do acervo ([10.5](#105-exportar-dados-csv)) | Só ao clicar em **Exportar tudo em pasta aberta…** | A pasta vazia que você escolher, **fora do acervo protegido** e **sem criptografia**: quem tiver a pasta lê tudo. Nada é enviado: é uma cópia para leitura, não uma sincronização |
 | A lista de importações recentes ([5.4](#54-importar-de-novo-o-mesmo-documento)) | Durante a sessão do navegador | Para ninguém: fica na memória do navegador e some ao fechá-lo |
 | Uma consulta à página de versões no GitHub | Só quando você clica em **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** | `github.com/demusis/ponteproj`, sem nenhum dado do acervo |
 
@@ -1155,6 +1224,8 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | *"O computador principal voltou a uma cópia mais antiga do acervo…"* ou *"O acervo do computador principal foi trocado por outro…"*, com **Substituir o acervo deste computador e sincronizar** | O principal foi restaurado de uma cópia de segurança. Não é erro, e nada foi enviado nem trocado: veja [8.5](#85-quando-a-sincronização-pede-confirmação-ou-deixa-algo-de-lado) antes de confirmar. |
 | *"Este computador ainda não sincronizou com esta pasta e tem N documentos no acervo…"* | Primeira sincronização com a pasta, num computador que já tem documentos: o acervo daqui será substituído pelo da pasta. O Ponte guarda uma cópia conferida do acervo daqui antes de substituir; confirme se é isso mesmo ([10.3](#103-backup)). |
 | *"A cópia de … tinha alterações que não puderam ser reaplicadas; ela foi guardada em …-divergente-….ponte"* | Nada se perdeu: é a cópia de segurança de uma pasta que ia ser regravada ([8.5](#85-quando-a-sincronização-pede-confirmação-ou-deixa-algo-de-lado)). |
+| *O arquivo da pasta está com … de 512 MB…* ou *O acervo passa de 512 MB e não cabe no arquivo de sincronização* (o arquivo da pasta está grande) | O arquivo da pasta tem limite de 512 MB. A partir de 70% o Ponte avisa; acima do limite, não grava nada. Esvazie a Lixeira (Ajustes ▸ Lixeira) e remova os anexos grandes que não precisam ir para os outros aparelhos; depois sincronize de novo ([8.7](#87-tamanho-do-arquivo-cópias-criadas-pela-nuvem-e-o-que-não-sincroniza)). |
+| Apareceu `ponte-sync (1).ponte`, `ponte-sync (cópia em conflito…).ponte` ou `ponte-sync-NOME-DO-COMPUTADOR.ponte` na pasta | Foi a nuvem que criou, porque dois aparelhos gravaram ao mesmo tempo. O Ponte não a usa nem a junta, e ela pode ter alterações que não chegaram ao acervo: não apague já. Sincronize também nos outros aparelhos, confira se nada faltou e só então apague ([8.7](#87-tamanho-do-arquivo-cópias-criadas-pela-nuvem-e-o-que-não-sincroniza)). O celular não avisa dessas cópias. |
 | `⚠ N pasta(s) não regravada(s)` no resumo, ou *"… não foi regravada, para não perder o que só ela tem"* | A pasta ficou como estava (sem espaço, somente leitura, nuvem travada). Resolva o motivo que a mensagem mostra e sincronize de novo; as alterações seguem guardadas neste computador. |
 
 ### 11.4 Dados
@@ -1164,6 +1235,7 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | *"Não foi possível proteger/abrir os dados deste perfil Windows"* | O acervo pertence a outra conta do Windows. Entre com a conta que fez a instalação. Se essa conta não existe mais, só uma cópia portátil (com a senha) abre em outra conta ([10.3](#103-backup)). |
 | *"Sem espaço"* ao fazer uma cópia | O disco não tem espaço para a cópia e para a reserva do acervo. Libere espaço e tente de novo; nenhuma cópia foi feita. |
 | A cópia automática ficou "guardada, mas não conta como boa" | Algum item do acervo não pôde ser aberto; o cartão em **Ajustes ▸ Cópia de segurança e exportação** diz qual. Enquanto ele não for corrigido (levado para a Lixeira e excluído, ou restaurado de uma cópia boa), as cópias novas também não contam, e nenhuma cópia antiga é apagada ([10.3](#103-backup)). |
+| A pasta da exportação aberta tem `EXPORTACAO-INCOMPLETA.txt`, ou o `LEIA-ME.txt` traz **AVISOS** | Com `EXPORTACAO-INCOMPLETA.txt`, a exportação foi cancelada ou falhou: não use o que está na pasta; apague-a e exporte de novo numa pasta vazia e curta (por exemplo `C:\Exportacao`). Se só há AVISOS, cada um diz o que não pôde ser gravado ([10.5](#105-exportar-dados-csv)). |
 | O Ponte não abre | No Prompt de Comando, `ponteproj.exe --restaurar-copia "caminho da cópia.sqlite3"` monta um acervo de recuperação a partir de uma cópia ([10.3](#103-backup)). |
 | *"Item na lixeira; restaure antes de editar"* | O item foi excluído. Restaure-o em Ajustes ▸ Lixeira. |
 | O aviso diário de prazos não aparece | Confira em **Ajustes ▸ Lembretes** se está ligado e se o horário já passou; o Ponte precisa estar aberto ou minimizado, e só avisa quando algo vence. Use **Mostrar um aviso de teste** e, se nem ele aparecer, veja *Configurações do Windows ▸ Sistema ▸ Notificações*. |
@@ -1187,6 +1259,9 @@ Sim, pelo modo pasta compartilhada ([8.2](#82-uma-pessoa-dois-computadores-pasta
 
 **Como levo o acervo para um computador novo?**
 Pelo modo pasta compartilhada ou pela equipe ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)), ou com a **cópia portátil**: no computador antigo, **Ajustes ▸ Cópia de segurança e exportação ▸ Exportar cópia portátil…**, com uma senha que você anota; no novo, instale o Ponte e use **Importar cópia portátil…** ([10.3](#103-backup)). A cópia portátil não leva a chave da IA, as contas de e-mail, a configuração de sincronização, os lembretes e a aparência; configure-os de novo.
+
+**Quero ler meus dados fora do Ponte. Como faço?**
+**Ajustes ▸ Cópia de segurança e exportação ▸ Exportar tudo em pasta aberta…**, numa pasta vazia, grava o acervo em arquivos comuns (um Markdown por documento, os PDFs e anexos, e um `acervo.json`). Atenção: essa pasta **não é criptografada** ([10.5](#105-exportar-dados-csv)). Para uma cópia protegida por senha, use a cópia portátil.
 
 **Perdi meu perfil do Windows (ou reinstalei o Windows). Perdi o acervo?**
 As cópias de segurança comuns só abrem na conta do Windows que as criou, então um perfil perdido as deixa sem uso. Só uma **cópia portátil** (com a senha) ou a pasta compartilhada, a equipe ou o computador principal permitem recuperar o acervo. Por isso vale exportar uma cópia portátil de vez em quando e guardá-la fora do computador, com a senha anotada em outro lugar.

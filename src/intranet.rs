@@ -6841,7 +6841,7 @@ impl Store {
         let nine_out = nine_mode || promote.is_some();
 
         reporter.step("Reunindo PDFs e anexos…");
-        let (final_snapshot, blobs) = match &temp {
+        let (final_snapshot, source): (_, &Store) = match &temp {
             Some(store) => {
                 #[cfg(any(test, feature = "test-support"))]
                 crate::idents::hooks::PEEK_TEMP.with(|h| {
@@ -6870,17 +6870,26 @@ impl Store {
                     // the replay included (adendo §4 rule 2).
                     snapshot.id_high = crate::idents::id_floor(&store.conn)?;
                 }
-                let blobs = collect_blobs(store, &snapshot)?;
-                (snapshot, blobs)
+                (snapshot, store)
             }
             None => {
                 let mut snapshot = self.export_snapshot()?;
                 if nine_out {
                     snapshot.id_high = crate::idents::id_floor(&self.conn)?;
                 }
-                let blobs = collect_blobs(self, &snapshot)?;
-                (snapshot, blobs)
+                (snapshot, &*self)
             }
+        };
+        // What the PDFs and attachments alone take is known from the
+        // snapshot: a library already over the limit is refused here, without
+        // reading them, and nothing is built or written (see below).
+        let bound = crate::folder_health::blob_bound(&final_snapshot);
+        let mut too_big_early = (bound > sharedfolder::write_limit())
+            .then(|| crate::folder_health::too_big_message(Some(bound)));
+        let blobs = if too_big_early.is_some() {
+            sharedfolder::Blobs::default()
+        } else {
+            collect_blobs(source, &final_snapshot)?
         };
         let revision = final_snapshot.revision;
         // The removals the result records, read before its journal is
@@ -6956,6 +6965,16 @@ impl Store {
                 points_to: String::new(),
             };
             crate::idents::check(&payload.snapshot, Some(&shape))?;
+        }
+        // The exact size is known too, before any folder is touched: what
+        // the blobs alone left standing (the library's own data, the framing
+        // and the seal can still push it over) is refused here, so that no
+        // copy is kept aside for a rewrite that is not going to happen.
+        if too_big_early.is_none() {
+            let exact = sharedfolder::exact_len(&request, format, &payload, &blobs)?;
+            if exact > sharedfolder::write_limit() {
+                too_big_early = Some(crate::folder_health::too_big_message(Some(exact)));
+            }
         }
         let changed_content = first_write
             || carried_old_fields
@@ -7108,6 +7127,15 @@ impl Store {
         //    floor's lock, the floor read again right before it.
         let mut published_nine = false;
         for path in &targets {
+            // Does not fit: no folder is rewritten (nor its copy kept aside),
+            // each stays as it was and the exchange says why.
+            if let Some(message) = &too_big_early {
+                report.unwritten.push(path.display().to_string());
+                if !failures.contains(message) {
+                    failures.push(message.clone());
+                }
+                continue;
+            }
             // What the rewrite would drop is kept first, beside it; if that
             // cannot be done, the copy is left as it is.
             if preserve.contains(path) {
@@ -7210,7 +7238,7 @@ impl Store {
             ensure!(
                 !report.written_to.is_empty(),
                 "Nenhuma pasta pôde ser gravada: {}. As alterações continuam guardadas neste computador.",
-                failures.join("; ")
+                failures.join("; ").trim_end_matches('.')
             );
         }
         report.notes.extend(failures);
@@ -7351,8 +7379,9 @@ impl Store {
         // No 9 of this build's level confirmed in any folder (every rewrite
         // failed, with nothing new): the guard stays as it is, never above
         // what the folders hold (it would raise the floor alone).
+        // (A library that does not fit has no guard copy either.)
         let unconfirmed = nine_out && self.floor(lineage)?.level < sharedfolder::LEVEL;
-        if let Some(path) = guard_path.filter(|_| !unconfirmed) {
+        if let Some(path) = guard_path.filter(|_| !unconfirmed && too_big_early.is_none()) {
             let old = guard_demoted
                 || sharedfolder::read_header(path)
                     .ok()
@@ -13670,6 +13699,22 @@ pub struct IntranetPanel {
     connection_test: Option<(String, bool, String)>,
     /// This window opened a library only to be looked at: nothing starts.
     transport_off: bool,
+    /// What is beside each shared file (size, copies of the cloud, old
+    /// `-divergente-` copies): the last result of the worker that lists the
+    /// folders, with how old it is and the paths it was made for.
+    folder_scans: Option<(Instant, Vec<String>, Vec<crate::folder_health::FolderScan>)>,
+    /// The scan that is running (one at a time): its answer arrives here.
+    scan_rx: Option<mpsc::Receiver<(Vec<String>, Vec<crate::folder_health::FolderScan>)>>,
+    /// An exchange ended or a deletion happened: the next scan is due now.
+    scan_invalid: bool,
+    /// What the scans already learned of the content of the old copies.
+    scan_memo: Arc<crate::folder_health::HashMemo>,
+    /// Old `-divergente-` copies the person was asked about (the shared file
+    /// they belong to, and them as they were listed), waiting for the answer.
+    archive_question: Option<(PathBuf, Vec<crate::folder_health::Found>)>,
+    /// The deletion that is running on a worker: whether it left files and
+    /// what to say.
+    archive_rx: Option<mpsc::Receiver<(bool, String)>>,
 }
 
 #[cfg(feature = "desktop")]
@@ -13808,6 +13853,225 @@ impl IntranetPanel {
         }
     }
 
+    /// What is beside each folder of the draft: the last result of the worker
+    /// that lists them, for the folders now chosen, and whether a scan is
+    /// running. Nothing of the cloud is touched on the thread that draws: a
+    /// scan starts on a worker when none is running and one is due (no
+    /// result, the folders changed, an exchange ended, or the result is a
+    /// minute old).
+    fn folder_scans(&mut self) -> (Vec<crate::folder_health::FolderScan>, bool) {
+        if self.transport_off {
+            return (Vec::new(), false);
+        }
+        if let Some(rx) = &self.archive_rx {
+            match rx.try_recv() {
+                Ok((left_some, text)) => {
+                    self.error = left_some;
+                    self.message = text;
+                    self.archive_rx = None;
+                    self.scan_invalid = true;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.archive_rx = None;
+                    self.scan_invalid = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.scan_rx {
+            match rx.try_recv() {
+                Ok((paths, scans)) => {
+                    self.folder_scans = Some((Instant::now(), paths, scans));
+                    self.scan_rx = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.scan_rx = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let paths = self.draft.folder_files.clone();
+        if paths.is_empty() {
+            return (Vec::new(), false);
+        }
+        let listed = self
+            .folder_scans
+            .as_ref()
+            .map(|(at, for_paths, _)| (at.elapsed(), *for_paths == paths));
+        if crate::folder_health::scan_due(listed, self.scan_rx.is_some(), self.scan_invalid) {
+            let (tx, rx) = mpsc::channel();
+            let memo = Arc::clone(&self.scan_memo);
+            let repaint = self.repaint.clone();
+            let worker_paths = paths.clone();
+            let started = std::thread::Builder::new()
+                .name("ponte-pastas".into())
+                .spawn(move || {
+                    let scans = crate::folder_health::scan_all(
+                        &worker_paths,
+                        std::time::SystemTime::now(),
+                        &memo,
+                    );
+                    let _ = tx.send((worker_paths, scans));
+                    if let Some(ctx) = repaint {
+                        ctx.request_repaint();
+                    }
+                })
+                .is_ok();
+            if started {
+                self.scan_rx = Some(rx);
+                self.scan_invalid = false;
+            }
+        }
+        let scans = self
+            .folder_scans
+            .as_ref()
+            .filter(|(_, for_paths, _)| *for_paths == paths)
+            .map(|(_, _, scans)| scans.clone())
+            .unwrap_or_default();
+        (scans, self.scan_rx.is_some())
+    }
+
+    /// Deletes, on a worker, the old copies the person confirmed (see
+    /// `folder_health::delete_old_archives`: each is checked again through
+    /// the handle that deletes it).
+    fn delete_archives(&mut self, real: PathBuf, chosen: Vec<crate::folder_health::Found>) {
+        let (tx, rx) = mpsc::channel();
+        let paths = self.draft.folder_files.clone();
+        let repaint = self.repaint.clone();
+        let started = std::thread::Builder::new()
+            .name("ponte-apagar".into())
+            .spawn(move || {
+                let (deleted, skipped) = crate::folder_health::delete_old_archives(
+                    &real,
+                    &chosen,
+                    &paths,
+                    std::time::SystemTime::now(),
+                );
+                let count = plural(
+                    deleted.len(),
+                    "cópia antiga apagada",
+                    "cópias antigas apagadas",
+                );
+                let text = if skipped.is_empty() {
+                    format!("{count}.")
+                } else {
+                    format!("{count}; não apagada(s): {}.", skipped.join("; "))
+                };
+                let _ = tx.send((!skipped.is_empty(), text));
+                if let Some(ctx) = repaint {
+                    ctx.request_repaint();
+                }
+            })
+            .is_ok();
+        if started {
+            self.archive_rx = Some(rx);
+        } else {
+            self.error = true;
+            self.message = "Não foi possível iniciar a limpeza das cópias antigas.".into();
+        }
+    }
+
+    /// The notes under the folders: how full the file is, copies the cloud
+    /// made of it and old copies kept aside. Nothing is deleted here without
+    /// the question being answered.
+    fn folder_health_notes(
+        &mut self,
+        ui: &mut egui::Ui,
+        scans: &[crate::folder_health::FolderScan],
+        scanning: bool,
+    ) {
+        use crate::theme::{self, icon};
+        use crate::widgets::{self, Tone};
+        let several = scans.len() > 1;
+        let named = |scan: &crate::folder_health::FolderScan, text: String| {
+            if several {
+                format!("{}: {text}", scan.path.display())
+            } else {
+                text
+            }
+        };
+        if scanning {
+            ui.add_space(theme::S2);
+            widgets::small_muted(
+                ui,
+                if scans.is_empty() {
+                    "Verificando as pastas…"
+                } else {
+                    "Verificando as pastas de novo… o que aparece abaixo é da última verificação."
+                },
+            );
+        }
+        for scan in scans {
+            let warnings = [
+                scan.size.and_then(crate::folder_health::size_warning),
+                crate::folder_health::conflict_warning(scan),
+                crate::folder_health::unrecognised_note(scan),
+            ];
+            for text in warnings.into_iter().flatten() {
+                ui.add_space(theme::S2);
+                soft_note(ui, Tone::Warn, icon::WARNING, &named(scan, text));
+            }
+            for copy in &scan.conflict_copies {
+                if let Some(description) = &copy.description {
+                    widgets::small_muted(ui, format!("{}: {description}.", copy.name));
+                }
+            }
+            if scan.old_archives.is_empty() {
+                continue;
+            }
+            let asking = self
+                .archive_question
+                .as_ref()
+                .is_some_and(|(real, _)| *real == scan.path);
+            ui.add_space(theme::S2);
+            if self.archive_rx.is_some() {
+                widgets::small_muted(ui, "Apagando as cópias antigas…");
+            } else if asking {
+                let found = self
+                    .archive_question
+                    .as_ref()
+                    .map(|(_, found)| found.clone())
+                    .unwrap_or_default();
+                soft_note(
+                    ui,
+                    Tone::Danger,
+                    icon::WARNING,
+                    &crate::folder_health::archives_question(&found),
+                );
+                ui.horizontal(|ui| {
+                    if ui.add(widgets::danger("Apagar")).clicked() {
+                        self.archive_question = None;
+                        self.delete_archives(scan.path.clone(), found.clone());
+                    }
+                    if ui.add(widgets::secondary("Cancelar")).clicked() {
+                        self.archive_question = None;
+                    }
+                });
+            } else {
+                let names: Vec<&str> = scan.old_archives.iter().map(|f| f.name.as_str()).collect();
+                widgets::small_muted(
+                    ui,
+                    named(
+                        scan,
+                        format!(
+                            "{} com mais de {} dias, que o Ponte guardou quando o arquivo divergiu e conferiu agora: {}. O Ponte não as apaga sozinho.",
+                            plural(names.len(), "cópia", "cópias"),
+                            crate::folder_health::OLD_ARCHIVE_DAYS,
+                            names.join(", ")
+                        ),
+                    ),
+                );
+                if ui
+                    .add(widgets::secondary("Apagar estas cópias antigas…"))
+                    .on_hover_text(
+                        "Pede confirmação e mostra o nome de cada cópia antes de apagar.",
+                    )
+                    .clicked()
+                {
+                    self.archive_question = Some((scan.path.clone(), scan.old_archives.clone()));
+                }
+            }
+        }
+    }
+
     /// The "Pasta compartilhada" part of the window: folders, password and
     /// the main row.
     fn shared_folder_section(
@@ -13825,6 +14089,7 @@ impl IntranetPanel {
             .unwrap_or(0);
         let first_time = saved_revision == 0;
         let dirty = self.has_unsaved_draft(store);
+        let (scans, scanning) = self.folder_scans();
 
         widgets::card(ui, |ui| {
             ui.horizontal(|ui| {
@@ -13905,6 +14170,13 @@ impl IntranetPanel {
                             .wrap(),
                         );
                         widgets::small_muted(ui, line);
+                        if let Some(size) = scans
+                            .iter()
+                            .find(|scan| scan.path.as_os_str() == path.as_str())
+                            .and_then(|scan| scan.size)
+                        {
+                            widgets::small_muted(ui, crate::folder_health::size_line(size));
+                        }
                         if let Some(hint) = what_to_do {
                             widgets::small_muted(ui, hint);
                         }
@@ -13923,6 +14195,7 @@ impl IntranetPanel {
             if self.draft.folder_files.is_empty() {
                 widgets::muted(ui, "Nenhuma pasta escolhida ainda.");
             }
+            self.folder_health_notes(ui, &scans, scanning);
             if self.draft.folder_files.len() < 8 {
                 ui.add_space(theme::S2);
                 if ui
@@ -14164,6 +14437,9 @@ impl IntranetPanel {
             if let Some(last) = &last {
                 widgets::small_muted(ui, last);
             }
+            if saved.mode.queues_changes() {
+                widgets::small_muted(ui, crate::folder_health::NOT_SYNCED);
+            }
             let can_sync = match saved.mode {
                 IntranetMode::SharedFolder => {
                     !self.sync_in_flight && !saved.folder_files.is_empty()
@@ -14403,6 +14679,9 @@ impl IntranetPanel {
         let conflicts = store.list_sync_conflicts().map(|v| v.len()).unwrap_or(0);
         let outbox = store.list_offline_outbox().map(|v| v.len()).unwrap_or(0);
         self.sync_step.clear();
+        // The file changed (or could not): what is beside it is listed again,
+        // by the worker; the last result stays on the card meanwhile.
+        self.scan_invalid = true;
         self.refresh_draft_bookkeeping(store);
         if cfg.mode == IntranetMode::SharedFolder {
             match outcome.result {
@@ -22033,5 +22312,90 @@ mod tied_mirror_tests {
             "Acervo sincronizado com o computador principal."
         );
         assert!(!quiet.status_summary.contains("passou de"));
+    }
+}
+
+#[cfg(test)]
+mod size_limit_tests {
+    use super::*;
+    use crate::sharedfolder;
+
+    const KEY: &str = "senha-de-teste-123";
+
+    fn config(files: &[String]) -> IntranetConfig {
+        IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: "Servidor A".into(),
+            folder_files: files.to_vec(),
+            folder_key: KEY.into(),
+            ..IntranetConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_library_over_the_limit_is_refused_early_and_nothing_is_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = dir.path().join("Drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        let files = vec![drive.display().to_string()];
+        let mut store = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        store.save_intranet_config(&config(&files)).unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let sync = |store: &mut Store| {
+            let cfg = store.load_intranet_config().unwrap();
+            store.sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+        };
+        sync(&mut store).unwrap();
+        let before = std::fs::read(&drive).unwrap();
+
+        // A change that no longer fits in the file.
+        let owner = crate::attachments::Owner::Document(document);
+        store
+            .add_attachment(owner, "grande.txt", "", &vec![b'x'; 6000])
+            .unwrap();
+        sharedfolder::set_write_limit_for_test(2000);
+        let error = sync(&mut store).unwrap_err().to_string();
+        assert!(
+            error.starts_with("Nenhuma pasta pôde ser gravada: O acervo passa de 512 MB"),
+            "{error}"
+        );
+        assert!(error.contains("Nada foi gravado") && error.contains("esvazie a Lixeira"));
+        assert!(
+            error.contains("anexos grandes") && !error.contains(".."),
+            "{error}"
+        );
+        assert!(error.contains("As alterações continuam guardadas neste computador."));
+        // The file in the folder is exactly what it was, with no copy kept
+        // aside and no leftover; the change is still here and still queued.
+        assert_eq!(std::fs::read(&drive).unwrap(), before);
+        assert_eq!(drive.parent().unwrap().read_dir().unwrap().count(), 1);
+        assert_eq!(store.list_attachments(owner).unwrap().len(), 1);
+        assert!(!store.list_offline_outbox().unwrap().is_empty());
+
+        // The blobs alone fit, the whole file (the library's data, framing
+        // and seal) does not: refused by the exact size, before any folder is
+        // touched (so no copy is kept aside for a rewrite that cannot happen).
+        let bound = crate::folder_health::blob_bound(&store.export_snapshot().unwrap());
+        sharedfolder::set_write_limit_for_test(bound + 1);
+        let error = sync(&mut store).unwrap_err().to_string();
+        assert!(
+            error.contains("O acervo passa de 512 MB") && error.contains("daria"),
+            "{error}"
+        );
+        assert!(error.contains("Nada foi gravado"), "{error}");
+        assert_eq!(std::fs::read(&drive).unwrap(), before);
+        assert_eq!(drive.parent().unwrap().read_dir().unwrap().count(), 1);
+        assert!(!store.list_offline_outbox().unwrap().is_empty());
+
+        // With room again the same change goes through.
+        sharedfolder::set_write_limit_for_test(sharedfolder::MAX_FILE_BYTES);
+        let report = sync(&mut store).unwrap();
+        assert!(!report.written_to.is_empty());
+        let written = sharedfolder::read(&drive, KEY).unwrap().unwrap();
+        assert_eq!(written.blobs.attachments.len(), 1);
+        assert!(store.list_offline_outbox().unwrap().is_empty());
     }
 }

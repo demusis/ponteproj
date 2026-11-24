@@ -19,6 +19,8 @@ pub mod chatgpt;
 pub mod draft_check;
 pub mod export;
 pub mod files;
+/// Size of the shared file and the room left, copies the cloud made beside it, and what never syncs.
+pub mod folder_health;
 pub mod guide;
 #[cfg(feature = "desktop")]
 pub mod help_ui;
@@ -35,6 +37,8 @@ pub mod model;
 pub mod native;
 /// How the program reaches the internet: certificates, proxy, failures, the connection test.
 pub mod netdiag;
+/// "Exportar tudo em pasta aberta…": the whole library as open files (Markdown and one JSON).
+pub mod open_export;
 pub mod paths;
 /// `--import-plan`: a record and its tasks from one JSON file (the desktop command line).
 #[cfg(feature = "desktop")]

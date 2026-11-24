@@ -436,6 +436,24 @@ internal object WeekPlan {
     fun defaultSelected(weekStart: LocalDate, today: LocalDate): LocalDate =
         if (!today.isBefore(weekStart) && !today.isAfter(weekStart.plusDays(6))) today else weekStart
 
+    /** What the selected day lists: its entries, and how many deadlines were left out because Hoje already shows them below. */
+    data class DayView(val day: WeekDay, val hiddenDeadlines: Int)
+
+    /**
+     * Which entries to list for the selected [day]. For other days, all of them. For [today], the deadlines of
+     * tasks that "Atrasadas", "Para hoje" or "Próximos dias" already list ([shownTaskIds]) are left out, so the
+     * same task is not shown twice; hour blocks (a time that the sections do not show) and deadlines of tasks
+     * not in the sections stay.
+     */
+    fun dayView(day: WeekDay, today: LocalDate, shownTaskIds: Set<Long>): DayView {
+        if (day.date != today) return DayView(day, 0)
+        val kept = day.deadlines.filter { it.taskId == null || it.taskId !in shownTaskIds }
+        return DayView(day.copy(deadlines = kept), day.deadlines.size - kept.size)
+    }
+
+    /** The quiet line under today's list when [DayView.hiddenDeadlines] left tasks out. */
+    const val BELOW_NOTICE = "As tarefas de hoje estão logo abaixo."
+
     /** Dots under a day of the strip: (has hour blocks, has deadlines). */
     fun dayMarks(day: WeekDay): Pair<Boolean, Boolean> = day.blocks.isNotEmpty() to day.deadlines.isNotEmpty()
 
