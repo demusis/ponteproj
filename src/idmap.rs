@@ -805,27 +805,48 @@ pub(crate) fn load(conn: &Connection) -> Result<IdMap> {
     Ok(map)
 }
 
+/// The items of `created` whose numbers in a copy are this library's
+/// numbers too. In a mapped library a mapped kind has numbers of its own
+/// (F3.1a): the copy's number of such an item names another item here, or
+/// none, so it is never kept nor read with this library's numbers (the
+/// item is found by its identity instead).
+fn same_frame(conn: &Connection, created: &[CreatedId]) -> Result<Vec<CreatedId>> {
+    let mapped = crate::idents::is_mapped(conn)?;
+    Ok(created
+        .iter()
+        .filter(|c| !(mapped && crate::mapper::addressed(crate::idents::kind_of(c.kind))))
+        .cloned()
+        .collect())
+}
+
 /// Shared-folder mode: keeps what the changes of the copy this library now
 /// matches created, with its numbers. If the next exchange builds on a copy
-/// that diverged from it, the queue is translated through it.
+/// that diverged from it, the queue is translated through it. Only the
+/// kinds this library numbers as the copy (see [`same_frame`]).
 pub(crate) fn save_frame_journal(
     conn: &Connection,
     journal: &[crate::sharedfolder::JournalEntry],
 ) -> Result<()> {
     conn.execute("DELETE FROM offline_frame_journal", [])?;
-    for entry in journal.iter().filter(|e| !e.created.is_empty()) {
+    for entry in journal {
+        let created = same_frame(conn, &entry.created)?;
+        if created.is_empty() {
+            continue;
+        }
         conn.execute(
             "INSERT OR REPLACE INTO offline_frame_journal(uid,created) VALUES(?1,?2)",
             params![
                 entry.uid,
-                crate::protection::seal(&serde_json::to_vec(&entry.created)?)?
+                crate::protection::seal(&serde_json::to_vec(&created)?)?
             ],
         )?;
     }
     Ok(())
 }
 
-/// What [`save_frame_journal`] kept, as (change uid, created items).
+/// What [`save_frame_journal`] kept, as (change uid, created items): only
+/// the kinds this library numbers as the copy now (a journal kept before
+/// it was mapped holds them all).
 pub(crate) fn load_frame_journal(conn: &Connection) -> Result<Vec<(String, Vec<CreatedId>)>> {
     let mut statement = conn.prepare("SELECT uid,created FROM offline_frame_journal")?;
     let rows = statement
@@ -835,8 +856,11 @@ pub(crate) fn load_frame_journal(conn: &Connection) -> Result<Vec<(String, Vec<C
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut out = Vec::new();
     for (uid, blob) in rows {
-        let created = serde_json::from_slice(&crate::protection::unseal(&blob)?)?;
-        out.push((uid, created));
+        let created: Vec<CreatedId> = serde_json::from_slice(&crate::protection::unseal(&blob)?)?;
+        let created = same_frame(conn, &created)?;
+        if !created.is_empty() {
+            out.push((uid, created));
+        }
     }
     Ok(out)
 }
