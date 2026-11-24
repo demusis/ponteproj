@@ -19,9 +19,9 @@ use crate::intranet::{CabinetSnapshot, IntranetMutation};
 use crate::storage::Store;
 
 /// The kinds the mapper maps on this thread while the value lives.
-struct Kinds;
+pub(crate) struct Kinds;
 
-fn kinds(set: &[&'static str]) -> Kinds {
+pub(crate) fn kinds(set: &[&'static str]) -> Kinds {
     crate::mapper::hooks::ADDRESSED.with(|k| *k.borrow_mut() = Some(set.to_vec()));
     Kinds
 }
@@ -37,12 +37,12 @@ fn epoch(store: &Store) -> String {
 }
 
 /// The copy of `store` as its folder would carry it (same epoch).
-fn copy_of(store: &Store) -> CabinetSnapshot {
+pub(crate) fn copy_of(store: &Store) -> CabinetSnapshot {
     store.export_with_idents(&epoch(store)).unwrap()
 }
 
 /// `store` adopts `copy`, as the library the person works in.
-fn adopt(store: &mut Store, copy: &CabinetSnapshot) {
+pub(crate) fn adopt(store: &mut Store, copy: &CabinetSnapshot) {
     store
         .apply_snapshot_and(
             copy,
@@ -53,7 +53,7 @@ fn adopt(store: &mut Store, copy: &CabinetSnapshot) {
         .unwrap();
 }
 
-fn fresh_ident() -> String {
+pub(crate) fn fresh_ident() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
@@ -64,7 +64,7 @@ fn doc(store: &mut Store, number: &str) -> i64 {
         .document_id
 }
 
-fn link_ids(store: &Store) -> Vec<i64> {
+pub(crate) fn link_ids(store: &Store) -> Vec<i64> {
     let mut statement = store
         .conn
         .prepare("SELECT id FROM document_links ORDER BY id")
@@ -76,7 +76,7 @@ fn link_ids(store: &Store) -> Vec<i64> {
         .unwrap()
 }
 
-fn row_of(store: &Store, kind: &str, ident: &str) -> Option<i64> {
+pub(crate) fn row_of(store: &Store, kind: &str, ident: &str) -> Option<i64> {
     use rusqlite::OptionalExtension;
     store
         .conn

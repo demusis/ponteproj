@@ -105,6 +105,10 @@ mod f3_tests;
 /// host's durable insertion log and the receipt asked first (tests only).
 #[cfg(test)]
 mod f3a2_tests;
+/// Review of F3.0b-ii: the card of a foreign change in one frame and the
+/// reservation of the mapper (tests only).
+#[cfg(test)]
+mod f3b2_review_tests;
 /// F3.0b-ii of Frente F: acceptance tests of the adoption mapping, the
 /// retired sources, coverage and report by identity and the card envelope
 /// (tests only).
