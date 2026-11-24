@@ -569,15 +569,50 @@ pub(crate) fn comparable(content: &Value, other: &Value) -> Value {
     mask(&a, &moving, &mut BTreeMap::new())
 }
 
-/// The script run twice by this build, made comparable (see [`comparable`]).
+/// The fields the script fills with the day it runs on (an atendimento
+/// made by hand enters, and is in its stage, "today":
+/// `SaiopAttendance::new_manual`), and nothing else of the script does.
+const RUN_DAY_FIELDS: &[&str] = &["entry_date", "entry_date_raw", "stage_changed_at"];
+
+/// `value` with every [`RUN_DAY_FIELDS`] field that holds one of `days`
+/// (the days the runs went through) written `<hoje>`, so the content does
+/// not depend on the day it is made (a run of two builds on different days
+/// compares the same); any other day in those fields stays as it is.
+fn run_days_masked(value: &mut Value, days: &std::collections::BTreeSet<String>) {
+    match value {
+        Value::Array(items) => items.iter_mut().for_each(|v| run_days_masked(v, days)),
+        Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                match v {
+                    Value::String(day)
+                        if RUN_DAY_FIELDS.contains(&key.as_str()) && days.contains(day) =>
+                    {
+                        *v = Value::String("<hoje>".into());
+                    }
+                    _ => run_days_masked(v, days),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The script run twice by this build, made comparable (see [`comparable`]),
+/// with the day of the runs masked (see [`run_days_masked`]).
 pub(crate) fn scripted_content() -> Value {
+    let today = || chrono::Local::now().format("%Y-%m-%d").to_string();
     let run = || {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("Drive").join("ponte-sync.ponte");
         scripted_file(dir.path(), &file);
         content_of(&file)
     };
-    let (first, second) = (run(), run());
+    let mut days = std::collections::BTreeSet::from([today()]);
+    let (mut first, mut second) = (run(), run());
+    // A run that crossed midnight went through both days.
+    days.insert(today());
+    run_days_masked(&mut first, &days);
+    run_days_masked(&mut second, &days);
     comparable(&first, &second)
 }
 
@@ -621,9 +656,10 @@ fn f2a_08_write_fixtures() {
 }
 
 /// The same script, here: the file it publishes carries the content the
-/// build without F2a published (`paridade-0.51.json`, written by fc6342e),
+/// build without F2a published (`paridade-0.51.json`, written by fc6342e,
+/// with the day of its run masked as [`run_days_masked`] masks it),
 /// compared as `comparable` says (only what varies between two runs of the
-/// same build is masked).
+/// same build is masked), on any day.
 #[test]
 fn f2a_08_payload_is_the_one_of_0_51() {
     let here = scripted_content();
