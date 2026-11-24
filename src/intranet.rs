@@ -4677,7 +4677,7 @@ impl Store {
                             .unwrap_or_else(|_| entry.mutation.clone()),
                         ..entry.clone()
                     };
-                    let mut conflict = build_sync_conflict(&sent, &reason, host_frame.as_deref());
+                    let mut conflict = card_of(&entry, &sent, &reason, host_frame.as_deref());
                     conflict.identity = identity;
                     carded_now(&mut carded, &conflict);
                     self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
@@ -4792,8 +4792,7 @@ impl Store {
                         if let Some(doc) = creation {
                             creation_results.insert(doc, crate::renumber::CreationOutcome::Refused);
                         }
-                        let mut conflict =
-                            build_sync_conflict(&sent, &message, host_frame.as_deref());
+                        let mut conflict = card_of(&entry, &sent, &message, host_frame.as_deref());
                         conflict.identity = identity;
                         carded_now(&mut carded, &conflict);
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
@@ -6690,7 +6689,8 @@ impl Store {
                             }),
                             ..entry.clone()
                         };
-                        let mut conflict = conflict_for(&sent, &error, base_snapshot, unresolved);
+                        let mut conflict = card_of(&entry, &sent, &error, base_snapshot);
+                        conflict.unresolved = unresolved;
                         conflict.identity = identity;
                         conflicts.push(conflict);
                         applied.insert(entry.uid.clone());
@@ -8719,6 +8719,16 @@ impl Store {
             }
             item.id = id;
             item.created_at = created_at;
+            // The local view (v2 §2.7): the change as made, its numbers by
+            // its proofs here, now. One that does not resolve here can only
+            // be copied or dismissed. Older cards keep their numbers.
+            if let Some(refs) = &item.refs {
+                let holds = refs.frame == crate::idrefs::frame_tag(&self.conn)?;
+                match refs.resolve(&item.mutation, item.base.as_ref(), &self.conn, holds) {
+                    Ok((mutation, base, _)) => (item.mutation, item.base) = (mutation, base),
+                    Err(_) => item.unresolved = true,
+                }
+            }
             out.push(item);
         }
         Ok(out)
@@ -11961,6 +11971,25 @@ fn conflict_for(
     conflict
 }
 
+/// The card of `sent` (the change in the receiver's numbers, which the
+/// summaries compare with its state) that keeps the envelope of `original`
+/// when it carries proofs (v2 §2.7, frozen rule 8): the change as it was
+/// made, its base and its proofs, never the numbers it was resolved to.
+fn card_of(
+    original: &OutboxEntry,
+    sent: &OutboxEntry,
+    reason: &str,
+    snapshot: Option<&CabinetSnapshot>,
+) -> SyncConflict {
+    let mut conflict = build_sync_conflict(sent, reason, snapshot);
+    if original.refs.is_some() {
+        conflict.mutation = original.mutation.clone();
+        conflict.base = original.base.clone();
+        conflict.refs = original.refs.clone();
+    }
+    conflict
+}
+
 fn build_sync_conflict(
     entry: &OutboxEntry,
     reason: &str,
@@ -12104,7 +12133,7 @@ fn build_sync_conflict(
         identity: Vec::new(),
         mutation_uid: entry.uid.clone(),
         resolved_at: String::new(),
-        refs: None,
+        refs: entry.refs.clone(),
     }
 }
 
