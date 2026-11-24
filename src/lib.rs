@@ -97,6 +97,10 @@ mod f2b_rodada2_tests;
 /// F2b of Frente F: acceptance tests of the shared file of format 9.
 #[cfg(test)]
 mod f2b_tests;
+/// F3.1a-ii of Frente F: acceptance tests of the record kinds addressed by
+/// identity (tests only).
+#[cfg(test)]
+mod f31a2_tests;
 /// F3.1a of Frente F: acceptance tests of the comparator of versions, the
 /// pointers on final identities and the obligations of the record kinds
 /// (tests only).

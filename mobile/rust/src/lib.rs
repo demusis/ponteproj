@@ -6556,4 +6556,135 @@ dia 2026-12-26 Recesso do celular
         assert!(kept, "the app would delete the blocked pending copy: {answer}");
         std::fs::remove_dir(&aside).unwrap();
     }
+
+    // -------------------------------------------------------- F3.1a-ii --
+
+    /// `files` as the only shared files of `store`, then one exchange.
+    fn sync_files(store: &mut Store, files: &[&Path]) -> ponteproj::intranet::FolderSyncReport {
+        let mut cfg = store.load_intranet_config().unwrap();
+        cfg.folder_files = files.iter().map(|p| p.display().to_string()).collect();
+        store.save_intranet_config(&cfg).unwrap();
+        store
+            .sync_with_folders(&cfg, KEY, false, &ponteproj::ai::Reporter::silent())
+            .unwrap()
+    }
+
+    fn record_numbered(store: &Store, number: &str) -> Option<i64> {
+        store
+            .list_documents("")
+            .unwrap()
+            .into_iter()
+            .find(|d| d.document_number == number)
+            .map(|d| d.id)
+    }
+
+    fn numbered(number: &str, text: &str) -> ponteproj::model::Capture {
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/capture.json"
+        );
+        let mut capture: ponteproj::model::Capture =
+            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+        capture.document_number = number.into();
+        capture.title = format!("Documento {number}");
+        capture.text = text.into();
+        capture.request_id = uuid::Uuid::new_v4().to_string();
+        capture.source_url = format!(
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla={}",
+            number.replace('/', "%2F")
+        );
+        capture
+    }
+
+    /// F3.1a-ii, the phone path (`desenho-f3-v2.md` §3 F3.1a, F1 C2b). The
+    /// phone works on the pen drive's file and holds record X by its number
+    /// there. Computer B publishes Y to the Drive, which becomes the newer
+    /// copy; when computer A meets both, the Drive is the base and X, made
+    /// on the pen drive, is replayed onto it: in the copy X gets another
+    /// number and Y gets X's. The phone keeps its own numbers (its adoption
+    /// matches the records by identity), so a note it saves through the
+    /// number it held lands on X on the computer, and Y is untouched.
+    ///
+    /// Red on `f7eff3b`: the phone adopts the merged copy verbatim, so the
+    /// number it held names Y.
+    #[test]
+    fn f3_1a_the_phone_keeps_its_numbers_across_a_divergent_merge() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        promote_on();
+        let drive = dir.0.join("drive").join("ponte-sync.ponte");
+        let pen = dir.0.join("pen").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
+        let mut a = open(&dir.0, "a.sqlite3", "Computador A");
+        a.import_capture(&numbered("SEFAZ-PRO-2026/08000", "Primeiro."))
+            .unwrap();
+        sync_files(&mut a, &[&drive, &pen]);
+        let mut b = open(&dir.0, "b.sqlite3", "Computador B");
+        sync_files(&mut b, &[&drive]);
+        let promoted = sync_files(&mut a, &[&drive, &pen]);
+        assert!(promoted.promoted, "{:?}", promoted.promotion_wait);
+        sync_files(&mut b, &[&drive]);
+        sync_files(&mut a, &[&drive, &pen]);
+        sync_files(&mut b, &[&drive]);
+        let pen9 = ponteproj::sharedfolder::nine_path(&pen);
+        assert!(pen9.is_file());
+        // The app copies the pen drive's file, the core exchanges with the
+        // copy, and the app uploads it back.
+        let work = dir.0.join("work.ponte");
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular");
+        let phone_sync = |phone: &mut Store| {
+            std::fs::copy(&pen9, &work).unwrap();
+            let answer = sync_paths(phone, &work_s, "", KEY).unwrap();
+            std::fs::copy(&work, &pen9).unwrap();
+            answer
+        };
+        phone_sync(&mut phone);
+        phone_sync(&mut phone);
+
+        const X: &str = "SEFAZ-PRO-2026/08001";
+        const Y: &str = "SEFAZ-PRO-2026/08002";
+        a.import_capture(&numbered(X, "Documento X, no pen drive."))
+            .unwrap();
+        sync_files(&mut a, &[&pen]);
+        phone_sync(&mut phone);
+        let held = record_numbered(&phone, X).expect("X on the phone");
+
+        b.import_capture(&numbered(Y, "Documento Y, no Drive."))
+            .unwrap();
+        sync_files(&mut b, &[&drive]);
+        let first = record_numbered(&b, "SEFAZ-PRO-2026/08000").unwrap();
+        for n in 0..3 {
+            b.save_note(first, &format!("enchimento {n}")).unwrap();
+            sync_files(&mut b, &[&drive]);
+        }
+        sync_files(&mut a, &[&drive, &pen]);
+        let answer = phone_sync(&mut phone);
+        assert_eq!(answer["conflicts"], json!(0), "{answer}");
+        assert_eq!(
+            record_numbered(&phone, X),
+            Some(held),
+            "the phone keeps X's number"
+        );
+        assert_ne!(record_numbered(&phone, Y), Some(held));
+
+        // What the app's saveNote does with the number on the screen.
+        phone.save_note(held, "Nota do celular").unwrap();
+        phone_sync(&mut phone);
+        sync_files(&mut a, &[&drive, &pen]);
+        let note = |store: &Store, number: &str| {
+            store
+                .load_document(record_numbered(store, number).unwrap())
+                .unwrap()
+                .note
+        };
+        assert_eq!(note(&a, X), "Nota do celular");
+        assert_eq!(note(&a, Y), "");
+        assert_eq!(note(&phone, X), "Nota do celular");
+        assert_eq!(note(&phone, Y), "");
+        assert!(a.list_sync_conflicts().unwrap().is_empty());
+    }
 }
