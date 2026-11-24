@@ -6263,6 +6263,64 @@ mod tests {
     }
 
     #[test]
+    /// 0.52.0 on real devices: two computers purged the same item of the
+    /// Lixeira (each one's retention), each through its own copy; the
+    /// phone reads both (the Drive file and the copy it kept pending) and
+    /// replays the other's purge on a base where the item is already gone.
+    /// The phone gets no conflict, and the item is gone there.
+    fn lixeira_the_same_purge_from_two_computers_is_no_conflict_on_the_phone() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut a, drive, id) = first_transport(&dir.0);
+        promote_on();
+        let exchange = |store: &mut Store, replace: bool| {
+            let cfg = store.load_intranet_config().unwrap();
+            store
+                .sync_with_folders(&cfg, KEY, replace, &ponteproj::ai::Reporter::silent())
+                .unwrap()
+        };
+        let use_file = |store: &mut Store, path: &Path| {
+            let mut cfg = store.load_intranet_config().unwrap();
+            cfg.folder_files = vec![path.display().to_string()];
+            store.save_intranet_config(&cfg).unwrap();
+        };
+        assert!(exchange(&mut a, false).promoted);
+        let nine = ponteproj::sharedfolder::nine_path(&drive);
+        use_file(&mut a, &nine);
+        let target = |id| ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id };
+        a.trash_item(target(id)).unwrap();
+        exchange(&mut a, false);
+        // The phone joins, with the document in the Lixeira.
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&nine, &work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        let work_s = work.display().to_string();
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(phone.trash_entries().unwrap().len(), 1);
+        // B works through its own copy (a pen drive), from the same file.
+        let pen = dir.0.join("pen").join("ponte-sync-formato9.ponte");
+        std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
+        std::fs::copy(&nine, &pen).unwrap();
+        let mut b = open(&dir.0, "b.sqlite3", "Computador B");
+        use_file(&mut b, &pen);
+        exchange(&mut b, true);
+        let on_b = b.trash_entries().unwrap()[0].target.id;
+        b.purge_trash_item(target(on_b)).unwrap();
+        exchange(&mut b, false);
+        // A purges it too, through the Drive.
+        a.purge_trash_item(target(id)).unwrap();
+        exchange(&mut a, false);
+        std::fs::copy(&nine, &work).unwrap();
+        // The phone reads both.
+        let answer = sync_paths(&mut phone, &work_s, &pen.display().to_string(), KEY).unwrap();
+        assert_eq!(answer["conflicts"], json!(0), "{answer}");
+        assert!(phone.list_sync_conflicts().unwrap().is_empty());
+        assert!(phone.trash_entries().unwrap().is_empty(), "gone on the phone");
+        assert!(phone.list_documents("").unwrap().iter().all(|d| d.id != id));
+    }
+
+    #[test]
     fn f2b_the_phone_refuses_the_stub_before_any_local_write() {
         let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _reset = ResetHolidays;

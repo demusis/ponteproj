@@ -160,6 +160,9 @@ pub mod formatfloor;
 pub mod idents;
 /// The id sites of a change and the proof of each (F3).
 pub mod idrefs;
+/// A purge of the Lixeira met on another device (tests only).
+#[cfg(test)]
+mod lixeira_tests;
 /// The adoption mapping of a mapped library (F3.0b).
 pub mod mapper;
 /// Pacote F2 + F3 (0.52.0): the features of 0.51.0 that create or edit
