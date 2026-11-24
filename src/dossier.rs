@@ -351,7 +351,7 @@ impl Store {
     }
     fn capture_versions_uncached(&self, document: i64) -> Result<Vec<CaptureVersion>> {
         let mut statement = self.conn.prepare(
-            "SELECT c.id,c.created_at,c.payload FROM captures c WHERE c.document_id=?1 AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='capture' AND t.item_id=c.id) ORDER BY c.id DESC",
+            "SELECT c.id,c.created_at,c.payload FROM captures c WHERE c.document_id=?1 AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='capture' AND t.item_id=c.id)",
         )?;
         let rows = statement.query_map([document], |r| {
             Ok((
@@ -360,15 +360,24 @@ impl Store {
                 r.get::<_, Vec<u8>>(2)?,
             ))
         })?;
-        rows.map(|row| {
-            let (id, saved_at, bytes) = row?;
-            Ok(CaptureVersion {
-                id,
-                saved_at,
-                capture: serde_json::from_slice(&protection::unseal(&bytes)?)?,
+        // Newest first by the one order of versions (adendo §8), as the
+        // current version is chosen: the same history on every device,
+        // whatever the numbers here.
+        let mut versions = rows
+            .map(|row| {
+                let (id, saved_at, bytes) = row?;
+                Ok((
+                    crate::storage::version_key(&self.conn, id)?,
+                    CaptureVersion {
+                        id,
+                        saved_at,
+                        capture: serde_json::from_slice(&protection::unseal(&bytes)?)?,
+                    },
+                ))
             })
-        })
-        .collect()
+            .collect::<Result<Vec<_>>>()?;
+        versions.sort_by(|a, b| b.0.cmp(&a.0));
+        Ok(versions.into_iter().map(|(_, v)| v).collect())
     }
     pub fn document_links(&self, document: i64) -> Result<Vec<DocumentLink>> {
         let mut statement=self.conn.prepare("SELECT id,source_id,target_id,active,payload FROM document_links WHERE (source_id=?1 OR target_id=?1) AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='document' AND t.item_id IN (source_id,target_id)) ORDER BY id DESC")?;

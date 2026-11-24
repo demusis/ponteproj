@@ -1940,13 +1940,13 @@ pub(crate) fn newest_capture(conn: &Connection, candidates: &[i64]) -> Result<Op
 
 /// Where the version `capture` stands in the one order of versions: its
 /// time, then its identity, then its number.
-type VersionKey = (VersionTime, Option<String>, i64);
+pub(crate) type VersionKey = (VersionTime, Option<String>, i64);
 
 /// The time of a version: the moment it was captured, then the one it was
 /// stored at (a version captured in the same second as another, as a
 /// manual record edited twice, is placed by when it was stored, wherever
 /// the two are; only an equal pair goes to the identity).
-type VersionTime = (Option<chrono::DateTime<chrono::FixedOffset>>, Option<i64>);
+pub(crate) type VersionTime = (Option<chrono::DateTime<chrono::FixedOffset>>, Option<i64>);
 
 fn version_time(conn: &Connection, capture: i64) -> Result<VersionTime> {
     let stored: String = conn.query_row(
@@ -1960,7 +1960,7 @@ fn version_time(conn: &Connection, capture: i64) -> Result<VersionTime> {
     ))
 }
 
-fn version_key(conn: &Connection, capture: i64) -> Result<VersionKey> {
+pub(crate) fn version_key(conn: &Connection, capture: i64) -> Result<VersionKey> {
     Ok((
         version_time(conn, capture)?,
         crate::idents::ident_of(conn, "capture", capture)?,
