@@ -7871,6 +7871,15 @@ impl Store {
             Some(_) => None,
         };
         let target = target.or(named.as_ref());
+        // One that names no record here could only go by its number (frozen
+        // rule 23); a library whose identities were never shared still
+        // queues it the legacy way, without proofs.
+        ensure!(
+            target.is_some()
+                || !crate::renumber::is_manual_edit(&mutation)
+                || crate::idents::origin(&self.conn)?.0 == "provisional",
+            crate::idrefs::TARGET_GONE
+        );
         if cfg.mode == IntranetMode::SharedFolder {
             // There is no host to ask: every change is applied here and
             // queued for the next exchange through the folders. This is the

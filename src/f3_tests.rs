@@ -742,9 +742,9 @@ fn f3_0a1_refs_check_per_site() {
     manual.source_url = format!("{}MANUAL-2026/0001", crate::model::MANUAL_ORIGIN);
     manual.document_number = "MANUAL-2026/0001".into();
     let edit = IntranetMutation::ImportCapture { capture: manual };
-    // Until F3.1b1 captures the target, such an edit without it goes by
-    // its number, as before (F3.0a2).
-    assert!(Refs::check(&edit, None, &Refs::default()).is_ok());
+    // Without it the edit could only go by its number: damaged (F3.1b1
+    // ends the F3.0a2 allowance).
+    assert!(Refs::check(&edit, None, &Refs::default()).is_err());
     let targeted = Refs {
         manual_target: Some(r(IdKind::Document, 3)),
         ..Refs::default()

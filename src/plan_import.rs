@@ -1552,7 +1552,7 @@ impl Store {
                     );
                 }
                 bail!(
-                    "O plano ainda tinha o que criar, mas o documento dele não existe mais (foi excluído definitivamente) e não é recriado. Use um request_id novo para um plano novo."
+                    "O plano ainda tinha o que criar, mas o documento dele não existe mais neste acervo (foi excluído definitivamente, ou recusado numa sincronização) e não é recriado. Nada foi gravado. Use um request_id novo para um plano novo."
                 );
             }
             _ => {}
