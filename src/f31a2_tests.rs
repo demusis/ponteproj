@@ -26,7 +26,7 @@ const KEY: &str = "senha-de-teste-123";
 
 /// One exchange, which must keep nothing aside: a false alarm of the guard
 /// (an item of this library taken as lost) fails the test.
-fn sync(store: &mut Store) -> FolderSyncReport {
+pub(crate) fn sync(store: &mut Store) -> FolderSyncReport {
     let report = crate::f3a2_tests::fsync(store);
     assert!(
         !report
@@ -51,7 +51,7 @@ fn mapped(store: &Store) -> bool {
     crate::idents::is_mapped(&store.conn).unwrap()
 }
 
-fn doc(store: &Store, number: &str) -> Option<i64> {
+pub(crate) fn doc(store: &Store, number: &str) -> Option<i64> {
     store
         .list_documents("")
         .unwrap()
@@ -67,7 +67,7 @@ fn note(store: &Store, number: &str) -> String {
         .note
 }
 
-fn cards(store: &Store) -> Vec<crate::intranet::SyncConflict> {
+pub(crate) fn cards(store: &Store) -> Vec<crate::intranet::SyncConflict> {
     store.list_sync_conflicts().unwrap()
 }
 
@@ -593,7 +593,7 @@ fn f3_1a_history_follows_the_order_of_versions() {
 
 // ------------------------------------- a numbered edit of a manual record --
 
-fn manual(title: &str, text: &str) -> crate::manual::ManualFields {
+pub(crate) fn manual(title: &str, text: &str) -> crate::manual::ManualFields {
     crate::manual::ManualFields {
         kind: "ligacao".into(),
         title: title.into(),
@@ -603,7 +603,7 @@ fn manual(title: &str, text: &str) -> crate::manual::ManualFields {
     }
 }
 
-fn by_title(store: &Store, title: &str) -> i64 {
+pub(crate) fn by_title(store: &Store, title: &str) -> i64 {
     store
         .list_documents("")
         .unwrap()
@@ -614,7 +614,7 @@ fn by_title(store: &Store, title: &str) -> i64 {
 }
 
 /// The (title, text) of every version of record `id`, newest first.
-fn versions(store: &Store, id: i64) -> Vec<(String, String)> {
+pub(crate) fn versions(store: &Store, id: i64) -> Vec<(String, String)> {
     store
         .capture_versions(id)
         .unwrap()
@@ -623,16 +623,16 @@ fn versions(store: &Store, id: i64) -> Vec<(String, String)> {
         .collect()
 }
 
-fn version(title: &str, text: &str) -> (String, String) {
+pub(crate) fn version(title: &str, text: &str) -> (String, String) {
     (title.to_owned(), text.to_owned())
 }
 
-const MX: &str = "Registro de A";
-const MY: &str = "Registro de B";
+pub(crate) const MX: &str = "Registro de A";
+pub(crate) const MY: &str = "Registro de B";
 
 /// [`crossed`] with manual records: X made on A and Y on B, offline, at the
 /// same number. After A, B and A exchange, 42 is X on A and Y on B.
-fn crossed_manual() -> (tempfile::TempDir, Store, Store, i64) {
+pub(crate) fn crossed_manual() -> (tempfile::TempDir, Store, Store, i64) {
     let (dir, _path, mut a, mut b) = two();
     assert!(mapped(&a) && mapped(&b), "both libraries are mapped");
     let x = a

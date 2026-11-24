@@ -912,6 +912,10 @@ impl Store {
             .hyphenated()
             .to_string();
         let seen = now();
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = crate::idents::hooks::BEFORE_IMPORT_TX.with(|h| h.borrow_mut().take()) {
+            hook(&self.conn);
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2601,6 +2605,73 @@ pub(crate) mod tests_support {
                 )
                 .unwrap()
                 > 0
+    }
+}
+
+/// Helpers for tests of this crate and of the phone core: a manual
+/// record's number changed in place, as the renumbering of a creation in
+/// the shared copy changes it.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_numbers {
+    use super::*;
+
+    /// The number of document `id` in the library on `conn`.
+    pub fn number_of(conn: &Connection, id: i64) -> String {
+        let blob: Vec<u8> = conn
+            .query_row(
+                "SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id WHERE d.id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        decode::<Capture>(&blob).unwrap().document_number
+    }
+
+    /// Gives manual record `id` the number `number`: every version, and
+    /// the record's identity.
+    pub fn give_number(conn: &Connection, id: i64, number: &str) {
+        let versions: Vec<(i64, Vec<u8>)> = conn
+            .prepare("SELECT id,payload FROM captures WHERE document_id=?1")
+            .unwrap()
+            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for (capture_id, blob) in versions {
+            let new = with_manual_number(&decode::<Capture>(&blob).unwrap(), number);
+            conn.execute(
+                "UPDATE captures SET payload=?1,content_hash=?2 WHERE id=?3",
+                params![
+                    encode(&new).unwrap(),
+                    content_hash(&new).unwrap(),
+                    capture_id
+                ],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE documents SET identity_hash=?1 WHERE id=?2",
+            params![identity_hash_for_number(number), id],
+        )
+        .unwrap();
+    }
+
+    /// Swaps the numbers of manual records `a` and `b`.
+    pub fn swap_numbers(conn: &Connection, a: i64, b: i64) {
+        let (of_a, of_b) = (number_of(conn, a), number_of(conn, b));
+        give_number(conn, a, "MANUAL-1999/99999999");
+        give_number(conn, b, &of_a);
+        give_number(conn, a, &of_b);
+    }
+
+    /// The row of the document whose identity is `ident` there.
+    pub fn row_of_ident(conn: &Connection, ident: &str) -> i64 {
+        conn.query_row(
+            "SELECT row_id FROM item_ident WHERE kind='document' AND ident=?1",
+            [ident],
+            |r| r.get(0),
+        )
+        .unwrap()
     }
 }
 

@@ -4218,4 +4218,96 @@ mod tests {
             .iter()
             .any(|(_, text)| text == "Item da pessoa"));
     }
+
+    // ---- F3.1b1: the record of a resumed plan, by identity -------------------
+
+    /// A plan on the existing record `number` of a shared-folder library,
+    /// stopped right after its first task (the receipt update died).
+    fn interrupted_on(store: &mut Store, number: &str) -> Plan {
+        let input = existing_plan(number);
+        fail_receipt_update(store, "NEW.tasks_created=1");
+        assert!(store.import_plan(&input, false).is_err());
+        store
+            .conn
+            .execute_batch("DROP TRIGGER falha_simulada")
+            .unwrap();
+        input
+    }
+
+    fn plan_tasks_of(store: &Store, document: i64) -> usize {
+        store
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .filter(|t| t.document_id == Some(document) && t.title.starts_with("Tarefa "))
+            .count()
+    }
+
+    fn official(store: &mut Store, number: &str) -> i64 {
+        let mut capture = crate::model::sample_capture();
+        capture.request_id = uuid::Uuid::new_v4().to_string();
+        capture.document_number = number.into();
+        capture.title = format!("Documento {number}");
+        capture.source_url = format!(
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla={}",
+            number.replace('/', "%2F")
+        );
+        store.import_capture(&capture).unwrap().document_id
+    }
+
+    /// v2 `f3_1_plan_resume_by_ident_on_a_new_id` (adendo §12 rules 18 and
+    /// 23). Two plans on record X stop after their first task. X's request
+    /// id now leads to Y (two records that came with one request id). The
+    /// first plan resumes on X, by X's identity. With X deleted for good,
+    /// the second is refused with its text, and Y gets nothing.
+    ///
+    /// Red on `b1de851`: the receipt holds `request:`, which now leads to
+    /// Y, and the resume is refused although X is there.
+    #[test]
+    fn f3_1b1_plan_resumes_on_its_record_by_identity() {
+        let (_dir, mut store) = library();
+        shared_folder(&mut store);
+        let x = official(&mut store, "SEFAZ-PRO-2026/07201");
+        let y = official(&mut store, "SEFAZ-PRO-2026/07202");
+        let first = interrupted_on(&mut store, "SEFAZ-PRO-2026/07201");
+        let second = interrupted_on(&mut store, "SEFAZ-PRO-2026/07201");
+        assert_eq!(plan_tasks_of(&store, x), 2);
+        store
+            .conn
+            .execute(
+                "UPDATE requests SET document_id=?1 WHERE document_id=?2",
+                [y, x],
+            )
+            .unwrap();
+        let done = store.import_plan(&first, false).expect("resumed on X");
+        assert!(done.tasks.iter().all(|t| t.id.is_some()));
+        assert_eq!(plan_tasks_of(&store, x), 3);
+        assert_eq!(plan_tasks_of(&store, y), 0);
+        purge(&mut store, Kind::Document, x);
+        let said = run_error(&mut store, &second);
+        assert!(said.contains("não existe mais"), "{said}");
+        assert_eq!(plan_tasks_of(&store, y), 0);
+    }
+
+    /// The other half: an exchange gave every item a new identity (another
+    /// epoch). The identity of the receipt names nothing, and the plan is
+    /// taken up again by its request id, which still leads to X.
+    ///
+    /// Guard on `b1de851`: the receipt holds only the request id.
+    #[test]
+    fn f3_1b1_plan_retakes_by_request_after_an_epoch_change() {
+        let (_dir, mut store) = library();
+        shared_folder(&mut store);
+        let x = official(&mut store, "SEFAZ-PRO-2026/07211");
+        let input = interrupted_on(&mut store, "SEFAZ-PRO-2026/07211");
+        store
+            .conn
+            .execute_batch(
+                "UPDATE item_ident SET ident=lower(hex(randomblob(16)));
+                 UPDATE ident_state SET epoch=lower(hex(randomblob(16)));",
+            )
+            .unwrap();
+        store.import_plan(&input, false).expect("resumed on X");
+        assert_eq!(plan_tasks_of(&store, x), 2);
+    }
 }

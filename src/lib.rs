@@ -111,6 +111,11 @@ mod f31a_review_tests;
 /// (tests only).
 #[cfg(test)]
 mod f31a_tests;
+/// F3.1b1 of Frente F: acceptance tests of the manual target bound inside
+/// the import's transaction, the request id of another record and the
+/// native host on a crossed pair (tests only).
+#[cfg(test)]
+mod f31b1_tests;
 /// F3.0a1 of Frente F: acceptance tests of the level barrier, the floor
 /// observed and the refs of every producer (tests only).
 #[cfg(test)]

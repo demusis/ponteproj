@@ -1655,6 +1655,18 @@ pub mod hooks {
         /// The next adoption of a team client's exchange (after its queue was
         /// sent) fails before it begins.
         pub static FAIL_TEAM_ADOPTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Runs once in this thread right before the transaction of the
+        /// next import (`import_capture_core`), on the library it writes:
+        /// after whatever resolved the import's record, before it is
+        /// written (the window of adendo §9, R2-09).
+        pub static BEFORE_IMPORT_TX: RefCell<Option<ConnHook>> = RefCell::new(None);
+    }
+
+    type ConnHook = Box<dyn FnOnce(&rusqlite::Connection)>;
+
+    /// Arms [`BEFORE_IMPORT_TX`] in this thread.
+    pub fn before_import_tx(hook: impl FnOnce(&rusqlite::Connection) + 'static) {
+        BEFORE_IMPORT_TX.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
     }
 
     /// Library files a fault is armed for, each once (tests run in

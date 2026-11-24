@@ -6687,4 +6687,118 @@ dia 2026-12-26 Recesso do celular
         assert_eq!(note(&phone, Y), "");
         assert!(a.list_sync_conflicts().unwrap().is_empty());
     }
+
+    // ------------------------------------------------------------ F3.1b1 --
+
+    fn titled(store: &Store, title: &str) -> i64 {
+        store
+            .list_documents("")
+            .unwrap()
+            .into_iter()
+            .find(|d| d.title == title)
+            .unwrap_or_else(|| panic!("sem {title}"))
+            .id
+    }
+
+    fn texts(store: &Store, id: i64) -> Vec<String> {
+        store
+            .capture_versions(id)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.capture.text)
+            .collect()
+    }
+
+    fn manual_fields(title: &str, text: &str) -> ponteproj::manual::ManualFields {
+        ponteproj::manual::ManualFields {
+            kind: "ligacao".into(),
+            title: title.into(),
+            origin: "Gabinete".into(),
+            document_date: String::new(),
+            text: text.into(),
+        }
+    }
+
+    /// F3.1b1 (adendo §9, frozen rule 18) on the phone. The phone and
+    /// computer A each make a manual record offline as the first of the
+    /// year: P on the phone, X on A. A edits P; while A's queue is replayed
+    /// onto the copy, X and P swap numbers there right before the import's
+    /// transaction. The edit is on P (by its identity) on A and on the
+    /// phone, which still holds P at its own number; X keeps its one
+    /// version; no card.
+    ///
+    /// Red on `b1de851`: A's edit names no record, and the replay imports
+    /// it by the number, which is X's there.
+    #[test]
+    fn f3_1b1_a_manual_edit_reaches_the_phone_on_its_record() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        promote_on();
+        let drive = dir.0.join("drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        let mut a = open(&dir.0, "a.sqlite3", "Computador A");
+        a.import_capture(&numbered("SEFAZ-PRO-2026/08100", "Primeiro."))
+            .unwrap();
+        sync_files(&mut a, &[&drive]);
+        let mut b = open(&dir.0, "b.sqlite3", "Computador B");
+        sync_files(&mut b, &[&drive]);
+        assert!(sync_files(&mut a, &[&drive]).promoted);
+        sync_files(&mut b, &[&drive]);
+        let nine = ponteproj::sharedfolder::nine_path(&drive);
+        let work = dir.0.join("work.ponte");
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular");
+        let phone_sync = |phone: &mut Store| {
+            std::fs::copy(&nine, &work).unwrap();
+            let answer = sync_paths(phone, &work_s, "", KEY).unwrap();
+            std::fs::copy(&work, &nine).unwrap();
+            answer
+        };
+        phone_sync(&mut phone);
+        phone_sync(&mut phone);
+
+        const P: &str = "Registro do celular";
+        const X: &str = "Registro de A";
+        let held = phone
+            .create_manual_document(&manual_fields(P, "Texto do celular"))
+            .unwrap()
+            .document_id;
+        a.create_manual_document(&manual_fields(X, "Texto de A"))
+            .unwrap();
+        sync_files(&mut a, &[&drive]);
+        phone_sync(&mut phone);
+        sync_files(&mut a, &[&drive]);
+        assert_eq!(titled(&phone, P), held, "the phone keeps its number of P");
+
+        let (p_a, x_a) = (titled(&a, P), titled(&a, X));
+        a.update_manual_document(p_a, &manual_fields(P, "Texto do celular, editado em A"))
+            .unwrap();
+        let idents = phone_idents(&a);
+        let (ip, ix) = (
+            idents[&("document".to_owned(), p_a)].clone(),
+            idents[&("document".to_owned(), x_a)].clone(),
+        );
+        ponteproj::idents::hooks::before_import_tx(move |conn| {
+            use ponteproj::storage::test_numbers::{row_of_ident, swap_numbers};
+            swap_numbers(conn, row_of_ident(conn, &ip), row_of_ident(conn, &ix));
+        });
+        sync_files(&mut a, &[&drive]);
+        assert!(
+            ponteproj::idents::hooks::BEFORE_IMPORT_TX.with(|h| h.borrow_mut().take().is_none()),
+            "the window was used"
+        );
+        let answer = phone_sync(&mut phone);
+        assert_eq!(answer["conflicts"], json!(0), "{answer}");
+        assert_eq!(titled(&phone, P), held);
+        for store in [&a, &phone] {
+            assert_eq!(
+                texts(store, titled(store, P)),
+                vec!["Texto do celular, editado em A", "Texto do celular"]
+            );
+            assert_eq!(texts(store, titled(store, X)), vec!["Texto de A"]);
+            assert!(store.list_sync_conflicts().unwrap().is_empty());
+        }
+    }
 }
