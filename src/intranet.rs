@@ -4833,7 +4833,10 @@ impl Store {
             && self.projects_cache_stale();
         // A quiet library not mapped yet (nothing queued or translated)
         // asks the whole snapshot once per revision: at the same revision
-        // it takes the identities and settles (adendo §2 rule 3).
+        // it takes the identities and settles (adendo §2 rule 3). The try
+        // is spent only where the snapshot is compared with this library
+        // (`take_identities_from`): a main computer out of reach, or an
+        // answer at another revision, leaves it for the next exchange.
         let settling = !force_full
             && !replacing
             && !pushed_offline
@@ -4842,9 +4845,6 @@ impl Store {
             && self.list_offline_outbox()?.iter().all(|e| e.refs.is_some())
             && crate::idents::meta(&self.conn, "settle_tried_revision")?
                 != Some(cfg.synced_revision);
-        if settling {
-            crate::idents::set_meta(&self.conn, "settle_tried_revision", cfg.synced_revision)?;
-        }
         let since = if force_full
             || replacing
             || pushed_offline
@@ -4911,7 +4911,14 @@ impl Store {
             }
             RpcResponse::Snapshot(snapshot) => {
                 if projects_only && snapshot.revision == cfg.synced_revision {
-                    return self.take_projects_from(&snapshot);
+                    let changed = self.take_projects_from(&snapshot)?;
+                    // With the projects taken, this library may now be the
+                    // main computer's, row for row: settling, the same
+                    // snapshot settles it in this exchange.
+                    if settling {
+                        self.take_identities_from(&snapshot, true)?;
+                    }
+                    return Ok(changed);
                 }
                 // At the revision this copy already holds, the main computer
                 // answers with its snapshot only because this library never
@@ -4924,7 +4931,7 @@ impl Store {
                     && (since == Some(cfg.synced_revision) || settling)
                     && snapshot.revision == cfg.synced_revision
                 {
-                    return self.take_identities_from(&snapshot);
+                    return self.take_identities_from(&snapshot, settling);
                 }
                 #[cfg(any(test, feature = "test-support"))]
                 if crate::idents::hooks::FAIL_TEAM_ADOPTION.with(|c| c.replace(false)) {
@@ -5006,9 +5013,10 @@ impl Store {
     /// The snapshot of the main computer at the revision this library
     /// already holds (see `sync_from_host_inner`): when its content is this
     /// library's, row for row, this library takes its identities and its
-    /// epoch; otherwise nothing changes. Answers whether anything visible
-    /// changed (never).
-    fn take_identities_from(&mut self, snapshot: &CabinetSnapshot) -> Result<bool> {
+    /// epoch; otherwise nothing changes. `settling`: this is the one try of
+    /// that revision (adendo §2 rule 3), recorded with the comparison.
+    /// Answers whether anything visible changed (never).
+    fn take_identities_from(&mut self, snapshot: &CabinetSnapshot, settling: bool) -> Result<bool> {
         let content = |snapshot: &CabinetSnapshot| -> Result<serde_json::Value> {
             let mut plain = snapshot.clone();
             plain.idents.clear();
@@ -5028,8 +5036,11 @@ impl Store {
             crate::idents::adopt_triples(&tx, snapshot)?;
             adopted_from_host(&tx, &snapshot.ident_epoch)?;
             settle_mapping(&tx, !snapshot.ident_epoch.is_empty())?;
-            tx.commit()?;
         }
+        if settling {
+            crate::idents::set_meta(&tx, "settle_tried_revision", snapshot.revision)?;
+        }
+        tx.commit()?;
         Ok(false)
     }
 
