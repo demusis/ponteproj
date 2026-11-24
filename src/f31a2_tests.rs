@@ -468,6 +468,171 @@ fn f3_1a_history_follows_the_order_of_versions() {
     assert_eq!(history, vec!["Versão nova.", "Versão antiga."]);
 }
 
+// ------------------------------------- a numbered edit of a manual record --
+
+fn manual(title: &str, text: &str) -> crate::manual::ManualFields {
+    crate::manual::ManualFields {
+        kind: "ligacao".into(),
+        title: title.into(),
+        origin: "Gabinete".into(),
+        document_date: String::new(),
+        text: text.into(),
+    }
+}
+
+fn by_title(store: &Store, title: &str) -> i64 {
+    store
+        .list_documents("")
+        .unwrap()
+        .into_iter()
+        .find(|d| d.title == title)
+        .unwrap_or_else(|| panic!("sem “{title}”"))
+        .id
+}
+
+/// The (title, text) of every version of record `id`, newest first.
+fn versions(store: &Store, id: i64) -> Vec<(String, String)> {
+    store
+        .capture_versions(id)
+        .unwrap()
+        .into_iter()
+        .map(|v| (v.capture.title, v.capture.text))
+        .collect()
+}
+
+fn version(title: &str, text: &str) -> (String, String) {
+    (title.to_owned(), text.to_owned())
+}
+
+const MX: &str = "Registro de A";
+const MY: &str = "Registro de B";
+
+/// [`crossed`] with manual records: X made on A and Y on B, offline, at the
+/// same number. After A, B and A exchange, 42 is X on A and Y on B.
+fn crossed_manual() -> (tempfile::TempDir, Store, Store, i64) {
+    let (dir, _path, mut a, mut b) = two();
+    assert!(mapped(&a) && mapped(&b), "both libraries are mapped");
+    let x = a
+        .create_manual_document(&manual(MX, "Texto de A"))
+        .unwrap()
+        .document_id;
+    let y = b
+        .create_manual_document(&manual(MY, "Texto de B"))
+        .unwrap()
+        .document_id;
+    assert_eq!(x, y, "the same number on both");
+    sync(&mut a);
+    sync(&mut b);
+    sync(&mut a);
+    assert_eq!(by_title(&a, MX), x, "A keeps X at its number");
+    assert_eq!(by_title(&b, MY), y, "B keeps Y at its number");
+    assert_eq!(by_title(&a, MY), by_title(&b, MX), "crossed");
+    (dir, a, b, x)
+}
+
+/// revisao-f3-1a-ii #1. B edits Y (its record at 42, a numbered manual
+/// edit, which names no item by a proof) on the crossed pair. The journal
+/// of the copy B last adopted says "the change that made X created 42"
+/// in the copy's numbers; 42 is Y here. The edit lands on Y, on both
+/// devices; X keeps its one version, byte for byte; no card.
+///
+/// Red on `bcafb9b`: the own queue's replay absorbs that journal into the
+/// translation keyed by this library's numbers, so the edit of Y is taken
+/// for a creation that went to the copy's 42 (X) and is written on X.
+#[test]
+fn f3_1a_a_manual_edit_never_follows_a_copy_number_of_another_record() {
+    let (_dir, mut a, mut b, held) = crossed_manual();
+    let pair = |s: &Store| (by_title(s, MX), by_title(s, MY));
+    let (on_a, on_b) = (pair(&a), pair(&b));
+    let x_before = versions(&a, on_a.0);
+    b.update_manual_document(held, &manual(MY, "Texto de B, editado"))
+        .unwrap();
+    sync(&mut b);
+    sync(&mut a);
+    sync(&mut b);
+    for (store, (x, y)) in [(&a, on_a), (&b, on_b)] {
+        assert_eq!(versions(store, x), x_before, "X untouched");
+        assert_eq!(
+            versions(store, y),
+            vec![
+                version(MY, "Texto de B, editado"),
+                version(MY, "Texto de B")
+            ],
+            "Y has B's edit"
+        );
+        assert!(cards(store).is_empty(), "{:?}", cards(store));
+    }
+    assert_eq!(on_b.1, held, "still Y on B");
+}
+
+/// The mirror: B edits X (A's record, at the other number here, which is
+/// Y's number in the copy). The edit lands on X, Y is untouched.
+///
+/// Red on `bcafb9b`, as above: the copy's "the change that made Y created
+/// 43" is read with this library's 43, which is X.
+#[test]
+fn f3_1a_a_manual_edit_of_the_other_record_of_the_pair_stays_on_it() {
+    let (_dir, mut a, mut b, _held) = crossed_manual();
+    let pair = |s: &Store| (by_title(s, MX), by_title(s, MY));
+    let (on_a, on_b) = (pair(&a), pair(&b));
+    let y_before = versions(&a, on_a.1);
+    b.update_manual_document(on_b.0, &manual(MX, "Texto de A, editado em B"))
+        .unwrap();
+    sync(&mut b);
+    sync(&mut a);
+    sync(&mut b);
+    for (store, (x, y)) in [(&a, on_a), (&b, on_b)] {
+        assert_eq!(versions(store, y), y_before, "Y untouched");
+        assert_eq!(
+            versions(store, x),
+            vec![
+                version(MX, "Texto de A, editado em B"),
+                version(MX, "Texto de A")
+            ],
+            "X has B's edit"
+        );
+        assert!(cards(store).is_empty(), "{:?}", cards(store));
+    }
+}
+
+/// The same edit queued behind its own creation: on the crossed pair, B
+/// makes a new record W offline and edits it before exchanging. The edit
+/// follows W's creation in this very exchange; neither record of the pair
+/// gets it.
+///
+/// Guard on `bcafb9b`: the outcome of a creation replayed in the same
+/// exchange is read before the translation (`creations` first), and W's
+/// number here is above every number of the copy's journal.
+#[test]
+fn f3_1a_a_manual_edit_behind_its_own_creation_follows_it() {
+    let (_dir, mut a, mut b, _held) = crossed_manual();
+    let pair = |s: &Store| (by_title(s, MX), by_title(s, MY));
+    let (on_a, on_b) = (pair(&a), pair(&b));
+    let (x_before, y_before) = (versions(&a, on_a.0), versions(&a, on_a.1));
+    let w = b
+        .create_manual_document(&manual("Registro W", "Texto de W"))
+        .unwrap()
+        .document_id;
+    b.update_manual_document(w, &manual("Registro W", "Texto de W, editado"))
+        .unwrap();
+    sync(&mut b);
+    sync(&mut a);
+    sync(&mut b);
+    for (store, (x, y)) in [(&a, on_a), (&b, on_b)] {
+        assert_eq!(versions(store, x), x_before, "X untouched");
+        assert_eq!(versions(store, y), y_before, "Y untouched");
+        assert_eq!(
+            versions(store, by_title(store, "Registro W")),
+            vec![
+                version("Registro W", "Texto de W, editado"),
+                version("Registro W", "Texto de W")
+            ]
+        );
+        assert!(cards(store).is_empty(), "{:?}", cards(store));
+    }
+    assert_eq!(by_title(&b, "Registro W"), w, "B keeps its number of W");
+}
+
 // ----------------------------------------------------- coverage guard --
 
 /// What the replays of a copy's changes made of its records (the copy's
