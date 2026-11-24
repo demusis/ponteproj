@@ -425,6 +425,90 @@ pub fn sites(mutation: &IntranetMutation) -> Vec<(IdKind, i64)> {
     out
 }
 
+/// What the person is told of a change applied by the main computer whose
+/// answer names an item with no proof (an older receipt, or one whose
+/// recording failed): no number is given back (frozen rule 12).
+pub const APPLIED: &str = "A alteração foi aplicada.";
+
+/// The same, when the item the answer names is no longer in the copy.
+pub const APPLIED_GONE: &str = "A alteração foi aplicada, mas o item já não existe.";
+
+/// Walks the ids of `reply`, an answer to `mutation`, by the kind the
+/// request names (adendo §6 rule 4): an `Id` after `AddAttachment` is an
+/// attachment, after a Lixeira change the document it belongs to. `Id` of 0
+/// or less, `Unit` and `Counts` are no site.
+pub(crate) fn visit_reply(
+    mutation: &IntranetMutation,
+    reply: &mut crate::intranet::MutationReply,
+    visit: &mut Visit<'_>,
+) -> Result<(), String> {
+    use crate::intranet::MutationReply as R;
+    use IntranetMutation as M;
+    let mut site = |kind, id: &mut i64| if *id > 0 { visit(kind, id) } else { Ok(()) };
+    match reply {
+        R::Receipt(receipt) => {
+            site(IdKind::Document, &mut receipt.document_id)?;
+            site(IdKind::Capture, &mut receipt.capture_id)
+        }
+        R::SaiopBatch(batch) => site(IdKind::SaiopBatch, &mut batch.id),
+        R::Id(id) => match mutation {
+            M::SaveDraft { .. } => site(IdKind::Draft, id),
+            M::SaveExample { .. } => site(IdKind::Example, id),
+            M::SaveTask { .. } | M::RelinkTask { .. } | M::CreateTaskForSaiop { .. } => {
+                site(IdKind::Task, id)
+            }
+            M::SaveSaiopAttendance { .. } => site(IdKind::Saiop, id),
+            M::AddAttachment { .. } => site(IdKind::Attachment, id),
+            M::TrashItem { .. } | M::RestoreItem { .. } | M::PurgeTrash { .. } => {
+                site(IdKind::Document, id)
+            }
+            _ => Ok(()),
+        },
+        R::Counts(..) | R::Unit => Ok(()),
+    }
+}
+
+/// The sites of `reply`, an answer to `mutation` (see [`visit_reply`]).
+pub(crate) fn reply_sites(
+    mutation: &IntranetMutation,
+    reply: &crate::intranet::MutationReply,
+) -> Vec<(IdKind, i64)> {
+    let mut walked = reply.clone();
+    let mut out = Vec::new();
+    let _ = visit_reply(mutation, &mut walked, &mut |kind, id| {
+        out.push((kind, *id));
+        Ok(())
+    });
+    out
+}
+
+/// `reply`, an answer of the main computer to `mutation`, in the numbers of
+/// the library on `conn`, which has just adopted the copy of that answer:
+/// each id goes to the row holding its proof's identity here (v2 §2.5).
+/// An id without a proof gives [`APPLIED`]; one whose item is not here,
+/// [`APPLIED_GONE`]. Never the number of the copy.
+pub(crate) fn translate_reply(
+    conn: &Connection,
+    mutation: &IntranetMutation,
+    mut reply: crate::intranet::MutationReply,
+    proof: &[Ref],
+) -> Result<crate::intranet::MutationReply> {
+    visit_reply(mutation, &mut reply, &mut |kind, id| {
+        let ident = proof.iter().find_map(|r| match &r.proof {
+            Proof::Ident(ident) if r.kind == kind && r.row == *id => Some(ident),
+            _ => None,
+        });
+        let ident = ident.ok_or_else(|| APPLIED.to_owned())?;
+        *id = conn
+            .row_of(kind, ident)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| APPLIED_GONE.to_owned())?;
+        Ok(())
+    })
+    .map_err(|message| anyhow::anyhow!(message))?;
+    Ok(reply)
+}
+
 /// Whether `mutation` is the edit of a manual record that already has its
 /// number (its target is named by `Refs::manual_target`).
 fn numbered_manual(mutation: &IntranetMutation) -> bool {

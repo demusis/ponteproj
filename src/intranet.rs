@@ -4526,6 +4526,7 @@ impl Store {
                     };
                     match send_rpc_tracked(&cfg, &asked, &mut reached) {
                         Ok(RpcResponse::Mutated {
+                            reply,
                             snapshot,
                             created,
                             idents,
@@ -4535,8 +4536,9 @@ impl Store {
                             crate::idents::check(&snapshot, None)?;
                             // Its rows there kept their own identities: what
                             // depends here on the ones they had here follows
-                            // them (review F3.0a2, finding 3).
-                            if idents.is_empty() {
+                            // them (review F3.0a2, finding 3); a duplicate
+                            // import inserted none.
+                            if idents.is_empty() && !duplicate_import(&reply) {
                                 crate::idents::learn_bindings(
                                     &self.conn,
                                     &entry.idents,
@@ -7787,7 +7789,10 @@ impl Store {
                 )
             }
             Ok(RpcResponse::Mutated {
-                reply, snapshot, ..
+                reply,
+                snapshot,
+                proof,
+                ..
             }) => {
                 // The change is on that computer, but is it still the history
                 // this copy comes from? If it went back, its answer replaces
@@ -7823,7 +7828,9 @@ impl Store {
                         ),
                     },
                     Err(error) => Err(error),
-                    Ok(()) => Ok(reply),
+                    // Each id of the answer by its proof, never the copy's
+                    // number (adendo §6, frozen rule 12).
+                    Ok(()) => crate::idrefs::translate_reply(&self.conn, &mutation, reply, &proof),
                 }
             }
             // One of its items could not be proven on the main computer: the
@@ -12938,16 +12945,22 @@ fn process_rpc_at(
             let created = receipted
                 .then(|| crate::idmap::created_ids(&*store, &applied, &reply).ok())
                 .flatten();
-            // The proof names the rows it inserted, by their final identity;
-            // a duplicate import proves none (frozen rule 9).
-            let duplicate = matches!(&reply, MutationReply::Receipt(r) if r.duplicate);
-            let sites: Vec<_> = created
+            // The proof names the rows it inserted, by their final identity
+            // (a duplicate import inserted none: frozen rule 9), and every id
+            // of the reply, by the kind its request names (adendo §6 rule 4).
+            let duplicate = duplicate_import(&reply);
+            let mut sites: Vec<_> = created
                 .iter()
                 .flatten()
                 .filter(|_| !duplicate)
                 .filter(|c| inserted.contains_key(&(crate::idents::kind_of(c.kind).into(), c.id)))
                 .map(|c| (c.kind, c.id))
                 .collect();
+            for site in crate::idrefs::reply_sites(&applied, &reply) {
+                if !sites.contains(&site) {
+                    sites.push(site);
+                }
+            }
             // The rekey, the receipt and the end of the log commit together.
             type Settled = (Vec<crate::idents::SlotIdent>, Vec<crate::idrefs::Ref>);
             let settle = || -> Result<Settled> {
@@ -13022,6 +13035,11 @@ fn process_rpc_at(
     }
 }
 
+/// Whether `reply` is an import that landed on a version already there.
+fn duplicate_import(reply: &MutationReply) -> bool {
+    matches!(reply, MutationReply::Receipt(r) if r.duplicate)
+}
+
 /// What the main computer answers for a change it may have applied under
 /// `uid` (adendo §5 rule 3), whether it came as `Mutate` or `ReceiptOf`:
 /// its receipt; else a carry whose effect committed without its rekey,
@@ -13038,8 +13056,9 @@ fn known_mutation(
 ) -> Result<Option<RpcResponse>> {
     if let Some(receipt) = store.mutation_receipt(uid)? {
         // The rows it inserted keep the identities they have here (they may
-        // be published already); the sender's are bound to them.
-        if receipt.idents.is_empty() {
+        // be published already); the sender's are bound to them. A
+        // duplicate import inserted none.
+        if receipt.idents.is_empty() && !duplicate_import(&receipt.reply) {
             let created = receipt.created.as_deref().unwrap_or_default();
             crate::idents::bind_inserted(&store.conn, carried, created, &receipt.proof)?;
         }

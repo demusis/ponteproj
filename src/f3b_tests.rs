@@ -239,3 +239,27 @@ fn f3_0b_reply_ids_follow_their_proof() {
         ident(&t.host, "attachment", attachment)
     );
 }
+
+/// R2-06 rule 4: the sites of an answer come from its request's variant;
+/// `Id` of 0 or less and `Unit` have none.
+#[test]
+fn f3_0b_reply_sites_by_request_variant() {
+    use crate::idmap::IdKind;
+    use crate::intranet::{IntranetMutation as M, MutationReply as R};
+    let attach = M::AddAttachment {
+        owner_kind: "document".into(),
+        owner_id: 3,
+        name: "a.pdf".into(),
+        description: String::new(),
+        data_base64: String::new(),
+    };
+    let purge = M::PurgeTrash {
+        kind: "note".into(),
+        id: 9,
+    };
+    let sites = crate::idrefs::reply_sites;
+    assert_eq!(sites(&attach, &R::Id(7)), [(IdKind::Attachment, 7)]);
+    assert_eq!(sites(&purge, &R::Id(3)), [(IdKind::Document, 3)]);
+    assert!(sites(&purge, &R::Id(0)).is_empty());
+    assert!(sites(&purge, &R::Unit).is_empty());
+}
