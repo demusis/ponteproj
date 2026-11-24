@@ -329,7 +329,7 @@ internal object Intake {
         )
     }
 
-    private fun cleanDescription(d: String) = ShareRules.capChars(d.trim(), AttachLimits.maxDescriptionChars)
+    private fun cleanDescription(d: String) = ShareRules.cleanDescription(d, AttachLimits.maxDescriptionChars)
 
     /** The camera, for a picture to attach to document [documentId] ([proof]: what the ficha read of it). */
     fun attachPhoto(documentId: Long, proof: AttachProof, description: String) {

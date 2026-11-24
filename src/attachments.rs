@@ -681,7 +681,9 @@ impl Store {
     /// the error is [`TargetChanged`]. Returns the attachment id.
     pub fn attach_to_document(&mut self, request: &AttachRequest<'_>) -> Result<i64> {
         let kind = validate_file(request.name, request.data).map_err(FileRefused::of)?;
-        validate_description(request.description).map_err(FileRefused::of)?;
+        // The description is the person's words, not the file: a description
+        // refused keeps the photo on the phone (revisao-f3-1b2-consertos LOW 1).
+        validate_description(request.description)?;
         let operation = request
             .operation_id
             .map(str::trim)
@@ -1110,8 +1112,8 @@ impl std::fmt::Display for TargetGone {
 }
 impl std::error::Error for TargetGone {}
 
-/// The file itself was refused (its name, type, content, size or
-/// description), so no record would take it: nothing was written (F3.1b2,
+/// The file itself was refused (its name, type, content or size), so no
+/// record would take it: nothing was written (F3.1b2,
 /// `revisao-f3-1b2.md` finding 1). The phone app may let its copy go.
 #[derive(Debug)]
 pub struct FileRefused(pub String);

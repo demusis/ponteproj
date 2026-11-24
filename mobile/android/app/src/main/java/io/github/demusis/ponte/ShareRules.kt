@@ -238,6 +238,16 @@ internal object ShareRules {
         return sb.toString()
     }
 
+    /**
+     * A description as the core takes it: "\r\n" and a lone "\r" become "\n", every other control character
+     * except "\n" and "\t" goes, then trimmed and capped (a pasted text never costs the photo).
+     */
+    fun cleanDescription(d: String, max: Int): String {
+        val lines = d.replace("\r\n", "\n").replace('\r', '\n')
+        val kept = lines.filter { c -> c == '\n' || c == '\t' || !Character.isISOControl(c) }
+        return capChars(kept.trim(), max)
+    }
+
     /** At most [max] characters of a description typed by the person. */
     fun capChars(s: String, max: Int): String {
         val cps = codePoints(s)

@@ -244,6 +244,14 @@ internal sealed class FlowEvent {
     ) : FlowEvent()
     data class FileRefused(override val p: PendingAttach, val message: String, override val atResume: Boolean) : FlowEvent()
     data class Kept(override val p: PendingAttach, val message: String, override val atResume: Boolean) : FlowEvent()
+
+    /** The same outcome, said to a person who waits for it. */
+    fun inFront(): FlowEvent = when (this) {
+        is Attached -> copy(atResume = false)
+        is KeptInCard -> copy(atResume = false)
+        is FileRefused -> copy(atResume = false)
+        is Kept -> copy(atResume = false)
+    }
 }
 
 /**
@@ -266,6 +274,9 @@ internal class PendingAttachFlow(
 ) {
     /** The operations with the core now, or being handed to it, or being discarded (never two at once). */
     private val delivering = HashSet<String>()
+
+    /** Deliveries the person waits for that found their operation already with the core (a resume took it first). */
+    private val waited = HashSet<String>()
 
     private class Held(val p: PendingAttach, val notice: PendingNotice)
 
@@ -317,9 +328,14 @@ internal class PendingAttachFlow(
     }
 
     private fun send(p: PendingAttach, atResume: Boolean, ask: Boolean) {
-        if (!delivering.add(p.operationId)) return
+        if (!delivering.add(p.operationId)) {
+            // Already with the core: its outcome is said to the person waiting (revisao-f3-1b2-consertos LOW 2).
+            if (!atResume) waited.add(p.operationId)
+            return
+        }
         runner.run({ settle(p, atResume, ask) }) { r ->
             delivering.remove(p.operationId)
+            val inFront = waited.remove(p.operationId)
             val e = r.getOrElse { FlowEvent.Kept(p, PendingAttachRules.keptMessage(""), atResume) }
             when {
                 e is FlowEvent.Kept -> held[p.operationId] = Held(p, PendingNotice(p.operationId, p.name, e.message, true))
@@ -327,7 +343,7 @@ internal class PendingAttachFlow(
                     Held(p.copy(refusal = e.message), PendingNotice(p.operationId, p.name, e.message, false))
                 else -> held.remove(p.operationId)
             }
-            onEvent(e)
+            onEvent(if (inFront) e.inFront() else e)
             publish()
         }
     }
