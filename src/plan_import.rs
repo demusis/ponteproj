@@ -4318,17 +4318,9 @@ mod tests {
         assert_eq!(plan_tasks_of(&store, y), 0);
     }
 
-    /// The other half: an exchange gave every item a new identity (another
-    /// epoch). The identity of the receipt names nothing, and the plan is
-    /// taken up again by its request id, which still leads to X.
-    ///
-    /// Guard on `b1de851`: the receipt holds only the request id.
-    #[test]
-    fn f3_1b1_plan_retakes_by_request_after_an_epoch_change() {
-        let (_dir, mut store) = library();
-        shared_folder(&mut store);
-        let x = official(&mut store, "SEFAZ-PRO-2026/07211");
-        let input = interrupted_on(&mut store, "SEFAZ-PRO-2026/07211");
+    /// An exchange gave every item a new identity (another epoch, as when
+    /// the copy or the main computer was promoted or restored on its own).
+    fn renew_identities(store: &Store) {
         store
             .conn
             .execute_batch(
@@ -4337,7 +4329,117 @@ mod tests {
                  VALUES(1,'adopted','pasta',lower(hex(randomblob(16))));",
             )
             .unwrap();
-        store.import_plan(&input, false).expect("resumed on X");
-        assert_eq!(plan_tasks_of(&store, x), 2);
+    }
+
+    /// The other half: the identity of the receipt names nothing in another
+    /// epoch. The record is never looked for by its request id or its
+    /// number (decision Q2): the plan is refused, even though the request id
+    /// still leads to X, and nothing is written.
+    ///
+    /// Red on `992f80f`: the plan was taken up by its request id.
+    #[test]
+    fn f3_1b1_plan_on_a_record_is_refused_after_an_epoch_change() {
+        let (_dir, mut store) = library();
+        shared_folder(&mut store);
+        let x = official(&mut store, "SEFAZ-PRO-2026/07211");
+        let input = interrupted_on(&mut store, "SEFAZ-PRO-2026/07211");
+        renew_identities(&store);
+        let said = run_error(&mut store, &input);
+        assert!(
+            said.contains("renovados") && said.contains("Nada foi gravado"),
+            "{said}"
+        );
+        assert_eq!(plan_tasks_of(&store, x), 1, "nothing is written");
+    }
+
+    /// A manual record made by `record` here (with its request id).
+    fn manual_record(store: &mut Store, record: &NewRecord) -> i64 {
+        match store.create_record_with_attachments(record, &[]).unwrap() {
+            Created::New { document_id, .. } => document_id,
+            Created::Already { .. } => panic!("a new record was expected"),
+        }
+    }
+
+    /// The collision the history of numbers cannot tell (F3.1b2
+    /// integration, `plano-frente-f.md` §9): two devices made manual
+    /// records with one request id (the same conversation imported on
+    /// both) and the same number. A plan on X, this device's, stopped after
+    /// its first task. An exchange of another epoch then left Y, the other
+    /// device's, under X's request id and number, and X is not here any
+    /// more. The receipt's identity names nothing; the request id and the
+    /// number both lead to Y, which has that number now. The plan is
+    /// refused and Y gets nothing (decision Q2, adendo §12 rules 6 and 23).
+    ///
+    /// Red on `992f80f`: the plan was taken up by its request id, and its
+    /// second task was written on Y.
+    #[test]
+    fn f3_1b2_plan_never_resumes_on_another_record_with_its_request_and_number() {
+        let (_dir, mut store) = library();
+        let ours = check_plan(&plan()).unwrap().record.unwrap();
+        let x = manual_record(&mut store, &ours);
+        let number = store.doc_row(x).unwrap().unwrap().capture.document_number;
+        shared_folder(&mut store);
+        let input = interrupted_on(&mut store, &number);
+        assert_eq!(plan_tasks_of(&store, x), 1);
+        // The exchange: X goes, Y comes with X's request id and number.
+        purge(&mut store, Kind::Document, x);
+        let mut theirs = ours.clone();
+        theirs.fields.title = "Conversa importada no outro aparelho".into();
+        let y = manual_record(&mut store, &theirs);
+        let request = check_plan(&plan()).unwrap().request;
+        assert_eq!(store.document_of_request(&request).unwrap(), Some(y));
+        let held = store.doc_row(y).unwrap().unwrap().capture.document_number;
+        assert_eq!(held, number, "Y holds X's number");
+        renew_identities(&store);
+        let said = run_error(&mut store, &input);
+        assert!(
+            said.contains("renovados") && said.contains("Nada foi gravado"),
+            "{said}"
+        );
+        assert_eq!(plan_tasks_of(&store, y), 0, "nothing goes to Y");
+    }
+
+    /// What is kept: a plan that CREATED its record finds it again by its
+    /// own request id after an epoch change (that request made the record),
+    /// and only when the version that request made is the plan's: a
+    /// duplicate creation of another device under the same request id lends
+    /// nothing (adendo §12 rule 9).
+    ///
+    /// Guard on `992f80f`.
+    #[test]
+    fn f3_1b2_plan_that_created_its_record_resumes_by_its_own_request() {
+        let (_dir, mut store) = library();
+        shared_folder(&mut store);
+        let mut input = big_plan(3);
+        input.request_id = uuid::Uuid::new_v4().to_string();
+        let request = check_plan(&input).unwrap().request;
+        fail_receipt_update(&store, "NEW.tasks_created=1");
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        let x = store.document_of_request(&request).unwrap().unwrap();
+        renew_identities(&store);
+        let done = store.import_plan(&input, false).expect("resumed on X");
+        assert_eq!(done.document.id, Some(x));
+        assert_eq!(plan_tasks_of(&store, x), 3);
+
+        // The same, but the request id now holds another device's record.
+        let mut second = big_plan(3);
+        second.request_id = uuid::Uuid::new_v4().to_string();
+        let checked = check_plan(&second).unwrap();
+        fail_receipt_update(&store, "NEW.tasks_created=1");
+        assert!(store.import_plan(&second, false).is_err());
+        stop_failing(&store);
+        let z = store
+            .document_of_request(&checked.request)
+            .unwrap()
+            .unwrap();
+        purge(&mut store, Kind::Document, z);
+        let mut theirs = checked.record.unwrap();
+        theirs.fields.title = "Registro do outro aparelho".into();
+        let w = manual_record(&mut store, &theirs);
+        renew_identities(&store);
+        let said = run_error(&mut store, &second);
+        assert!(said.contains("outro registro"), "{said}");
+        assert_eq!(plan_tasks_of(&store, w), 0, "nothing goes to W");
     }
 }
