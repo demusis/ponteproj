@@ -7233,4 +7233,290 @@ dia 2026-12-26 Recesso do celular
         let st = status(&phone, OP_F);
         assert_eq!((st["kind"].clone(), st.get("outcome")), (json!("record"), None), "{st}");
     }
+
+    // ------------------------------------------ F3.1b2 review fixes (c) --
+    // `revisao-f3-1b2.md` findings 1, 2, 3 and 6, the core's half (the app's
+    // half is `PendingAttachFlowTest`).
+
+    /// What the card of a file refused at once says once its record is
+    /// back (restored from the Lixeira): never that it is gone.
+    const WAS_UNAVAILABLE: &str =
+        "O arquivo não foi anexado porque o registro não estava disponível naquele momento.";
+
+    /// Computer A, a phone and the folder they share, with the phone in
+    /// step (the probes of `revisao-f3-1b2-sondas.patch`).
+    struct Team {
+        a: Store,
+        phone: Store,
+        drive: PathBuf,
+        nine: PathBuf,
+        work: PathBuf,
+    }
+
+    impl Team {
+        fn new(dir: &Dir) -> Team {
+            std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+            promote_on();
+            let drive = dir.0.join("drive").join("ponte-sync.ponte");
+            std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+            let mut a = open(&dir.0, "a.sqlite3", "Computador A");
+            a.import_capture(&numbered("SEFAZ-PRO-2026/08200", "Primeiro.")).unwrap();
+            sync_files(&mut a, &[&drive]);
+            let mut b = open(&dir.0, "b.sqlite3", "Computador B");
+            sync_files(&mut b, &[&drive]);
+            assert!(sync_files(&mut a, &[&drive]).promoted);
+            sync_files(&mut b, &[&drive]);
+            let nine = ponteproj::sharedfolder::nine_path(&drive);
+            let work = dir.0.join("work.ponte");
+            let phone = open(&dir.0, "celular.sqlite3", "Celular");
+            let mut team = Team { a, phone, drive, nine, work };
+            team.phone_sync();
+            team.phone_sync();
+            team
+        }
+
+        fn phone_sync(&mut self) -> Value {
+            std::fs::copy(&self.nine, &self.work).unwrap();
+            let answer = sync_paths(&mut self.phone, &self.work.display().to_string(), "", KEY).unwrap();
+            std::fs::copy(&self.work, &self.nine).unwrap();
+            answer
+        }
+
+        fn a_sync(&mut self) {
+            sync_files(&mut self.a, &[&self.drive]);
+        }
+
+        /// Record `title`, made on A and seen by the phone: its id there.
+        fn record(&mut self, title: &str) -> i64 {
+            self.a.create_manual_document(&manual_fields(title, "Texto")).unwrap();
+            self.a_sync();
+            self.phone_sync();
+            titled(&self.phone, title)
+        }
+    }
+
+    fn reason_of(store: &Store, card: i64) -> String {
+        store
+            .list_sync_conflicts()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == card)
+            .unwrap_or_else(|| panic!("card {card} waits"))
+            .reason
+    }
+
+    fn listed_message(store: &Store, card: i64) -> Value {
+        let listed = refused_attachments(store).unwrap();
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["card_id"] == json!(card))
+            .unwrap_or_else(|| panic!("card {card} is listed: {listed}"))["message"]
+            .clone()
+    }
+
+    /// Finding 2 (MEDIUM), probe P1. The phone attaches to R and to S while
+    /// out of reach; A attaches the same bytes to R and fills S with twenty
+    /// files. The exchange refuses both photos with the record alive: what
+    /// the phone says is the card's own reason (the identical file, the
+    /// limit), never that the record is not available.
+    ///
+    /// Red on `645c23f`: both say "O registro não está mais disponível
+    /// neste aparelho.".
+    #[test]
+    fn f3_1b2c_a_late_refusal_says_its_own_reason() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let mut t = Team::new(&dir);
+        let r = t.record("Registro R");
+        let s = t.record("Registro S");
+        let (to_r, to_s) = (attach_target(&t.phone, r).unwrap(), attach_target(&t.phone, s).unwrap());
+        let bytes: &[u8] = b"%PDF-1.4 foto de R";
+        let photo = work_file(&dir.0, "foto.bin", bytes);
+        attach_file_with(&mut t.phone, r, &photo, "foto-r.pdf", "", &pending(OP_C, &to_r)).unwrap();
+        let photo_s = work_file(&dir.0, "foto2.bin", b"%PDF-1.4 foto de S");
+        attach_file_with(&mut t.phone, s, &photo_s, "foto-s.pdf", "", &pending(OP_D, &to_s)).unwrap();
+
+        let (r_a, s_a) = (titled(&t.a, "Registro R"), titled(&t.a, "Registro S"));
+        t.a.add_attachment(ponteproj::attachments::Owner::Document(r_a), "igual.pdf", "", bytes).unwrap();
+        for i in 0..ponteproj::attachments::MAX_PER_OWNER {
+            let data = format!("%PDF-1.4 arquivo {i} de S");
+            t.a.add_attachment(ponteproj::attachments::Owner::Document(s_a), &format!("s{i}.pdf"), "", data.as_bytes())
+                .unwrap();
+        }
+        t.a_sync();
+        t.phone_sync();
+
+        let (st_c, st_d) = (status(&t.phone, OP_C), status(&t.phone, OP_D));
+        assert_eq!((st_c["outcome"].clone(), st_d["outcome"].clone()), (json!("refused"), json!("refused")));
+        let (card_c, card_d) = (st_c["card_id"].as_i64().unwrap(), st_d["card_id"].as_i64().unwrap());
+        let (said_c, said_d) = (reason_of(&t.phone, card_c), reason_of(&t.phone, card_d));
+        assert!(said_c.contains("conteúdo idêntico"), "{said_c}");
+        assert!(said_d.contains("20 anexos"), "{said_d}");
+        for (st, card, said) in [(&st_c, card_c, &said_c), (&st_d, card_d, &said_d)] {
+            assert_ne!(st["message"], json!(NOT_HERE), "R and S are alive: {st}");
+            assert_eq!(st["message"], json!(said), "the real reason: {st}");
+            assert_eq!(listed_message(&t.phone, card), json!(said));
+        }
+        // A stale screen repeats the operation: the same words.
+        let again = attach_file_with(&mut t.phone, r, &photo, "foto-r.pdf", "", &pending(OP_C, &to_r));
+        assert!(format!("{:#}", again.unwrap_err()).contains("conteúdo idêntico"));
+        assert_eq!(attachments_of(&t.phone, r), ["igual.pdf"]);
+    }
+
+    /// Finding 2, probe P2. A photo refused at once because R was in the
+    /// Lixeira says so; once R is restored, it says the record was not
+    /// available then, never that it is not available now. A record
+    /// deleted elsewhere keeps saying so (frozen rule 21).
+    ///
+    /// Red on `645c23f`: after the restore it says "O registro não está
+    /// mais disponível neste aparelho.".
+    #[test]
+    fn f3_1b2c_a_record_back_from_the_lixeira_is_not_said_unavailable() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let mut t = Team::new(&dir);
+        let r = t.record("Registro R");
+        let to_r = attach_target(&t.phone, r).unwrap();
+        let target = || ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id: r };
+        t.phone.trash_item(target()).unwrap();
+        let photo = work_file(&dir.0, "foto.bin", b"%PDF-1.4 foto de R");
+        let card = refused_card(&attach_file_with(&mut t.phone, r, &photo, "foto-r.pdf", "", &pending(OP_C, &to_r)));
+        assert_eq!(listed_message(&t.phone, card), json!(IN_TRASH));
+        assert_eq!(status(&t.phone, OP_C)["message"], json!(IN_TRASH));
+        t.phone.restore_item(target()).unwrap();
+        assert_eq!(listed_message(&t.phone, card), json!(WAS_UNAVAILABLE));
+        assert_eq!(status(&t.phone, OP_C)["message"], json!(WAS_UNAVAILABLE));
+        t.phone_sync();
+        t.a_sync();
+        t.phone_sync();
+        assert_eq!(listed_message(&t.phone, card), json!(WAS_UNAVAILABLE), "across exchanges");
+        // "Anexar a outro registro…" to R itself, now that it is back.
+        attach_from_card(&mut t.phone, card, r, &pending(OP_E, &to_r)).unwrap();
+        assert_eq!(attachments_of(&t.phone, r), ["foto-r.pdf"]);
+        assert!(refused_operations(&t.phone).is_empty());
+    }
+
+    /// Finding 1 (HIGH), the core's half. The app deletes the photo it
+    /// holds only for an answer that says where the file is: attached, kept
+    /// in a card (`target_gone` with its `card_id`), or refused for what the
+    /// file itself is (`file_refused`: its type, content, size, name or
+    /// description, which no record would take). A record that cannot take
+    /// one more file (the limit, the same content already there) keeps it
+    /// in a card with that reason. Anything else (the file unreadable, the
+    /// library unavailable) carries no code: the app keeps the photo.
+    ///
+    /// Red on `645c23f`: no refusal carries a code, and the limit and the
+    /// identical file are refused with nothing kept.
+    #[test]
+    fn f3_1b2c_only_a_file_s_own_refusal_or_a_card_lets_the_photo_go() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular");
+        let d = manual(&mut phone, "Registro D", "Texto de D");
+        let e = manual(&mut phone, "Registro E", "Texto de E");
+        let (to_d, to_e) = (attach_target(&phone, d).unwrap(), attach_target(&phone, e).unwrap());
+        let code = |answer: &Result<Value>| error_answer(answer.as_ref().expect_err("refused")).get("code").cloned();
+
+        // The file itself: nothing written, no card, and the code says so.
+        let big = vec![b'%'; ponteproj::attachments::MAX_ATTACHMENT_BYTES + 1];
+        let long = "x".repeat(ponteproj::attachments::MAX_DESCRIPTION_CHARS + 1);
+        let cases: [(&str, &[u8], &str); 5] = [
+            ("programa.exe", b"MZ programa", ""),
+            ("foto.pdf", b"", ""),
+            ("foto.pdf", b"isto nao e um pdf", ""),
+            ("grande.pdf", &big, ""),
+            ("foto.pdf", b"%PDF-1.4 foto", &long),
+        ];
+        for (i, (name, bytes, description)) in cases.into_iter().enumerate() {
+            let photo = work_file(&dir.0, &format!("caso{i}.bin"), bytes);
+            let answer = attach_file_with(&mut phone, d, &photo, name, description, &pending(OP_C, &to_d));
+            assert_eq!(code(&answer), Some(json!("file_refused")), "{name}: {answer:?}");
+            assert_eq!(status(&phone, OP_C), json!({"done": false}));
+        }
+        assert!(phone.list_sync_conflicts().unwrap().is_empty(), "nothing kept for a file no record takes");
+
+        // No answer about the file (it cannot be read here): no code, nothing written.
+        let missing = dir.0.join("sumiu.bin").display().to_string();
+        let answer = attach_file_with(&mut phone, d, &missing, "foto.pdf", "", &pending(OP_C, &to_d));
+        assert_eq!(code(&answer), None, "{answer:?}");
+        assert_eq!(status(&phone, OP_C), json!({"done": false}));
+        assert_eq!(error_answer(&anyhow::anyhow!("O acervo ficou indisponível; feche e abra o aplicativo.")).get("code"), None);
+
+        // The limit: D is full, so the photo is kept in a card with that reason.
+        for i in 0..ponteproj::attachments::MAX_PER_OWNER {
+            let photo = work_file(&dir.0, &format!("d{i}.bin"), format!("%PDF-1.4 anexo {i}").as_bytes());
+            attach_file(&mut phone, d, &photo, &format!("d{i}.pdf"), "").unwrap();
+        }
+        let photo = work_file(&dir.0, "cheio.bin", b"%PDF-1.4 a vigesima primeira");
+        let first = attach_file_with(&mut phone, d, &photo, "foto-d.pdf", "", &pending(OP_C, &to_d));
+        let card = refused_card(&first);
+        assert!(format!("{:#}", first.unwrap_err()).contains("20 anexos"));
+        let st = status(&phone, OP_C);
+        assert_eq!((st["outcome"].clone(), st["card_id"].clone()), (json!("refused"), json!(card)), "{st}");
+        assert!(st["message"].as_str().unwrap().contains("20 anexos"), "{st}");
+        assert_eq!(listed_message(&phone, card), st["message"]);
+        assert_eq!(attachments_of(&phone, d).len(), ponteproj::attachments::MAX_PER_OWNER);
+        // Repeated after a process death: the same card.
+        assert_eq!(refused_card(&attach_file_with(&mut phone, d, &photo, "foto-d.pdf", "", &pending(OP_C, &to_d))), card);
+        // Recovered to E, chosen by the person.
+        attach_from_card(&mut phone, card, e, &pending(OP_E, &to_e)).unwrap();
+        assert_eq!(attachments_of(&phone, e), ["foto-d.pdf"]);
+
+        // The same content already on E: kept in a card, with that reason.
+        let photo = work_file(&dir.0, "igual.bin", b"%PDF-1.4 a vigesima primeira");
+        let card = refused_card(&attach_file_with(&mut phone, e, &photo, "outra.pdf", "", &pending(OP_D, &to_e)));
+        assert!(listed_message(&phone, card).as_str().unwrap().contains("conteúdo idêntico"));
+        assert_eq!(attachments_of(&phone, e), ["foto-d.pdf"]);
+        assert_eq!(refused_operations(&phone), [OP_D]);
+    }
+
+    /// Finding 3 (LOW). A file attached without an operation (a share of an
+    /// older Ponte de bolso, or one queued before this version) and refused
+    /// at the exchange is listed for recovery like any other, and each of
+    /// the actions works on it.
+    ///
+    /// Red on `645c23f`: the cards are kept, but nothing lists them.
+    #[test]
+    fn f3_1b2c_a_refused_file_without_an_operation_is_listed() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let mut t = Team::new(&dir);
+        let r = t.record("Registro R");
+        let photo = work_file(&dir.0, "foto.bin", b"%PDF-1.4 foto de R");
+        attach_file(&mut t.phone, r, &photo, "foto-r.pdf", "").unwrap();
+        let photo = work_file(&dir.0, "foto2.bin", b"%PDF-1.4 outra foto de R");
+        attach_file(&mut t.phone, r, &photo, "foto-r2.pdf", "").unwrap();
+        let r_a = titled(&t.a, "Registro R");
+        let target = || ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id: r_a };
+        t.a.trash_item(target()).unwrap();
+        t.a.purge_trash_item(target()).unwrap();
+        t.a_sync();
+        t.phone_sync();
+
+        let listed = refused_attachments(&t.phone).unwrap();
+        let items = listed["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2, "{listed}");
+        assert_eq!(items[0]["name"], json!("foto-r.pdf"), "{listed}");
+        assert_eq!(items[0]["size"], json!(18), "{listed}");
+        assert_eq!(items[1]["name"], json!("foto-r2.pdf"), "{listed}");
+        let (first, second) = (items[0]["card_id"].as_i64().unwrap(), items[1]["card_id"].as_i64().unwrap());
+        assert_eq!(refused_attachments(&t.phone).unwrap(), listed, "listing twice changes nothing");
+
+        let input = with_operation(
+            json!({"kind": "papel", "title": "Foto de R recuperada", "origin": "", "date": "", "text": ""}),
+            OP_F,
+        );
+        let made = create_record_from_card(&mut t.phone, first, &input).unwrap();
+        assert_eq!(create_record_from_card(&mut t.phone, first, &input).unwrap(), made);
+        let record = made["document_id"].as_i64().unwrap();
+        assert_eq!(attachments_of(&t.phone, record), ["foto-r.pdf"]);
+        discard_card(&mut t.phone, second).unwrap();
+        assert!(refused_attachments(&t.phone).unwrap()["items"].as_array().unwrap().is_empty());
+    }
 }

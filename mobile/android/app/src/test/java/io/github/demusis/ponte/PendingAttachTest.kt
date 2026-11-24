@@ -92,17 +92,93 @@ class PendingAttachTest {
         assertEquals(PendingAttachRules.Next.KEEP, status("""{"ok":false,"error":"x"}"""))
         assertEquals(PendingAttachRules.Next.KEEP, status("""{"ok":true}"""))
         assertEquals(PendingAttachRules.Next.KEEP, status("""{"ok":true,"done":true,"kind":"record"}"""))
-        assertEquals(4, n.size)
+        // Refused with no card to recover it from: nothing proves where the file is, so it stays.
+        assertEquals(PendingAttachRules.Next.KEEP, status("""{"ok":true,"done":true,"kind":"attach","outcome":"refused"}"""))
+        assertEquals(5, n.size)
     }
 
+    /**
+     * `revisao-f3-1b2.md` finding 1 (HIGH): the staging goes only for an answer that says where the file is. Attached;
+     * kept in card N (`target_gone` WITH its card); or refused for what the file itself is (`file_refused`), which is
+     * said on the screen. Every other error (disk full, a panic, the library lock, an unknown text, a code without its
+     * card) keeps it for "Tentar de novo".
+     */
     @Test fun theStagingGoesOnlyAfterTheCoreAnsweredForIt() {
-        assertEquals(PendingAttachRules.Next.CLEAN, PendingAttachRules.afterAttach(null))
-        assertEquals(PendingAttachRules.Next.RECOVER, PendingAttachRules.afterAttach(CoreException("O registro foi apagado em outro aparelho.", "target_gone")))
-        // The core refused the file itself (too big, a program…): it said so, and nothing was kept.
-        assertEquals(PendingAttachRules.Next.CLEAN, PendingAttachRules.afterAttach(CoreException("Arquivos .exe não são aceitos.")))
+        val after = PendingAttachRules::afterAttach
+        assertEquals(PendingAttachRules.Next.CLEAN, after(null))
+        assertEquals(PendingAttachRules.Next.RECOVER, after(CoreException("O registro foi apagado em outro aparelho.", "target_gone", 4L)))
+        assertEquals(PendingAttachRules.Next.KEEP, after(CoreException("O registro foi apagado em outro aparelho.", "target_gone")))
+        assertEquals(PendingAttachRules.Next.REFUSED, after(CoreException("Arquivos .exe não são aceitos.", "file_refused")))
+        // No code: the core did not say the file is anywhere (its old wording of a refusal included).
+        for (m in listOf(
+            "Arquivos .exe não são aceitos.", "Falha interna no núcleo do Ponte.",
+            "O acervo ficou indisponível; feche e abra o aplicativo.", "database or disk is full"
+        )) assertEquals(m, PendingAttachRules.Next.KEEP, after(CoreException(m)))
+        assertEquals(PendingAttachRules.Next.KEEP, after(CoreException("O documento escolhido mudou.", "target_changed")))
         // No answer (the process, the core): the staging stays for the next start.
-        assertEquals(PendingAttachRules.Next.KEEP, PendingAttachRules.afterAttach(IllegalStateException("falhou")))
-        assertEquals(PendingAttachRules.Next.KEEP, PendingAttachRules.afterAttach(OutOfMemoryError()))
+        assertEquals(PendingAttachRules.Next.KEEP, after(IllegalStateException("falhou")))
+        assertEquals(PendingAttachRules.Next.KEEP, after(OutOfMemoryError()))
+    }
+
+    @Test fun theNoticeOfAKeptFileSaysWhyAndThatItIsStillHere() {
+        val m = PendingAttachRules.keptMessage("O acervo ficou indisponível; feche e abra o aplicativo.")
+        assertTrue(m, m.contains("O acervo ficou indisponível; feche e abra o aplicativo"))
+        assertTrue(m, m.contains("continua guardado"))
+        assertTrue(PendingAttachRules.keptMessage("").contains("continua guardado"))
+        assertEquals("", PendingAttachRules.noticeBanner(0))
+        assertEquals("1 arquivo guardado no celular ainda não foi anexado", PendingAttachRules.noticeBanner(1))
+        assertEquals("2 arquivos guardados no celular ainda não foram anexados", PendingAttachRules.noticeBanner(2))
+    }
+
+    /** Finding 1: a file the core refused at a start leaves its notice on disk (the bytes go), until "Entendi". */
+    @Test fun aRefusalNoticeOutlivesTheProcessWithoutTheBytes() {
+        val folder = File(dir, PendingAttachStore.DIR)
+        val store = PendingAttachStore(folder)
+        val p = store.adopt(work(), 7L, proof, "foto.jpg", "")
+        store.markRefused(p, "Arquivos .exe não são aceitos.")
+        assertFalse(File(p.staged).exists())
+        val back = PendingAttachStore(folder).all().single()
+        assertEquals(p.copy(refusal = "Arquivos .exe não são aceitos."), back)
+        PendingAttachStore(folder).remove(back)
+        assertTrue(PendingAttachStore(folder).all().isEmpty())
+    }
+
+    /**
+     * Finding 5 (LOW): a staged copy whose record was never written (the process died in between) is swept at a start
+     * and after it, once older than a safe margin; a fresh one (being adopted now), one with its record and a refusal
+     * notice are kept.
+     */
+    @Test fun anOrphanCopyIsSweptOnlyOnceItIsSurelyOrphan() {
+        val folder = File(dir, PendingAttachStore.DIR)
+        val store = PendingAttachStore(folder)
+        val kept = store.adopt(work("guardada"), 7L, proof, "a.pdf", "")
+        val notice = store.adopt(work("recusada"), 7L, proof, "b.pdf", "")
+        store.markRefused(notice, "Recusado.")
+        val now = System.currentTimeMillis()
+        val old = now - PendingAttachStore.ORPHAN_MARGIN_MS - 1_000
+        val orphan = File(folder, UUID.randomUUID().toString() + ".bin").apply { writeText("órfã"); setLastModified(old) }
+        val fresh = File(folder, UUID.randomUUID().toString() + ".bin").apply { writeText("chegando") }
+        val tmp = File(folder, UUID.randomUUID().toString() + ".json.tmp").apply { writeText("{"); setLastModified(old) }
+        File(kept.staged).setLastModified(old)
+        assertEquals(2, store.sweepOrphans(now))
+        assertFalse(orphan.exists())
+        assertFalse(tmp.exists())
+        assertTrue(fresh.exists())
+        assertTrue(File(kept.staged).exists())
+        assertEquals(setOf(kept.operationId, notice.operationId), store.all().map { it.operationId }.toSet())
+        // Adopting marks the copy as new, whatever the age of the file it came from.
+        val w = work("antiga").apply { setLastModified(old) }
+        val adopted = store.adopt(w, 7L, proof, "c.pdf", "")
+        assertTrue(File(adopted.staged).lastModified() >= now - 60_000)
+    }
+
+    /** Finding 4 (LOW): "Ver em Hoje" leaves the person where they are while anything unsaved is on the stack. */
+    @Test fun verEmHojeNeverDropsWhatIsBeingTyped() {
+        assertTrue(PendingAttachRules.seeInToday(emptyList(), attachBusy = false))
+        assertTrue(PendingAttachRules.seeInToday(listOf(Route.Document(7L)), attachBusy = false))
+        assertFalse(PendingAttachRules.seeInToday(listOf(Route.NewTask(7L)), attachBusy = false))
+        assertFalse(PendingAttachRules.seeInToday(listOf(Route.Document(7L), Route.Note(7L)), attachBusy = false))
+        assertFalse(PendingAttachRules.seeInToday(emptyList(), attachBusy = true))
     }
 
     @Test fun aRecoveryOperationIsPersistedFirstAndStaysTheSameForItsCard() {
