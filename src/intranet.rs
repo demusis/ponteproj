@@ -6970,7 +6970,7 @@ impl Store {
                     || (!cfg.folder_identity.is_empty()
                         && identities.get(&copy.path) == Some(&cfg.folder_identity));
                 if let (true, Some(made)) = (adopted, replayed_from.get(&index)) {
-                    replayed_here.absorb(made);
+                    replayed_here.absorb(made, &self.conn)?;
                 }
             }
             // Read with narrow queries, not a whole export of the library.

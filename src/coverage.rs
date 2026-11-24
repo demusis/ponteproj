@@ -58,7 +58,9 @@ pub(crate) struct Item {
     frame_keys: Vec<String>,
     parent: Option<Parent>,
     /// The identities of the item and of its parent in the holder (v2
-    /// §2.6), and whether the holder is this library (not a copy).
+    /// §2.6), and whether the holder numbers the mapped kinds on its own:
+    /// this library, once mapped (a copy, or a library that adopts
+    /// verbatim, numbers as the copies do).
     ident: Option<String>,
     parent_ident: Option<String>,
     here: bool,
@@ -317,6 +319,8 @@ impl Holder for SnapshotHolder<'_> {
 pub(crate) struct LibraryHolder<'a> {
     conn: &'a Connection,
     requests: HashMap<i64, Vec<(String, i64)>>,
+    /// The library is mapped: its numbers of the mapped kinds are its own.
+    mapped: bool,
 }
 
 impl<'a> LibraryHolder<'a> {
@@ -338,7 +342,11 @@ impl<'a> LibraryHolder<'a> {
                 .or_default()
                 .push((request.to_lowercase(), capture));
         }
-        Ok(Self { conn, requests })
+        Ok(Self {
+            conn,
+            requests,
+            mapped: crate::idents::is_mapped(conn)?,
+        })
     }
 
     fn sealed<T: serde::de::DeserializeOwned>(
@@ -468,7 +476,7 @@ impl Holder for LibraryHolder<'_> {
                 idents.insert(key, ident);
             }
         }
-        with_idents(&mut out, true, |k, row| {
+        with_idents(&mut out, self.mapped, |k, row| {
             idents.get(&(k.to_owned(), row)).cloned()
         });
         Ok(out)
@@ -586,17 +594,19 @@ pub(crate) struct Replayed(BTreeMap<(&'static str, i64), i64>);
 
 impl Replayed {
     /// The mappings of `other`, what the replays made of a copy's items (in
-    /// the copy's numbers), for the kinds this library numbers as the copy
-    /// it adopted: a mapped kind has numbers of its own here, which the
-    /// copy's say nothing of (F3.1a).
-    pub(crate) fn absorb(&mut self, other: &Replayed) {
+    /// the copy's numbers), for the kinds the library on `conn` numbers as
+    /// the copy it adopted: in a mapped library a mapped kind has numbers
+    /// of its own, which the copy's say nothing of (F3.1a).
+    pub(crate) fn absorb(&mut self, other: &Replayed, conn: &Connection) -> Result<()> {
+        let mapped = crate::idents::is_mapped(conn)?;
         self.0.extend(
             other
                 .0
                 .iter()
-                .filter(|((kind, _), _)| !crate::mapper::addressed(kind))
+                .filter(|((kind, _), _)| !(mapped && crate::mapper::addressed(kind)))
                 .map(|(k, v)| (*k, *v)),
         );
+        Ok(())
     }
 
     pub(crate) fn learn(&mut self, there: &[CreatedId], here: &[CreatedId]) {

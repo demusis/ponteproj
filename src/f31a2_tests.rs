@@ -482,8 +482,8 @@ fn f3_1a_a_copy_s_replays_never_find_a_mapped_item_here() {
     use crate::coverage::{dropped, Check, LibraryHolder, Replayed, ResultIndex};
     use crate::idmap::{CreatedId, IdKind};
     let _kinds = kinds(RECORDS);
-    let dir = tempfile::tempdir().unwrap();
-    let mut here = Store::open(&dir.path().join("aqui.sqlite3")).unwrap();
+    let (dir, _path, mut here, _b) = two();
+    assert!(mapped(&here), "this library numbers the records on its own");
     let only_here = here
         .import_capture(&capture(X, "Só aqui."))
         .unwrap()
@@ -508,7 +508,7 @@ fn f3_1a_a_copy_s_replays_never_find_a_mapped_item_here() {
         }],
     );
     let mut replayed_here = Replayed::default();
-    replayed_here.absorb(&of_copy);
+    replayed_here.absorb(&of_copy, &here.conn).unwrap();
     let index = ResultIndex::of(&result);
     let lost = |replayed: Option<&Replayed>| {
         dropped(
@@ -522,10 +522,10 @@ fn f3_1a_a_copy_s_replays_never_find_a_mapped_item_here() {
         )
         .unwrap()
     };
-    // The record and what hangs from it (the import's triage task and
-    // atendimento) are missing, with or without the copy's replays.
+    // The record (and what hangs from it) is missing, with or without the
+    // copy's replays.
     let without = lost(None);
-    assert_eq!(without.len(), 3, "{without:?}");
+    assert!(without.iter().any(|l| l.contains(X)), "{without:?}");
     assert_eq!(lost(Some(&replayed_here)), without);
 }
 
