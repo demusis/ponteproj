@@ -110,6 +110,10 @@ mod f3a2_tests;
 /// (tests only).
 #[cfg(test)]
 mod f3b2_tests;
+/// Review of F3.0b-i: the try of the settle, the libraries left at schema
+/// 21 and the card of the folder route (tests only).
+#[cfg(test)]
+mod f3b_review_tests;
 /// F3.0b-i of Frente F: acceptance tests of the activation of the mapping,
 /// the id floor kept by the copy and the translation of the answers (tests
 /// only).
