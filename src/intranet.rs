@@ -5018,7 +5018,11 @@ impl Store {
     /// epoch; otherwise nothing changes. `settling`: this is the one try of
     /// that revision (adendo §2 rule 3), recorded with the comparison.
     /// Answers whether anything visible changed (never).
-    fn take_identities_from(&mut self, snapshot: &CabinetSnapshot, settling: bool) -> Result<bool> {
+    pub(crate) fn take_identities_from(
+        &mut self,
+        snapshot: &CabinetSnapshot,
+        settling: bool,
+    ) -> Result<bool> {
         let content = |snapshot: &CabinetSnapshot| -> Result<serde_json::Value> {
             let mut plain = snapshot.clone();
             plain.idents.clear();
