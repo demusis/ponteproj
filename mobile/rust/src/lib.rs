@@ -7423,8 +7423,9 @@ dia 2026-12-26 Recesso do celular
     /// Finding 1 (HIGH), the core's half. The app deletes the photo it
     /// holds only for an answer that says where the file is: attached, kept
     /// in a card (`target_gone` with its `card_id`), or refused for what the
-    /// file itself is (`file_refused`: its type, content, size, name or
-    /// description, which no record would take). A record that cannot take
+    /// file itself is (`file_refused`: its type, content, size or name,
+    /// which no record would take). A refused description is the person's
+    /// words, not the file: no code, the photo stays. A record that cannot take
     /// one more file (the limit, the same content already there) keeps it
     /// in a card with that reason. Anything else (the file unreadable, the
     /// library unavailable) carries no code: the app keeps the photo.
@@ -7445,12 +7446,11 @@ dia 2026-12-26 Recesso do celular
         // The file itself: nothing written, no card, and the code says so.
         let big = vec![b'%'; ponteproj::attachments::MAX_ATTACHMENT_BYTES + 1];
         let long = "x".repeat(ponteproj::attachments::MAX_DESCRIPTION_CHARS + 1);
-        let cases: [(&str, &[u8], &str); 5] = [
+        let cases: [(&str, &[u8], &str); 4] = [
             ("programa.exe", b"MZ programa", ""),
             ("foto.pdf", b"", ""),
             ("foto.pdf", b"isto nao e um pdf", ""),
             ("grande.pdf", &big, ""),
-            ("foto.pdf", b"%PDF-1.4 foto", &long),
         ];
         for (i, (name, bytes, description)) in cases.into_iter().enumerate() {
             let photo = work_file(&dir.0, &format!("caso{i}.bin"), bytes);
@@ -7459,6 +7459,15 @@ dia 2026-12-26 Recesso do celular
             assert_eq!(status(&phone, OP_C), json!({"done": false}));
         }
         assert!(phone.list_sync_conflicts().unwrap().is_empty(), "nothing kept for a file no record takes");
+
+        // A description refused (too long, or a control character such as a
+        // pasted "\r"): the photo is fine, so no code and nothing written.
+        for (i, description) in [long.as_str(), "linha um\r\nlinha dois"].into_iter().enumerate() {
+            let photo = work_file(&dir.0, &format!("descr{i}.bin"), b"%PDF-1.4 foto");
+            let answer = attach_file_with(&mut phone, d, &photo, "foto.pdf", description, &pending(OP_C, &to_d));
+            assert_eq!(code(&answer), None, "{description:?}: {answer:?}");
+            assert_eq!(status(&phone, OP_C), json!({"done": false}));
+        }
 
         // No answer about the file (it cannot be read here): no code, nothing written.
         let missing = dir.0.join("sumiu.bin").display().to_string();

@@ -293,6 +293,37 @@ class PendingAttachFlowTest {
         assertEquals(1, events.count { it is FlowEvent.Attached })
     }
 
+    /**
+     * `revisao-f3-1b2-consertos.md` LOW 2: a start took the photo to the core first; the person's own delivery of it
+     * waits for that one, and its outcome is said to the person (the screen's "Anexando…" never stays on).
+     */
+    @Test fun aDeliveryFoundWithTheCoreIsSaidToThePersonWaiting() {
+        val core = FakeCore()
+        val p = photo()
+        val held = Held()
+        val f = flow(core, held)
+        f.resume()
+        held.step() // the start listed the folder and handed the photo to the core
+        f.deliver(p)
+        held.drain()
+        assertGone(p)
+        assertEquals(mapOf(p.operationId to 1), core.commits)
+        assertEquals(listOf<FlowEvent>(FlowEvent.Attached(p, atResume = false)), events)
+
+        // Kept by an error: the person waiting is told on the screen, and Hoje lists it with a retry.
+        events.clear()
+        val q = photo("outra.jpg")
+        core.script += core.fails(CoreException("Falha interna no núcleo do Ponte."))
+        f.resume()
+        held.step() // the start listed the folder and handed the photo to the core
+        f.deliver(q)
+        held.drain()
+        assertKept(q)
+        val e = events.single() as FlowEvent.Kept
+        assertFalse(e.atResume)
+        assertEquals(1, notices.size)
+    }
+
     @Test fun descartarLetsTheFileGoButNeverWhileTheCoreHasIt() {
         val core = FakeCore()
         core.script += core.fails(CoreException("Falha interna no núcleo do Ponte."))

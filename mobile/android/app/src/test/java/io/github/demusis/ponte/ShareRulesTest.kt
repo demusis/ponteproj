@@ -200,6 +200,16 @@ class ShareRulesTest {
         assertEquals(3, e.codePointCount(0, e.length))
     }
 
+    /** `revisao-f3-1b2-consertos.md` LOW 1: a pasted text never makes the core refuse the description. */
+    @Test fun aDescriptionHasNoControlCharactersTheCoreRefuses() {
+        assertEquals("linha um\nlinha dois", ShareRules.cleanDescription("  linha um\r\nlinha dois\r ", 500))
+        assertEquals("a\nb\tc", ShareRules.cleanDescription("a\rb\tc\u0000\u0007\u001b", 500))
+        assertEquals("ação", ShareRules.cleanDescription("a\u0085ção", 500))
+        val cleaned = ShareRules.cleanDescription("x\u0001".repeat(900), 500)
+        assertEquals(500, cleaned.length)
+        assertTrue(cleaned.all { it == 'x' })
+    }
+
     @Test fun thePreviewShowsTheFirstLines() {
         assertEquals("um\ndois", ShareRules.preview("um\n\n  dois  \n", 6))
         assertEquals("um\ndois…", ShareRules.preview("um\ndois\ntres", 2))
