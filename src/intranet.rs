@@ -11898,6 +11898,29 @@ fn promotion_on() -> bool {
     }
 }
 
+/// What the card of a configured folder says of the file that holds its
+/// library (`header`, read by [`crate::folder_health::library_header`]):
+/// the pill, its tone and, for a computer joining the folder, what happens.
+pub(crate) fn folder_pill(
+    header: &crate::sharedfolder::Header,
+    first_time: bool,
+    saved_revision: i64,
+) -> (&'static str, crate::widgets::Tone, Option<&'static str>) {
+    use crate::widgets::Tone;
+    if first_time {
+        // A computer joining a file that is already there.
+        (
+            "Arquivo já existente",
+            Tone::Info,
+            Some("Este arquivo não será apagado. Na primeira sincronização, este computador recebe o acervo que está nele; se já houver documentos aqui, o Ponte pergunta antes de trocá-los."),
+        )
+    } else if header.revision < saved_revision {
+        ("Atrás deste computador", Tone::Warn, None)
+    } else {
+        ("Em dia", Tone::Ok, None)
+    }
+}
+
 /// The line shown while the folder waits to move to the shared file of
 /// format 9.
 fn promotion_wait_line(reason: &str) -> String {
@@ -14105,24 +14128,12 @@ impl IntranetPanel {
                     // Not even read: nothing of the folders is touched.
                     Err(anyhow::anyhow!(TRANSPORT_OFF))
                 } else {
-                    crate::sharedfolder::read_header(std::path::Path::new(path))
+                    crate::folder_health::library_header(std::path::Path::new(path))
                 };
                 let (line, pill_text, tone, what_to_do) = match header {
                     Ok(Some(header)) => {
-                        let line = crate::sharedfolder::describe(&header);
-                        if first_time {
-                            // A computer joining a file that is already there.
-                            (
-                                    line,
-                                    "Arquivo já existente",
-                                    Tone::Info,
-                                    Some("Este arquivo não será apagado. Na primeira sincronização, este computador recebe o acervo que está nele; se já houver documentos aqui, o Ponte pergunta antes de trocá-los."),
-                                )
-                        } else if header.revision < saved_revision {
-                            (line, "Atrás deste computador", Tone::Warn, None)
-                        } else {
-                            (line, "Em dia", Tone::Ok, None)
-                        }
+                        let (pill, tone, what) = folder_pill(&header, first_time, saved_revision);
+                        (crate::sharedfolder::describe(&header), pill, tone, what)
                     }
                     Ok(None) => {
                         if std::path::Path::new(path)

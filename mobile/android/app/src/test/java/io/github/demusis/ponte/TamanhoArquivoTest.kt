@@ -75,6 +75,34 @@ class TamanhoArquivoTest {
         )
     }
 
+    /**
+     * Revisão do pacote, achado 7: the same refusal, when it comes while the core takes its first file of the
+     * new format ("A atualização do arquivo da pasta parou: …"), reads as in 0.51 and never sends the person to
+     * a screen the phone does not have.
+     */
+    @Test fun aRecusaAoAtualizarOArquivoDaPastaFalaComoNa051() {
+        val core = "A atualização do arquivo da pasta parou: O acervo passa de 512 MB e não cabe no arquivo de " +
+            "sincronização (daria 600 MB). Nada foi gravado. Para liberar espaço, esvazie a Lixeira (Ajustes ▸ " +
+            "Lixeira) e remova os anexos grandes que não precisam ir para os outros aparelhos. Os arquivos antigos " +
+            "ficaram como estavam e as alterações continuam guardadas neste computador; a próxima sincronização " +
+            "continua de onde parou."
+        val phone = PhoneWords.adapt(core)
+        assertEquals(
+            "O acervo passa de 512 MB e não cabe no arquivo de sincronização (daria 600 MB). Nada foi gravado. " +
+                "Para liberar espaço, esvazie a Lixeira e remova os anexos grandes que não precisam ir para os outros " +
+                "aparelhos, no Ponte do computador. As alterações continuam guardadas neste aparelho.",
+            phone
+        )
+        assertFalse(phone, phone.contains("▸"))
+        assertFalse(phone, phone.contains(".."))
+        assertEquals(
+            "O acervo passa de 512 MB e não cabe no arquivo de sincronização. Nada foi gravado. " +
+                "Para liberar espaço, esvazie a Lixeira e remova os anexos grandes que não precisam ir para os outros " +
+                "aparelhos, no Ponte do computador. As alterações continuam guardadas neste aparelho.",
+            PhoneWords.adapt(core.replace(" (daria 600 MB)", ""))
+        )
+    }
+
     private fun settings(size: Long, name: String, dark: Boolean = false) {
         paparazzi.tall(2600)
         paparazzi.shot(name, dark) {

@@ -440,6 +440,11 @@ fn lineage_of(real: &Path) -> Option<String> {
         .map(|header| header.lineage)
 }
 
+/// The header the card of the configured path `real` describes.
+pub fn library_header(real: &Path) -> anyhow::Result<Option<crate::sharedfolder::Header>> {
+    crate::sharedfolder::read_header(real)
+}
+
 /// The file that holds the library for the configured path `real`: since
 /// the format 9, the file `<nome>-formato9.ponte` beside it (the name itself
 /// then holds only a small stub that points to it); before it, `real`.
@@ -1094,6 +1099,98 @@ mod tests {
         assert_eq!(found8.size, Some(std::fs::metadata(&real8).unwrap().len()));
     }
 
+    /// Revisão do pacote, achado 1: an old copy kept aside of the file of
+    /// format 9 (`ponte-sync-formato9-divergente-<código>.ponte`) that the
+    /// scan offers is really deleted when the person confirms, with the same
+    /// checks as a copy of the old name; the file of format 9, the stub and
+    /// the Ponte's `-guarda` and `-pendente` files are never deleted.
+    #[test]
+    fn an_offered_old_copy_of_the_file_of_format_9_is_deleted_and_the_live_files_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join(REAL);
+        let nine = crate::sharedfolder::nine_path(&real);
+        sync_file(&real, LIBRARY, b"stub");
+        sync_file(&nine, LIBRARY, b"antes da divergencia");
+        let aside = crate::sharedfolder::keep_aside(&nine).unwrap();
+        sync_file(&nine, LIBRARY, b"depois, regravado");
+        let own: Vec<PathBuf> = [
+            "ponte-sync-guarda.ponte",
+            "ponte-sync-pendente.ponte",
+            "ponte-sync-formato9-guarda.ponte",
+            "ponte-sync-formato9-pendente.ponte",
+        ]
+        .iter()
+        .map(|n| dir.path().join(n))
+        .collect();
+        for path in &own {
+            sync_file(path, LIBRARY, b"do proprio Ponte");
+        }
+        let files = paths(&[&real]);
+        let listed = offered(&real);
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].path, aside);
+        // Asked by hand, the live file of format 9, the stub and the Ponte's
+        // own files are kept, each named.
+        let by_hand: Vec<Found> = [&nine, &real]
+            .into_iter()
+            .chain(own.iter())
+            .map(|path| as_listed(path))
+            .collect();
+        let (deleted, skipped) = delete_old_archives(&real, &by_hand, &files, later());
+        assert!(deleted.is_empty(), "{deleted:?}");
+        assert_eq!(skipped.len(), by_hand.len(), "{skipped:?}");
+        // What the scan offered is deleted, and only it.
+        let (deleted, skipped) = delete_old_archives(&real, &listed, &files, later());
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(deleted, std::slice::from_ref(&aside));
+        assert!(!aside.exists());
+        assert!(nine.exists() && real.exists(), "the live files stay");
+        assert!(own.iter().all(|p| p.exists()), "the Ponte's own files stay");
+        // Gone from the next scan.
+        assert!(offered(&real).is_empty());
+    }
+
+    /// Revisão do pacote, achado 6: in a folder at format 9, the library of
+    /// reference for the cleaning is the one of the file of format 9. A file
+    /// of another library written at the old name (an older Ponte that
+    /// started a library of its own) never becomes the reference: the old
+    /// copies kept aside of that stranger are not offered, those of the file
+    /// of format 9 are.
+    #[test]
+    fn the_reference_library_is_the_file_of_format_9_never_a_stranger_at_the_old_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join(REAL);
+        let nine = crate::sharedfolder::nine_path(&real);
+        // An old copy of the stranger, kept aside, then the stranger again.
+        sync_file(&real, "acervo-estranho", b"estranho, antes");
+        let stranger_aside = crate::sharedfolder::keep_aside(&real).unwrap();
+        sync_file(&real, "acervo-estranho", b"estranho, agora");
+        // An old copy of the real library's file of format 9.
+        sync_file(&nine, LIBRARY, b"antes da divergencia");
+        let ours = crate::sharedfolder::keep_aside(&nine).unwrap();
+        sync_file(&nine, LIBRARY, b"depois, regravado");
+        let scan = scan_all(&paths(&[&real]), later(), &HashMemo::default()).remove(0);
+        let offered: Vec<&PathBuf> = scan.old_archives.iter().map(|f| &f.path).collect();
+        assert_eq!(offered, [&ours], "{scan:?}");
+        let stranger_name = stranger_aside.file_name().unwrap().to_str().unwrap();
+        assert!(
+            scan.unrecognised
+                .iter()
+                .any(|u| u.name == stranger_name && u.reason == OTHER_LIBRARY),
+            "{scan:?}"
+        );
+        // Asked by hand, exactly as it is on disk, the stranger's copy stays
+        // (it is of another library).
+        let (deleted, skipped) = delete_old_archives(
+            &real,
+            &[as_listed(&stranger_aside)],
+            &paths(&[&real]),
+            later(),
+        );
+        assert!(deleted.is_empty() && stranger_aside.exists());
+        assert!(skipped[0].contains(OTHER_LIBRARY), "{skipped:?}");
+    }
+
     #[test]
     fn an_old_copy_kept_aside_by_the_ponte_is_offered_once_every_check_passes() {
         let dir = tempfile::tempdir().unwrap();
@@ -1203,6 +1300,24 @@ mod tests {
         let scan = scan_all(&paths(&[&real]), later(), &HashMemo::default()).remove(0);
         assert!(scan.old_archives.is_empty());
         assert_eq!(scan.unrecognised[0].reason, NOT_PONTE);
+    }
+
+    /// `path` as a scan would list it (its identity read from the disk).
+    fn as_listed(path: &Path) -> Found {
+        let metadata = std::fs::metadata(path).unwrap();
+        let (_, head_sha) = read_head(&mut File::open(path).unwrap()).unwrap();
+        Found {
+            path: path.to_path_buf(),
+            name: path.file_name().unwrap().to_str().unwrap().to_owned(),
+            size: metadata.len(),
+            age_days: None,
+            description: None,
+            identity: Some(Identity {
+                size: metadata.len(),
+                modified_ns: modified_ns(&metadata).unwrap(),
+                header_sha256: head_sha,
+            }),
+        }
     }
 
     fn offered(real: &Path) -> Vec<Found> {
