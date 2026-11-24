@@ -1253,6 +1253,79 @@ fn f3_1a_no_store_kept_here_holds_a_copy_s_number() {
     assert_eq!(frames, FRAME_CHECKED, "every kept store is checked");
 }
 
+/// revisao-f3-1a-ii #4: the kinds the mapper does not map yet keep
+/// today's behaviour. The journal of the copy, in a mapped library, keeps
+/// their numbers (the copy's numbers of them are this library's too) and
+/// drops the mapped kinds', when kept and when read back (a journal kept
+/// before the library was mapped holds them all); an unmapped library
+/// keeps everything, as before.
+#[test]
+fn f3_1a_the_copy_s_journal_keeps_the_kinds_numbered_as_the_copy() {
+    use crate::idmap::{load_frame_journal, save_frame_journal, CreatedId, IdKind};
+    use crate::sharedfolder::JournalEntry;
+    let (dir, _path, a, _b) = two();
+    assert!(mapped(&a));
+    let all = vec![
+        CreatedId::new(IdKind::Document, "", 7),
+        CreatedId::new(IdKind::Capture, "", 8),
+        CreatedId::new(IdKind::File, "file#0", 9),
+        CreatedId::new(IdKind::Task, "", 10),
+    ];
+    let entry = |uid: &str, created: Vec<CreatedId>| -> JournalEntry {
+        serde_json::from_value(serde_json::json!({
+            "uid": uid,
+            "created_at": "",
+            "actor": "",
+            "writer": "",
+            "label": "",
+            "mutation": crate::intranet::IntranetMutation::SaveNote {
+                document_id: 7,
+                note: String::new(),
+                expected_version: None,
+            },
+            "revision": 1,
+            "created": created,
+        }))
+        .unwrap()
+    };
+    let journal = [
+        entry("u1", all.clone()),
+        entry("u2", vec![CreatedId::new(IdKind::Draft, "", 11)]),
+    ];
+    let unmapped_kinds = vec![all[2].clone(), all[3].clone()];
+    save_frame_journal(&a.conn, &journal).unwrap();
+    assert_eq!(
+        load_frame_journal(&a.conn).unwrap(),
+        vec![("u1".to_owned(), unmapped_kinds.clone())]
+    );
+    // Kept before the library was mapped: read back without the mapped kinds.
+    a.conn
+        .execute("UPDATE ident_meta SET value=0 WHERE key='mapped'", [])
+        .unwrap();
+    save_frame_journal(&a.conn, &journal).unwrap();
+    a.conn
+        .execute("UPDATE ident_meta SET value=1 WHERE key='mapped'", [])
+        .unwrap();
+    assert!(mapped(&a));
+    assert_eq!(
+        load_frame_journal(&a.conn).unwrap(),
+        vec![("u1".to_owned(), unmapped_kinds)]
+    );
+    // An unmapped library keeps and reads everything.
+    let plain = Store::open(&dir.path().join("plain.sqlite3")).unwrap();
+    assert!(!mapped(&plain));
+    save_frame_journal(&plain.conn, &journal).unwrap();
+    let mut kept = load_frame_journal(&plain.conn).unwrap();
+    kept.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(
+        kept,
+        vec![
+            ("u1".to_owned(), all),
+            ("u2".to_owned(), vec![CreatedId::new(IdKind::Draft, "", 11)]),
+        ]
+    );
+}
+
 /// The copy `store` would publish, with every place above filled: the
 /// sources of a draft, an analysis (citations and facts too) and a
 /// generation of every grammar.
