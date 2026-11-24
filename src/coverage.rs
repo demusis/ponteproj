@@ -585,9 +585,18 @@ impl ResultIndex {
 pub(crate) struct Replayed(BTreeMap<(&'static str, i64), i64>);
 
 impl Replayed {
-    /// The mappings of `other` too.
+    /// The mappings of `other`, what the replays made of a copy's items (in
+    /// the copy's numbers), for the kinds this library numbers as the copy
+    /// it adopted: a mapped kind has numbers of its own here, which the
+    /// copy's say nothing of (F3.1a).
     pub(crate) fn absorb(&mut self, other: &Replayed) {
-        self.0.extend(other.0.iter().map(|(k, v)| (*k, *v)));
+        self.0.extend(
+            other
+                .0
+                .iter()
+                .filter(|((kind, _), _)| !crate::mapper::addressed(kind))
+                .map(|(k, v)| (*k, *v)),
+        );
     }
 
     pub(crate) fn learn(&mut self, there: &[CreatedId], here: &[CreatedId]) {
