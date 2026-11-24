@@ -19,9 +19,23 @@ pub const NOT_HERE: &str = "O registro não está mais disponível neste aparelh
 /// How long a deletion proved by an adoption is remembered.
 const GONE_DAYS: i64 = 30;
 
-/// The tables and columns of this module, inside the caller's transaction:
-/// `gone_documents`, and what `phone_operations` came to hold (adendo §10).
-pub(crate) fn ensure_schema(tx: &Connection) -> Result<()> {
+/// Whether this module works in the library on `tx`: only in one of schema
+/// 22 (one left at 21 for this opening works as before and keeps the schema
+/// of Ponte 0.51), where its table and columns are made the first time they
+/// are needed (`gone_documents`, and what `phone_operations` came to hold).
+pub(crate) fn ready(tx: &Connection) -> Result<bool> {
+    if !crate::idents::has_idents(tx)? {
+        return Ok(false);
+    }
+    let made: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('phone_operations') WHERE name='recovery_op')
+            AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='gone_documents')",
+        [],
+        |r| r.get(0),
+    )?;
+    if made {
+        return Ok(true);
+    }
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS gone_documents(ident TEXT PRIMARY KEY, gone_at TEXT NOT NULL);",
     )?;
@@ -44,7 +58,7 @@ pub(crate) fn ensure_schema(tx: &Connection) -> Result<()> {
             ))?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 fn now() -> String {
@@ -109,7 +123,7 @@ pub(crate) fn before_adoption(tx: &Connection) -> Result<Before> {
 /// space changes and nothing is proved deleted (frozen rule 21); the same
 /// one proves deleted every record that had an identity and was retired.
 pub(crate) fn after_adoption(tx: &Connection, before: Before, epoch: &str) -> Result<()> {
-    if !crate::idents::has_idents(tx)? {
+    if !ready(tx)? {
         return Ok(());
     }
     let after = if epoch.is_empty() {
@@ -141,6 +155,9 @@ pub(crate) fn refusal_message(conn: &Connection, ident: Option<&str>) -> Result<
     let Some(ident) = ident.filter(|i| !i.is_empty()) else {
         return Ok(NOT_HERE);
     };
+    if !ready(conn)? {
+        return Ok(NOT_HERE);
+    }
     let gone: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM gone_documents WHERE ident=?1)",
         [ident],
@@ -190,6 +207,9 @@ pub(crate) fn recovering(conn: &Connection, operation: Option<&str>) -> Result<b
     let Some(operation) = operation else {
         return Ok(false);
     };
+    if !ready(conn)? {
+        return Ok(false);
+    }
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM phone_operations WHERE recovery_op=?1)",
         [operation],
@@ -258,6 +278,7 @@ pub(crate) fn park(
             None,
             Some(data.len() as i64),
         )?;
+        ready(tx)?;
         tx.execute(
             "UPDATE phone_operations SET outcome='refused', card_id=?2, document_ident=?3 WHERE operation_id=?1",
             params![operation, card, ident],
@@ -273,6 +294,9 @@ pub(crate) fn bind_outbox(
     outbox_uid: &str,
     ident: Option<&str>,
 ) -> Result<()> {
+    if !ready(tx)? {
+        return Ok(());
+    }
     tx.execute(
         "UPDATE phone_operations SET outcome='pending', outbox_uid=?2, document_ident=?3 WHERE operation_id=?1",
         params![operation, outbox_uid, ident],
@@ -283,7 +307,7 @@ pub(crate) fn bind_outbox(
 /// In the transaction that stores card `card` of the queued change `uid`:
 /// its operation is refused, with that card (frozen rule 20).
 pub(crate) fn bind_card(conn: &Connection, uid: &str, card: i64) -> Result<()> {
-    if !uid.is_empty() {
+    if !uid.is_empty() && ready(conn)? {
         conn.execute(
             "UPDATE phone_operations SET outcome='refused', card_id=?2 WHERE outbox_uid=?1",
             params![uid, card],
@@ -295,6 +319,9 @@ pub(crate) fn bind_card(conn: &Connection, uid: &str, card: i64) -> Result<()> {
 /// In the transaction that removes the queued change `uid` after it went
 /// through: its operation is accepted, unless a card refused it.
 pub(crate) fn bind_sent(conn: &Connection, uid: &str) -> Result<()> {
+    if !ready(conn)? {
+        return Ok(());
+    }
     conn.execute(
         "UPDATE phone_operations SET outcome='accepted' WHERE outbox_uid=?1 AND outcome='pending'",
         [uid],
@@ -304,6 +331,9 @@ pub(crate) fn bind_sent(conn: &Connection, uid: &str) -> Result<()> {
 
 /// The queued change `old` is now `new`.
 pub(crate) fn rename_outbox(conn: &Connection, old: &str, new: &str) -> Result<()> {
+    if !ready(conn)? {
+        return Ok(());
+    }
     conn.execute(
         "UPDATE phone_operations SET outbox_uid=?2 WHERE outbox_uid=?1",
         params![old, new],
@@ -314,6 +344,9 @@ pub(crate) fn rename_outbox(conn: &Connection, old: &str, new: &str) -> Result<(
 /// In the transaction of operation `operation`: the card it recovers is
 /// resolved with it (adendo §10 rule 6).
 pub(crate) fn recovered(conn: &Connection, operation: &str) -> Result<()> {
+    if !ready(conn)? {
+        return Ok(());
+    }
     let cards: Vec<i64> = conn
         .prepare(
             "SELECT card_id FROM phone_operations WHERE recovery_op=?1 AND card_id IS NOT NULL",
@@ -349,6 +382,9 @@ pub struct Refused {
 /// Card `card` while it waits, when it keeps the file of a refused phone
 /// operation (no other card is touched by the recovery screen).
 fn waiting_card(conn: &Connection, card: i64) -> Result<Option<SyncConflict>> {
+    if !ready(conn)? {
+        return Ok(None);
+    }
     let blob: Option<Vec<u8>> = conn
         .query_row(
             "SELECT c.payload FROM offline_conflicts c WHERE c.id=?1 AND EXISTS(
@@ -395,6 +431,9 @@ impl crate::storage::Store {
 
     /// The refused files whose card still waits, oldest first.
     pub fn refused_attachments(&self) -> Result<Vec<Refused>> {
+        if !ready(&self.conn)? {
+            return Ok(Vec::new());
+        }
         let rows: Vec<(String, i64, Option<String>)> = self
             .conn
             .prepare(
@@ -433,6 +472,7 @@ impl crate::storage::Store {
     /// Before the recovery `operation` of card `card_id` runs: the card is
     /// resolved in the transaction that commits that operation.
     pub fn recover_card(&mut self, card_id: i64, operation: &str) -> Result<()> {
+        ready(&self.conn)?;
         let changed = self.conn.execute(
             "UPDATE phone_operations SET recovery_op=?2 WHERE card_id=?1 AND outcome='refused'",
             params![card_id, operation.trim()],

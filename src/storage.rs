@@ -2228,23 +2228,25 @@ impl Store {
         if id.is_empty() {
             return Ok(None);
         }
+        // A library left at schema 21 has none of the F3.1b2 columns.
+        let sql = if crate::phoneops::ready(&self.conn)? {
+            "SELECT kind,document_id,attachment_id,size,outcome,card_id,document_ident FROM phone_operations WHERE operation_id=?1"
+        } else {
+            "SELECT kind,document_id,attachment_id,size,'accepted',NULL,NULL FROM phone_operations WHERE operation_id=?1"
+        };
         Ok(self
             .conn
-            .query_row(
-                "SELECT kind,document_id,attachment_id,size,outcome,card_id,document_ident FROM phone_operations WHERE operation_id=?1",
-                [id],
-                |r| {
-                    Ok(OperationRecord {
-                        kind: r.get(0)?,
-                        document_id: r.get(1)?,
-                        attachment_id: r.get(2)?,
-                        size: r.get(3)?,
-                        outcome: r.get(4)?,
-                        card_id: r.get(5)?,
-                        document_ident: r.get(6)?,
-                    })
-                },
-            )
+            .query_row(sql, [id], |r| {
+                Ok(OperationRecord {
+                    kind: r.get(0)?,
+                    document_id: r.get(1)?,
+                    attachment_id: r.get(2)?,
+                    size: r.get(3)?,
+                    outcome: r.get(4)?,
+                    card_id: r.get(5)?,
+                    document_ident: r.get(6)?,
+                })
+            })
             .optional()?)
     }
 
@@ -2254,10 +2256,12 @@ impl Store {
     pub fn prune_operations(&self, days: i64) -> Result<usize> {
         let cutoff = (Utc::now() - chrono::Duration::days(days))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
-        Ok(self.conn.execute(
-            "DELETE FROM phone_operations WHERE created_at < ?1 AND outcome NOT IN ('pending','refused')",
-            [cutoff],
-        )?)
+        let sql = if crate::phoneops::ready(&self.conn)? {
+            "DELETE FROM phone_operations WHERE created_at < ?1 AND outcome NOT IN ('pending','refused')"
+        } else {
+            "DELETE FROM phone_operations WHERE created_at < ?1"
+        };
+        Ok(self.conn.execute(sql, [cutoff])?)
     }
 
     /// The number (`MANUAL-2026/0003`) of the current version of a document

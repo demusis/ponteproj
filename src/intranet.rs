@@ -2578,7 +2578,6 @@ impl Store {
             )?;
         }
         crate::idmap::ensure_schema(&tx)?;
-        crate::phoneops::ensure_schema(&tx)?;
         if tx.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 9 {
             tx.pragma_update(None, "user_version", 9)?;
         }
