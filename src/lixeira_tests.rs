@@ -665,3 +665,21 @@ fn lixeira_purge_from_another_copy_already_done_is_no_card() {
         assert!(doc(store, Y).is_some());
     }
 }
+
+/// Guard: in a shared folder, "Apagar de vez" of an item no longer in the
+/// Lixeira (a screen not refreshed yet) is refused here and never queued.
+#[test]
+fn lixeira_a_purge_of_an_item_out_of_the_lixeira_is_refused_and_not_queued() {
+    let Folder { b, .. } = folder(true);
+    let mut b = b;
+    let yb = doc(&b, Y).unwrap();
+    let queued = b.list_offline_outbox().unwrap().len();
+    let error = b.purge_trash_item(target(yb)).unwrap_err().to_string();
+    assert_eq!(error, "O item não está na lixeira.");
+    assert_eq!(
+        b.list_offline_outbox().unwrap().len(),
+        queued,
+        "nothing queued"
+    );
+    assert!(doc(&b, Y).is_some(), "Y untouched");
+}

@@ -7700,11 +7700,16 @@ impl Store {
             // nothing in the base (its numbers never name another item: the
             // floor of the copies): already purged there. It deletes nothing
             // and is no card; any item it names stays a card (unprovable).
+            // A kind this build does not know stays a card, as before.
             if let (Err(reason), M::PurgeTrash { kind, id }) = (&remapped, &entry.mutation) {
-                if reason == crate::idmap::UNRESOLVED
-                    && crate::trash::purge_finds(&store.conn, TrashKind::parse(kind)?, *id)?
-                        == crate::trash::PurgeFinds::Gone
-                {
+                let gone = match TrashKind::parse(kind) {
+                    Ok(kind) => {
+                        crate::trash::purge_finds(&store.conn, kind, *id)?
+                            == crate::trash::PurgeFinds::Gone
+                    }
+                    Err(_) => false,
+                };
+                if reason == crate::idmap::UNRESOLVED && gone {
                     ids.relearn(&entry.created, &[]);
                     applied.insert(entry.uid.clone());
                     continue;

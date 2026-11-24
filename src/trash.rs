@@ -753,6 +753,15 @@ impl Store {
     /// attachment. On a client computer the request goes to the main one.
     pub fn purge_trash_item(&mut self, target: Target) -> Result<Option<i64>> {
         if let Some(cfg) = self.client_config()? {
+            // In a shared folder this library is the one to ask: an item no
+            // longer in its Lixeira is refused here, never queued (a replay
+            // takes a purge already done as done, see `execute_mutation`).
+            if cfg.mode == crate::intranet::IntranetMode::SharedFolder {
+                ensure!(
+                    contains(&self.conn, target.kind, target.id)?,
+                    "O item não está na lixeira."
+                );
+            }
             match self.remote_mutate(
                 &cfg,
                 crate::intranet::IntranetMutation::PurgeTrash {
