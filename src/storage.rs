@@ -945,7 +945,7 @@ impl Store {
         }
         // A manual record created without a number (connected computer, or
         // first creation here) gets the next one now, inside the transaction.
-        let pending_manual = capture.is_manual() && capture.document_number == MANUAL_PENDING;
+        let pending_manual = capture.is_pending_manual();
         let bound = match target.filter(|_| capture.is_manual() && !pending_manual) {
             Some(target) => {
                 let row = target.bind(&tx)?.context(crate::idrefs::TARGET_GONE)?;

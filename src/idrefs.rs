@@ -613,8 +613,7 @@ fn manual_number(mutation: &IntranetMutation) -> Option<&str> {
     match mutation {
         IntranetMutation::ImportCapture { capture }
         | IntranetMutation::ImportBundle { capture, .. }
-            if capture.is_manual()
-                && capture.document_number.trim() != crate::model::MANUAL_PENDING =>
+            if capture.is_numbered_manual() =>
         {
             Some(&capture.document_number)
         }
@@ -676,6 +675,13 @@ impl ManualTarget {
             _ => None,
         })
     }
+}
+
+/// Whether the library on `conn` makes its changes without proofs: its
+/// identities were never shared (provisional), so [`Refs::capture`] gives
+/// none and its changes take the legacy route, by number.
+pub(crate) fn proofless(conn: &Connection) -> Result<bool> {
+    Ok(crate::idents::origin(conn)?.0 == "provisional")
 }
 
 /// The frame of the library on `conn`: the epoch of its identities and the
@@ -769,7 +775,7 @@ impl Refs {
         mutation: &IntranetMutation,
         base: Option<&IntranetMutation>,
     ) -> Result<Option<Refs>> {
-        if crate::idents::origin(conn)?.0 == "provisional" {
+        if proofless(conn)? {
             return Ok(None);
         }
         let idents = crate::idents::has_idents(conn)?;

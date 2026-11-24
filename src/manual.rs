@@ -233,7 +233,17 @@ impl Store {
         // the import's transaction, under the number it has then (adendo
         // §9): never to whatever holds the number by then.
         let target = crate::idrefs::ManualTarget::here(&self.conn, id)?;
-        self.import_capture_to(&capture, Some(&target))
+        // A library whose identities were never shared sends its changes
+        // without proofs (the legacy route): a main computer then imports
+        // the edit by the number, and only the receipt, in the numbers this
+        // library still shares with it, tells it reached another record.
+        let proofless = crate::idrefs::proofless(&self.conn)?;
+        let receipt = self.import_capture_to(&capture, Some(&target))?;
+        ensure!(
+            !proofless || receipt.document_id == id,
+            "O registro editado não corresponde ao documento aberto."
+        );
+        Ok(receipt)
     }
 }
 

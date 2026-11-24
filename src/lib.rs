@@ -111,15 +111,15 @@ mod f31a_review_tests;
 /// (tests only).
 #[cfg(test)]
 mod f31a_tests;
+/// Review of F3.1b1: the epoch of the copy being built, an edit from another
+/// epoch as a card, and the paths of risk the review listed (tests only).
+#[cfg(test)]
+mod f31b1_review_tests;
 /// F3.1b1 of Frente F: acceptance tests of the manual target bound inside
 /// the import's transaction, the request id of another record and the
 /// native host on a crossed pair (tests only).
 #[cfg(test)]
 mod f31b1_tests;
-/// Review of F3.1b1: the epoch of the copy being built, an edit from another
-/// epoch as a card, and the paths of risk the review listed (tests only).
-#[cfg(test)]
-mod f31b1_review_tests;
 /// F3.0a1 of Frente F: acceptance tests of the level barrier, the floor
 /// observed and the refs of every producer (tests only).
 #[cfg(test)]

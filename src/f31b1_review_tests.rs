@@ -474,14 +474,18 @@ fn rev_f31b1_3_team_edit_after_a_duplicate_creation_is_a_card() {
     let mut t = Team::new();
     t.offline();
     let request = uuid::Uuid::new_v4().to_string();
-    let mut ch = manual("Conversa no principal", "Texto igual").capture(MANUAL_PENDING, "ANFITRIAO");
+    let mut ch =
+        manual("Conversa no principal", "Texto igual").capture(MANUAL_PENDING, "ANFITRIAO");
     ch.request_id = request.clone();
     let mut cc = manual("Conversa no cliente", "Texto igual").capture(MANUAL_PENDING, "SERVIDOR-A");
     cc.request_id = request;
     let on_host = t.host.import_capture(&ch).unwrap().document_id;
     let xc = t.client.import_capture(&cc).unwrap().document_id;
     t.client
-        .update_manual_document(xc, &manual("Conversa no cliente", "Texto do cliente, editado"))
+        .update_manual_document(
+            xc,
+            &manual("Conversa no cliente", "Texto do cliente, editado"),
+        )
         .unwrap();
     t.online();
     let _ = t.client.sync_from_host(false);
@@ -747,7 +751,10 @@ fn rev_f31b1_4_provisional_edit_written_elsewhere_is_reported() {
         .client
         .update_manual_document(x, &manual(MX, "Texto de X, editado"));
     let said = saved.expect_err("not reported as saved").to_string();
-    assert!(said.contains("não corresponde ao documento aberto"), "{said}");
+    assert!(
+        said.contains("não corresponde ao documento aberto"),
+        "{said}"
+    );
 }
 
 /// Finding 5. The record opened is named explicitly, but its number

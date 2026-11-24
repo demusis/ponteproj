@@ -554,6 +554,19 @@ impl Capture {
         self.source_url.starts_with(MANUAL_ORIGIN)
     }
 
+    /// A manual record still to be numbered: its creation. The number is
+    /// compared trimmed, as the validation reads it (`validate_manual`).
+    pub fn is_pending_manual(&self) -> bool {
+        self.is_manual() && self.document_number.trim() == MANUAL_PENDING
+    }
+
+    /// A manual record that already has its number: what a numbered edit
+    /// carries. The one definition every module uses (the queue, the
+    /// proofs, the importer and the routing of edits).
+    pub fn is_numbered_manual(&self) -> bool {
+        self.is_manual() && !self.is_pending_manual()
+    }
+
     /// Rules of a manual record: its own number and origin, no SIGADOC
     /// links, no movement history; the rest as any capture.
     fn validate_manual(&self) -> Result<()> {

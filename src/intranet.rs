@@ -4682,7 +4682,6 @@ impl Store {
                     // the main computer's numbers, before anything is sent.
                     crate::renumber::route_manual_edit(
                         routed,
-                        entry.refs.as_ref(),
                         &edit_source,
                         &ids,
                         host.map(|s| s as &dyn crate::renumber::Records),
@@ -6368,7 +6367,6 @@ impl Store {
                         .refs_since
                         .is_some_and(|since| entry.revision <= since);
                 let before = store.cabinet_revision()?;
-                let epoch_here = crate::idents::origin(&store.conn)?.2.unwrap_or_default();
                 let routed = route_change(
                     (&entry.mutation, entry.base.as_ref()),
                     entry.refs.as_ref().filter(|_| use_refs),
@@ -6381,11 +6379,12 @@ impl Store {
                     // document of its library the edit landed on.
                     crate::renumber::route_manual_edit(
                         routed,
-                        entry.refs.as_ref().filter(|_| use_refs),
                         &edit_source,
                         &ids,
                         Some(&store),
-                        &epoch_here,
+                        // The epoch of the copy being built (its base),
+                        // never the temporary library's, which has none.
+                        &epoch,
                     )
                 });
                 let (base, refs) = match &routed {
@@ -6668,7 +6667,6 @@ impl Store {
                 // entry through the translation of numbers, as before.
                 let before = store.cabinet_revision()?;
                 let holds = own_frame && entry.refs.as_ref().is_some_and(|r| r.frame == own_tag);
-                let epoch_here = crate::idents::origin(&store.conn)?.2.unwrap_or_default();
                 let routed = route_change(
                     (&entry.mutation, entry.base.as_ref()),
                     entry.refs.as_ref().filter(|_| use_refs),
@@ -6681,11 +6679,12 @@ impl Store {
                     // library.
                     crate::renumber::route_manual_edit(
                         routed,
-                        entry.refs.as_ref().filter(|_| use_refs),
                         &edit_source,
                         &ids,
                         Some(&store),
-                        &epoch_here,
+                        // The epoch of the copy being built (its base),
+                        // never the temporary library's, which has none.
+                        &epoch,
                     )
                 });
                 let (base, refs) = match &routed {
@@ -7877,7 +7876,7 @@ impl Store {
         ensure!(
             target.is_some()
                 || !crate::renumber::is_manual_edit(&mutation)
-                || crate::idents::origin(&self.conn)?.0 == "provisional",
+                || crate::idrefs::proofless(&self.conn)?,
             crate::idrefs::TARGET_GONE
         );
         if cfg.mode == IntranetMode::SharedFolder {
@@ -7911,7 +7910,7 @@ impl Store {
         // items it names, in this library's frame, before it is sent.
         let uid = uuid::Uuid::new_v4().simple().to_string();
         let refs = crate::idrefs::Refs::capture(&self.conn, &mutation, None)?
-            .map(|refs| with_target(refs, target));
+            .map(|refs| with_target(refs, &mutation, target));
         let mut reached = false;
         let attempt = if self.host_known_unreachable() {
             Err(RpcError::Unreachable(
@@ -8151,7 +8150,7 @@ impl Store {
         let base = self.snapshot_for_mutation(&queued_mutation);
         // The proofs of what the change and its base name, before it runs.
         let refs = crate::idrefs::Refs::capture(&self.conn, &queued_mutation, base.as_ref())?
-            .map(|refs| with_target(refs, target));
+            .map(|refs| with_target(refs, &queued_mutation, target));
         let logged = self.run_logged(|store| store.execute_bound(actor, mutation, target))?;
         let reply = match logged.result {
             Ok(reply) => reply,
@@ -11564,10 +11563,7 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
     match mutation {
         IntranetMutation::ImportCapture { capture } if capture.is_manual() => {
             let email = capture.metadata.get("manual_kind").map(String::as_str) == Some("email");
-            match (
-                email,
-                capture.document_number == crate::model::MANUAL_PENDING,
-            ) {
+            match (email, capture.is_pending_manual()) {
                 (true, true) => "E-mail importado".to_owned(),
                 (true, false) => format!("E-mail {}", capture.document_number),
                 (false, true) => "Registro manual novo".to_owned(),
@@ -12028,13 +12024,19 @@ impl PlainEditFrame for CabinetSnapshot {
 }
 
 /// `refs` naming, for a numbered manual edit, the record `target` names
-/// (the one the person opened) instead of the one its number names.
+/// (the one the person opened) instead of the one its number names. It is
+/// set even when no record holds that number here (`Refs::capture` then
+/// names none): the explicit record is the proof the edit needs, and
+/// without it every receiver would refuse the change as damaged. Any other
+/// change keeps none (`Refs::check` requires one exactly for a numbered
+/// manual edit).
 fn with_target(
     mut refs: crate::idrefs::Refs,
+    mutation: &IntranetMutation,
     target: Option<&crate::idrefs::ManualTarget>,
 ) -> crate::idrefs::Refs {
-    if let (Some(named), Some(target)) = (refs.manual_target.as_mut(), target) {
-        *named = target.target.clone();
+    if let Some(target) = target.filter(|_| crate::renumber::is_manual_edit(mutation)) {
+        refs.manual_target = Some(target.target.clone());
     }
     refs
 }

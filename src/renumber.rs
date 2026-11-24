@@ -13,7 +13,7 @@
 //! copy. A record with no request on either side has no identity and gives no
 //! notice (the title is never used to guess).
 use crate::intranet::{CabinetSnapshot, IntranetMutation};
-use crate::model::{Capture, MANUAL_ORIGIN, MANUAL_PENDING};
+use crate::model::{Capture, MANUAL_ORIGIN};
 use crate::protection::{seal, unseal};
 use crate::storage::Store;
 use anyhow::Result;
@@ -111,8 +111,6 @@ pub(crate) trait Records {
     fn doc_of_request(&self, request: &str) -> Result<Option<i64>, String>;
     /// Every request id of a document's versions.
     fn requests_of_doc(&self, doc: i64) -> Result<Vec<String>, String>;
-    /// The identity of a document (`item_ident`), when it has one.
-    fn ident_of_doc(&self, doc: i64) -> Result<Option<String>, String>;
 }
 
 impl Records for Store {
@@ -146,9 +144,6 @@ impl Records for Store {
             .map_err(|e| e.to_string())?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())
-    }
-    fn ident_of_doc(&self, doc: i64) -> Result<Option<String>, String> {
-        crate::idents::ident_of(&self.conn, "document", doc).map_err(|e| e.to_string())
     }
 }
 
@@ -189,13 +184,6 @@ impl Records for CabinetSnapshot {
             .filter(|r| r.document_id == doc)
             .map(|r| r.request_id.clone())
             .collect())
-    }
-    fn ident_of_doc(&self, doc: i64) -> Result<Option<String>, String> {
-        Ok(self
-            .idents
-            .iter()
-            .find(|r| r.0 == "document" && r.1 == doc)
-            .map(|r| r.2.clone()))
     }
 }
 
@@ -240,7 +228,7 @@ fn manual_edit(mutation: &IntranetMutation) -> Option<&Capture> {
     match mutation {
         IntranetMutation::ImportCapture { capture }
         | IntranetMutation::ImportBundle { capture, .. }
-            if capture.is_manual() && capture.document_number != MANUAL_PENDING =>
+            if capture.is_numbered_manual() =>
         {
             Some(capture)
         }
@@ -277,6 +265,9 @@ const CANNOT_TELL: &str = "não foi possível ter certeza de qual registro da c�
 const DELETED_HERE: &str = "o registro foi excluído neste computador.";
 const DELETED_THERE: &str = "o registro foi excluído no computador de onde esta alteração veio.";
 const REFUSED: &str = "a criação desse registro foi recusada pela cópia compartilhada.";
+/// An edit proved in another epoch of identities, whose record that epoch
+/// does not hold (decision Q2): it is never matched by number or request.
+pub(crate) const RENEWED: &str = "os códigos dos registros foram renovados depois que ela foi feita (a cópia compartilhada ou o computador principal foi promovido ou restaurado em separado), e o registro dela não pôde ser reconhecido com certeza.";
 
 /// The words of a refused edit. The text is the person's own work: it stays
 /// on the card.
@@ -502,21 +493,22 @@ pub(crate) fn retarget_manual_edit(
 
 /// [`retarget_manual_edit`] for a routed change (F3.1b1). A numbered manual
 /// edit that names its record (`manual_target`) goes to that record, bound
-/// again inside the import's transaction (adendo §9), never by its number:
+/// again inside the import's transaction (adendo §9), never by its number
+/// and never by its request ids:
 /// - found in `target` by its identity: it takes the number it has there;
-/// - not found, in the epoch of identities its proof was made in: the
-///   record is gone there, and the importer refuses the edit (a card);
-/// - not found, in another epoch (the identities were drawn again): the one
-///   record its creation in this exchange (step 2), or all of its request
-///   ids (step 3), lead to there, by its identity there. Steps 0, 1 and 4
-///   (a request id alone, the source's deletion, the number) never decide.
+/// - not found, in the epoch of identities its proof was made in
+///   (`epoch_there`: the epoch of the library or copy being written, never
+///   of a temporary library): the record is gone there, and the importer
+///   refuses the edit with [`crate::idrefs::TARGET_GONE`] (a card);
+/// - not found, in another epoch (the identities were drawn again): a card
+///   with its text ([`RENEWED`], decision Q2). A creation replayed in the
+///   same exchange already resolves by identity (its row took the identity
+///   the edit cites); a duplicate creation lends none (frozen rule 9).
 ///
-/// `original`: the proofs as the edit was made (the record's number in the
-/// library it was written in). A change without proofs keeps the legacy
-/// route.
+/// A change without proofs (legacy) keeps the steps 0-4 of
+/// [`retarget_manual_edit`].
 pub(crate) fn route_manual_edit(
-    (mutation, base, mut refs): crate::intranet::Routed,
-    original: Option<&crate::idrefs::Refs>,
+    (mutation, base, refs): crate::intranet::Routed,
     source: &EditSource<'_>,
     ids: &crate::idmap::IdMap,
     target: Option<&dyn Records>,
@@ -529,58 +521,15 @@ pub(crate) fn route_manual_edit(
     let Some(t) = target else {
         return Ok((mutation, base, refs));
     };
-    let cannot = || not_applied(&capture, CANNOT_TELL);
-    let doc =
-        if named.row > 0 {
-            named.row
+    if named.row <= 0 {
+        let made_in = refs.as_ref().map_or("", |r| r.frame.epoch.as_str());
+        return if made_in == epoch_there {
+            Ok((mutation, base, refs))
         } else {
-            let made_in = refs.as_ref().map_or("", |r| r.frame.epoch.as_str());
-            if made_in == epoch_there {
-                return Ok((mutation, base, refs));
-            }
-            let local = original
-                .and_then(|r| r.manual_target.as_ref())
-                .ok_or_else(cannot)?
-                .row;
-            let creation = source.creations.get(&local).copied().or_else(|| {
-                match ids.learned_document(local) {
-                    Some(Some(there)) => Some(CreationOutcome::Applied(there)),
-                    _ => None,
-                }
-            });
-            let doc = match creation {
-                Some(CreationOutcome::Refused) => return Err(not_applied(&capture, REFUSED)),
-                Some(CreationOutcome::Applied(there)) => there,
-                None => {
-                    let own = normalized_request(&capture.request_id);
-                    let mut same = BTreeSet::new();
-                    for request in source
-                        .records
-                        .requests_of_doc(local)
-                        .map_err(|_| cannot())?
-                        .iter()
-                        .filter(|r| Some(*r) != own.as_ref())
-                    {
-                        if let Some(doc) = t.doc_of_request(request).map_err(|_| cannot())? {
-                            same.insert(doc);
-                        }
-                    }
-                    match same.into_iter().collect::<Vec<_>>()[..] {
-                        [one] => one,
-                        _ => return Err(cannot()),
-                    }
-                }
-            };
-            let ident = t
-                .ident_of_doc(doc)
-                .map_err(|_| cannot())?
-                .ok_or_else(cannot)?;
-            if let Some(named) = refs.as_mut().and_then(|r| r.manual_target.as_mut()) {
-                (named.row, named.proof) = (doc, crate::idrefs::Proof::Ident(ident));
-            }
-            doc
+            Err(not_applied(&capture, RENEWED))
         };
-    let mutation = match t.number_of_doc(doc) {
+    }
+    let mutation = match t.number_of_doc(named.row) {
         Ok(Some(number)) => readdress(mutation, &number),
         _ => mutation,
     };
@@ -626,7 +575,7 @@ pub(crate) fn pending_creations<'a>(
     let mut out = BTreeSet::new();
     for (mutation, created) in entries {
         if let IntranetMutation::ImportCapture { capture } = mutation {
-            if capture.is_manual() && capture.document_number == MANUAL_PENDING {
+            if capture.is_pending_manual() {
                 out.extend(
                     created
                         .iter()
@@ -646,9 +595,7 @@ pub(crate) fn creation_document(
     created: &[crate::idmap::CreatedId],
 ) -> Option<i64> {
     match mutation {
-        IntranetMutation::ImportCapture { capture }
-            if capture.is_manual() && capture.document_number == MANUAL_PENDING =>
-        {
+        IntranetMutation::ImportCapture { capture } if capture.is_pending_manual() => {
             receipt_document(created)
         }
         _ => None,
@@ -795,8 +742,9 @@ impl Store {
     ///
     /// A card that keeps the record its edit names (F3.1b1) re-applies it
     /// to that record, by its identity here (adendo §9 rule 3), and answers
-    /// it as the target the edit is written to; in another epoch of
-    /// identities, the one record all its request ids lead to.
+    /// it as the target the edit is written to. A record not held here by
+    /// that identity is never looked for by its request ids or its number,
+    /// in this epoch of identities or in another (decision Q2).
     pub(crate) fn revalidated_manual_edit(
         &self,
         conflict: &crate::intranet::SyncConflict,
@@ -817,19 +765,16 @@ impl Store {
                     .map_err(|e| e.to_string())?,
                 _ => None,
             };
-            let epoch = crate::idents::origin(&self.conn)
-                .map_err(|e| e.to_string())?
-                .2
-                .unwrap_or_default();
-            let doc = match found {
-                Some(doc) => doc,
-                None if refs.frame.epoch != epoch => {
-                    document_of_identity(&self.conn, &conflict.identity)
-                        .ok()
-                        .flatten()
-                        .ok_or_else(|| cannot.clone())?
-                }
-                None => return Err(cannot),
+            let Some(doc) = found else {
+                let epoch = crate::idents::origin(&self.conn)
+                    .map_err(|e| e.to_string())?
+                    .2
+                    .unwrap_or_default();
+                return Err(if refs.frame.epoch == epoch {
+                    cannot
+                } else {
+                    not_applied(capture, RENEWED)
+                });
             };
             let number = self.number_of_doc(doc)?.ok_or_else(|| cannot.clone())?;
             let target =
@@ -902,7 +847,7 @@ impl Presented {
                 let Some(capture) = read_capture(&blob) else {
                     continue;
                 };
-                if capture.is_manual() && capture.document_number != MANUAL_PENDING {
+                if capture.is_numbered_manual() {
                     out.push((
                         capture.document_number,
                         capture.title,
@@ -938,10 +883,7 @@ impl Presented {
                 let Some(after) = after.as_deref().and_then(read_capture) else {
                     continue;
                 };
-                if !after.is_manual()
-                    || after.document_number == MANUAL_PENDING
-                    || same_number(&after.document_number, number)
-                {
+                if !after.is_numbered_manual() || same_number(&after.document_number, number) {
                     continue;
                 }
                 // Every request id that confirmed the match comes first, then
