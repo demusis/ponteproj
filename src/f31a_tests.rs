@@ -48,16 +48,6 @@ fn latest(store: &Store, doc: i64) -> i64 {
         .unwrap()
 }
 
-fn set_ident(store: &Store, kind: &str, row: i64, ident: &str) {
-    store
-        .conn
-        .execute(
-            "UPDATE item_ident SET ident=?1 WHERE kind=?2 AND row_id=?3",
-            rusqlite::params![ident, kind, row],
-        )
-        .unwrap();
-}
-
 /// `store`'s copy with two notes and two analyses of its first document
 /// made at the same moment: "alta" (the higher identity) at `high` and
 /// "baixa" at `low`.
