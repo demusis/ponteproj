@@ -369,7 +369,9 @@ internal data class DocDetail(
     /** Uids of the categories of the document. */
     val categories: List<String> = emptyList(),
     /** The version a change of the categories must present back (the core refuses a stale one). */
-    val categoriesVersion: Long = 0
+    val categoriesVersion: Long = 0,
+    /** What proves this record to a file taken for it (F3.1b2). */
+    val proof: AttachProof = AttachProof()
 )
 
 internal fun JSONObject.toDocDetail(): DocDetail {
