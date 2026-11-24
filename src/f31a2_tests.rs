@@ -951,22 +951,184 @@ const COLUMNS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Tables never carried by a copy, whose numbers are this library's own
-/// (kept across a mapped adoption, which keeps the numbers of the items it
-/// matches) or rebuilt after it (`current_pointer` by its triggers,
-/// `item_ident` from the copy's triples).
-const LOCAL: &[&str] = &[
-    "attachment_texts",
-    "carry_log",
-    "current_pointer",
-    "gone_documents",
-    "id_high",
-    "item_ident",
+/// What the rows of a table of a library hold, as numbers of items, across
+/// a mapped adoption (revisao-f3-1a-ii #2: every table is named here, so a
+/// new table that keeps numbers, in a column or inside a payload, is
+/// looked at before it is trusted).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Holds {
+    /// The copy carries its rows: their numbers are the places above.
+    Carried,
+    /// Written here only, in this library's numbers (kept across a mapped
+    /// adoption, which keeps the numbers of the items it matches).
+    Own,
+    /// Rebuilt from the mapped copy by the adoption (`current_pointer` by
+    /// its triggers, `item_ident` from the copy's triples, the floor).
+    Rebuilt,
+    /// Kept across an adoption with numbers learned from a copy or from
+    /// the main computer: checked after a real mapped adoption
+    /// ([`frame_stores_hold_this_library_s_numbers`]).
+    Frame,
+    /// The change as it was made (frozen rules 8 and 23): a card keeps its
+    /// original envelope, in the frame it was written in, by design.
+    Envelope,
+    /// No number of an item (settings, identities, digests, uids).
+    Nothing,
+}
+
+const TABLES: &[(&str, Holds)] = &[
+    ("analyses", Holds::Carried),
+    ("attachments", Holds::Carried),
+    ("capture_refs", Holds::Carried),
+    ("captures", Holds::Carried),
+    ("categories", Holds::Carried),
+    ("document_links", Holds::Carried),
+    ("documents", Holds::Carried),
+    ("draft_generations", Holds::Carried),
+    ("drafts", Holds::Carried),
+    ("files", Holds::Carried),
+    ("instruction_block_versions", Holds::Carried),
+    ("instruction_blocks", Holds::Carried),
+    ("item_versions", Holds::Carried),
+    ("library_settings", Holds::Carried),
+    ("notes", Holds::Carried),
+    ("page_text", Holds::Carried),
+    ("projects", Holds::Carried),
+    ("requests", Holds::Carried),
+    ("resource_uses", Holds::Carried),
+    ("resources", Holds::Carried),
+    ("saiop_attendances", Holds::Carried),
+    ("saiop_batches", Holds::Carried),
+    ("tasks", Holds::Carried),
+    ("team_events", Holds::Carried),
+    ("template_examples", Holds::Carried),
+    ("trash", Holds::Carried),
+    ("work_context", Holds::Carried),
+    ("work_template_versions", Holds::Carried),
+    ("work_templates", Holds::Carried),
+    ("attachment_texts", Holds::Own),
+    ("carry_log", Holds::Own),
+    ("gone_documents", Holds::Own),
+    // The main computer's answers: it never maps.
+    ("mutation_receipts", Holds::Own),
+    ("offline_outbox", Holds::Own),
+    ("phone_operations", Holds::Own),
+    ("saiop_auto_failures", Holds::Own),
+    ("current_pointer", Holds::Rebuilt),
+    ("id_high", Holds::Rebuilt),
+    ("item_ident", Holds::Rebuilt),
+    ("offline_frame_journal", Holds::Frame),
+    ("offline_id_map", Holds::Frame),
+    ("offline_watermark", Holds::Frame),
+    ("offline_conflicts", Holds::Envelope),
+    ("ai_config", Holds::Nothing),
+    ("ai_consent", Holds::Nothing),
+    ("applied_mutations", Holds::Nothing),
+    ("client_cache", Holds::Nothing),
+    ("draft_conferences", Holds::Nothing),
+    ("host_generation", Holds::Nothing),
+    ("ident_alias", Holds::Nothing),
+    ("ident_meta", Holds::Nothing),
+    ("ident_state", Holds::Nothing),
+    ("import_receipts", Holds::Nothing),
+    ("intranet_config", Holds::Nothing),
+    ("mail_accounts", Holds::Nothing),
+    ("personal_templates", Holds::Nothing),
+    ("plan_import_log", Holds::Nothing),
+    ("renumber_notices", Holds::Nothing),
+    ("saiop_settings", Holds::Nothing),
+    ("trash_settings", Holds::Nothing),
+    ("work_template_settings", Holds::Nothing),
+];
+
+fn holds(table: &str) -> Option<Holds> {
+    TABLES.iter().find(|(t, _)| *t == table).map(|(_, h)| *h)
+}
+
+/// The tables of [`Holds::Frame`] that
+/// [`frame_stores_hold_this_library_s_numbers`] checks.
+const FRAME_CHECKED: &[&str] = &[
+    "offline_frame_journal",
     "offline_id_map",
     "offline_watermark",
-    "phone_operations",
-    "saiop_auto_failures",
 ];
+
+/// After a mapped adoption, no table kept here holds a copy's number of a
+/// mapped kind: the translation of a team queue is empty (frozen rule 15:
+/// a folder library never keeps one), the journal of the copy keeps only
+/// the kinds numbered as the copy, and each mark is this library's highest
+/// number of its kind.
+fn frame_stores_hold_this_library_s_numbers(store: &Store) {
+    use crate::idmap::CreatedId;
+    assert!(mapped(store), "a mapped library");
+    let conn = &store.conn;
+    let translations: i64 = conn
+        .query_row("SELECT count(*) FROM offline_id_map", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(translations, 0, "offline_id_map is empty");
+    let journal: Vec<(String, Vec<u8>)> = conn
+        .prepare("SELECT uid,created FROM offline_frame_journal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    for (uid, blob) in journal {
+        let created: Vec<CreatedId> =
+            serde_json::from_slice(&crate::protection::unseal(&blob).unwrap()).unwrap();
+        for c in created {
+            let kind = crate::idents::kind_of(c.kind);
+            assert!(
+                !crate::mapper::addressed(kind),
+                "offline_frame_journal keeps the copy's {kind} {} (change {uid})",
+                c.id
+            );
+        }
+    }
+    let marks: Vec<(String, i64)> = conn
+        .prepare("SELECT kind,max_id FROM offline_watermark")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(!marks.is_empty());
+    for (kind, mark) in marks {
+        let table = crate::idents::KINDS
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .unwrap_or_else(|| panic!("mark of {kind}"))
+            .1;
+        let here: i64 = conn
+            .query_row(
+                &format!("SELECT coalesce(max(id),0) FROM {table}"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mark, here, "the mark of {kind} is this library's");
+    }
+}
+
+/// revisao-f3-1a-ii #2 (b). On the crossed pair (each device holds the
+/// other's record at a number the copy gives to its own), the stores kept
+/// across the adoption hold this library's numbers only.
+///
+/// Red on `bcafb9b`: the journal of the adopted copy keeps the copy's
+/// numbers of the records it created (finding 1).
+#[test]
+fn f3_1a_no_store_kept_here_holds_a_copy_s_number() {
+    let (_dir, a, b, _held) = crossed_manual();
+    for store in [&a, &b] {
+        frame_stores_hold_this_library_s_numbers(store);
+    }
+    let frames: Vec<&str> = TABLES
+        .iter()
+        .filter(|(_, h)| *h == Holds::Frame)
+        .map(|(t, _)| *t)
+        .collect();
+    assert_eq!(frames, FRAME_CHECKED, "every kept store is checked");
+}
 
 /// The copy `store` would publish, with every place above filled: the
 /// sources of a draft, an analysis (citations and facts too) and a
@@ -1267,7 +1429,7 @@ fn every_place_follows(set: &'static [&'static str]) {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    for table in tables {
+    for table in &tables {
         let names: Vec<String> = a
             .conn
             .prepare(&format!(
@@ -1288,16 +1450,77 @@ fn every_place_follows(set: &'static [&'static str]) {
         .iter()
         .filter(|c| {
             let table = c.split('.').next().unwrap();
-            !LOCAL.contains(&table) && !COLUMNS.iter().any(|(col, _)| col == c)
+            let local = matches!(
+                holds(table),
+                Some(Holds::Own | Holds::Rebuilt | Holds::Frame)
+            );
+            !local && !COLUMNS.iter().any(|(col, _)| col == c)
         })
         .collect();
     assert!(unlisted.is_empty(), "columns of no place: {unlisted:?}");
+    // Every table is named, numbers inside a payload included (a table
+    // left out fails); a column of a place is one of a table the copy
+    // carries.
+    let unnamed: Vec<&String> = tables.iter().filter(|t| holds(t).is_none()).collect();
+    assert!(
+        unnamed.is_empty(),
+        "tables of no kind in TABLES: {unnamed:?}"
+    );
+    for (column, _) in COLUMNS {
+        let table = column.split('.').next().unwrap();
+        assert_eq!(holds(table), Some(Holds::Carried), "{column}");
+    }
     for (_, place) in COLUMNS {
         assert!(
             PLACES.iter().any(|(p, _)| p == place),
             "{place} is not a place"
         );
     }
+}
+
+/// revisao-f3-1a-ii #2 (c), deviation 2 of F3.1a-ii: a reference to an
+/// item the copy no longer has (a generation whose version and draft were
+/// purged) names no item here: 0, or none, in the row and in its record,
+/// and the row stays. The copy's numbers of the lost items are taken here
+/// by other items (after an epoch change every item gets a number above
+/// the floor): they are never given to the reference.
+///
+/// Guard on `bcafb9b`: `mapper::apply` already gives 0 to `Site::One` and
+/// none to `Site::Maybe`; no test ran it.
+#[test]
+fn f3_1a_a_reference_to_an_item_the_copy_lost_names_nothing_here() {
+    let _kinds = kinds(RECORDS);
+    let (_dir, _path, mut a, _b) = two();
+    crate::f1_inventory::fill(&mut a, "a");
+    let mut copy = full_copy(&a);
+    let tx = a.conn.unchecked_transaction().unwrap();
+    let floor = crate::idents::id_floor(&tx).unwrap();
+    // The first numbers above the floor: no row of the copy has them, and
+    // the mapping gives them to the copy's first version and draft here.
+    let (capture, draft) = (floor["captures"] + 1, floor["drafts"] + 1);
+    assert!(copy.captures.iter().all(|c| c.id != capture));
+    assert!(copy.drafts.iter().all(|d| d.id != draft));
+    let rows = copy.templates.generations.len();
+    let g = &mut copy.templates.generations[0];
+    (g.capture_id, g.record.capture_id) = (capture, capture);
+    (g.draft_id, g.record.draft_id) = (Some(draft), Some(draft));
+    let mapping = crate::mapper::plan(&tx, &copy, &floor).unwrap();
+    let mapped = crate::mapper::apply(&copy, &mapping);
+    drop(tx);
+    assert!(
+        mapped.captures.iter().any(|c| c.id == capture)
+            && mapped.drafts.iter().any(|d| d.id == draft),
+        "the lost numbers name other items here"
+    );
+    assert_eq!(mapped.templates.generations.len(), rows, "the row stays");
+    let g = &mapped.templates.generations[0];
+    assert_eq!((g.capture_id, g.record.capture_id), (0, 0));
+    assert_eq!((g.draft_id, g.record.draft_id), (None, None));
+    let document = copy.templates.generations[0].document_id;
+    assert!(
+        mapped.documents.iter().any(|d| d.id == g.document_id) && g.document_id != document,
+        "the document it still names follows"
+    );
 }
 
 /// Frozen rules 23 and v2 §2.8 for the record family: every place of a
