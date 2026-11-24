@@ -1152,7 +1152,36 @@ impl Store {
         )?;
         Ok(format!("identity:{}", hex(&hash)))
     }
+    /// What the receipt of a plan on an existing record keeps of it (F3.1b1):
+    /// its identity with the epoch of identities it holds in, then the
+    /// stable identity above (`ident:<epoch>:<ident>|request:…`).
+    fn plan_target(&self, id: i64) -> Result<String> {
+        let stable = self.identity_of_document(id)?;
+        let epoch = crate::idents::origin(&self.conn)?.2.unwrap_or_default();
+        Ok(match crate::idents::ident_of(&self.conn, "document", id)? {
+            Some(ident) => format!("ident:{epoch}:{ident}|{stable}"),
+            None => stable,
+        })
+    }
+    /// The record of a receipt: by its identity; when no record holds it,
+    /// in the same epoch the record is gone (never another one by its
+    /// request); in another epoch (the identities were drawn again) it is
+    /// taken up by the stable identity, as before F3.
     fn resolve_target(&self, target: &str) -> Result<Option<i64>> {
+        if let Some((named, stable)) = target
+            .strip_prefix("ident:")
+            .and_then(|rest| rest.split_once('|'))
+        {
+            use crate::idrefs::IdentFrame;
+            let (epoch, ident) = named.split_once(':').unwrap_or_default();
+            if let Some(row) = self.conn.row_of(crate::idmap::IdKind::Document, ident)? {
+                return Ok(Some(row));
+            }
+            if crate::idents::origin(&self.conn)?.2.unwrap_or_default() == epoch {
+                return Ok(None);
+            }
+            return self.resolve_target(stable);
+        }
         if let Some(request) = target.strip_prefix("request:") {
             return self.document_of_request(request);
         }
@@ -1667,7 +1696,7 @@ impl Store {
         }
         let mut target = String::new();
         if run.is_none() && plan.document_number.is_some() {
-            target = self.identity_of_document(self.existing_document_to_use(plan)?)?;
+            target = self.plan_target(self.existing_document_to_use(plan)?)?;
         }
         let state = self.plan_state(plan, &checked, run.as_ref(), false)?;
         if state.nothing_pending() {
@@ -4304,7 +4333,8 @@ mod tests {
             .conn
             .execute_batch(
                 "UPDATE item_ident SET ident=lower(hex(randomblob(16)));
-                 UPDATE ident_state SET epoch=lower(hex(randomblob(16)));",
+                 INSERT OR REPLACE INTO ident_state(id,origin,lineage,epoch)
+                 VALUES(1,'adopted','pasta',lower(hex(randomblob(16))));",
             )
             .unwrap();
         store.import_plan(&input, false).expect("resumed on X");
