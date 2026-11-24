@@ -427,7 +427,7 @@ fn f3_0a2_legacy_queue_entry_is_marked_legacy_in_the_journal() {
 /// The main computer's effect commits and it falls before the rekey (a
 /// crash: the connection drops with no answer), then it opens again. The
 /// retry completes the rekey from the durable log, never executes again,
-/// and the note resolves to X by C's identity.
+/// and the note resolves to X by C's identity (bound to X's, F3.0b).
 ///
 /// Red on `ea82162`: the drain sends `idents: Vec::new()`
 /// (`intranet.rs` ~4480), so X gets an identity of the main computer's
@@ -473,7 +473,15 @@ fn f3_0a2_host_crash_after_effect_before_rekey() {
         .map(|d| d.id)
         .collect();
     assert_eq!(on_host.len(), 1, "X is unique");
-    assert_eq!(ident(&t.host, "document", on_host[0]), mine, "C's identity");
+    // F3.0b: C is bound to the identity the insert gave X, never put in
+    // its place (a Sync in between may have published it).
+    let there = ident(&t.host, "document", on_host[0]);
+    assert_ne!(there, mine);
+    assert_eq!(
+        crate::idents::alias_of(&t.host.conn, "document", &mine).unwrap(),
+        Some(there),
+        "C bound to X's identity"
+    );
     assert_eq!(t.host.load_document(on_host[0]).unwrap().note, "Nota em X");
     assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
     assert!(first.is_err(), "the main computer fell before the rekey");
@@ -725,7 +733,12 @@ fn f3_0a2r_failure_after_the_effect_is_not_a_refusal() {
         .map(|d| d.id)
         .collect();
     assert_eq!(on_host.len(), 1, "X is unique");
-    assert_eq!(ident(&t.host, "document", on_host[0]), mine);
+    // F3.0b: C bound to the identity X kept there, never in its place.
+    let there = ident(&t.host, "document", on_host[0]);
+    assert_eq!(
+        crate::idents::alias_of(&t.host.conn, "document", &mine).unwrap(),
+        Some(there)
+    );
     assert_eq!(note_of(&t.host, on_host[0]), "Nota em X");
     assert_eq!(t.cards(), 0, "{:?}", t.client.list_sync_conflicts());
     assert_eq!(count(&t.host, "SELECT count(*) FROM carry_log"), 0);
@@ -1239,7 +1252,10 @@ fn f3_0b_completion_after_a_fall_keeps_the_published_identity() {
     t.online();
     hooks::CRASH_BEFORE_REKEY.arm(&t.db);
     assert!(t.client.sync_from_host(false).is_err());
-    assert!(!hooks::CRASH_BEFORE_REKEY.disarm(&t.db), "fell at the rekey");
+    assert!(
+        !hooks::CRASH_BEFORE_REKEY.disarm(&t.db),
+        "fell at the rekey"
+    );
     t.online();
     let mut b = t.join("SERVIDOR-B");
     let on_host = t

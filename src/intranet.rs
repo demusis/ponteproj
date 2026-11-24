@@ -1280,6 +1280,12 @@ pub enum RpcResponse {
     /// again.
     AlreadyApplied {
         revision: i64,
+        /// The bindings the main computer holds for the identities the
+        /// request carried (its completion after a fall bound them to the
+        /// identities the rows kept there): the sender keeps them, so what
+        /// depends here on its own identities follows those rows.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bound: Vec<crate::idents::Bound>,
     },
     Mutated {
         revision: i64,
@@ -4520,7 +4526,8 @@ impl Store {
                             pushed_offline = true;
                             continue;
                         }
-                        Ok(RpcResponse::AlreadyApplied { .. }) => {
+                        Ok(RpcResponse::AlreadyApplied { bound, .. }) => {
+                            crate::idents::keep_bound(&self.conn, &bound)?;
                             let learned = ids.learn(&entry.created, None);
                             self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
                             // What its completion gave (identities) is in
@@ -4696,7 +4703,8 @@ impl Store {
                         host_frame = Some(snapshot);
                         pushed_offline = true;
                     }
-                    Ok(RpcResponse::AlreadyApplied { .. }) => {
+                    Ok(RpcResponse::AlreadyApplied { bound, .. }) => {
+                        crate::idents::keep_bound(&self.conn, &bound)?;
                         // It is there already (its answer was lost, and the
                         // main computer no longer keeps it): the entry goes,
                         // never sent again. What it created is known there
@@ -12985,6 +12993,7 @@ fn known_mutation(
     if store.mutation_was_applied(uid)? {
         return Ok(Some(RpcResponse::AlreadyApplied {
             revision: store.cabinet_revision()?,
+            bound: crate::idents::bound_to(&store.conn, carried)?,
         }));
     }
     Ok(None)

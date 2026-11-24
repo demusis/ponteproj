@@ -770,10 +770,13 @@ pub(crate) fn carry_pending(conn: &Connection, uid: &str) -> Result<bool> {
 
 /// Completes, from the durable log alone (the change and its answer are
 /// gone with the crash), the rekey of `uid`, then forgets its log: a
-/// carried identity goes to the one row of its kind the change inserted,
-/// when that row still holds the identity it got then and no row holds the
-/// carried one. A kind with more rows, or more carried identities, is left
-/// as it is: what depends on it there becomes a card, never another row.
+/// carried identity is bound to the identity of the one row of its kind the
+/// change inserted, never replacing it (a `Sync` served in between may have
+/// published it), as a late receipt binds it ([`bind_inserted`]): when that
+/// row still holds the identity it got then, no row holds the carried one
+/// and the carried one is bound to nothing yet. A kind with more rows, or
+/// more carried identities, is left as it is: what depends on it there
+/// becomes a card, never another row.
 pub(crate) fn complete_carry(conn: &Connection, uid: &str) -> Result<()> {
     let rows: Vec<(String, i64, String)> = conn
         .prepare("SELECT kind,row_id,ident FROM carry_log WHERE uid=?1")?
@@ -801,10 +804,12 @@ pub(crate) fn complete_carry(conn: &Connection, uid: &str) -> Result<()> {
             [ident],
             |r| r.get(0),
         )?;
-        if !held {
+        let (row, there) = (made[0].1, &made[0].2);
+        if !held && ident_of(conn, kind, row)?.as_deref() == Some(there.as_str()) {
+            ensure_aliases(conn)?;
             conn.execute(
-                "UPDATE item_ident SET ident=?1 WHERE kind=?2 AND row_id=?3 AND ident=?4",
-                params![ident, kind, made[0].1, made[0].2],
+                "INSERT OR IGNORE INTO ident_alias(kind,alias,ident) VALUES(?1,?2,?3)",
+                params![kind, ident, there],
             )?;
         }
     }
@@ -901,8 +906,37 @@ pub(crate) fn learn_bindings(
     if bindings.is_empty() {
         return Ok(());
     }
+    let bound: Vec<Bound> = bindings
+        .into_iter()
+        .map(|(kind, _, alias, there)| Bound(kind.into(), alias, there))
+        .collect();
+    keep_bound(conn, &bound)
+}
+
+/// One binding of the main computer: (kind, carried identity, identity of
+/// the row there).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bound(pub String, pub String, pub String);
+
+/// The bindings this main computer holds for the identities `carried`.
+pub(crate) fn bound_to(conn: &Connection, carried: &[SlotIdent]) -> Result<Vec<Bound>> {
+    let mut out = Vec::new();
+    for slot in carried {
+        if let Some(there) = alias_of(conn, &slot.kind, &slot.ident)? {
+            out.push(Bound(slot.kind.clone(), slot.ident.clone(), there));
+        }
+    }
+    Ok(out)
+}
+
+/// Keeps, on the sender, the bindings the main computer named (the first
+/// binding stays).
+pub(crate) fn keep_bound(conn: &Connection, bound: &[Bound]) -> Result<()> {
+    if bound.is_empty() {
+        return Ok(());
+    }
     ensure_aliases(conn)?;
-    for (kind, _, alias, there) in bindings {
+    for Bound(kind, alias, there) in bound {
         conn.execute(
             "INSERT OR IGNORE INTO ident_alias(kind,alias,ident) VALUES(?1,?2,?3)",
             params![kind, alias, there],
