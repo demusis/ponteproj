@@ -171,6 +171,8 @@ pub mod draft_tools;
 pub mod trash;
 
 pub mod intranet;
+/// A file the phone app took for a record: proved, or kept in a card.
+pub mod phoneops;
 
 pub mod saiop;
 

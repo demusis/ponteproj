@@ -727,13 +727,37 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // The record the app took the file for, proved here and now, or a
+        // card that keeps the file (frozen rules 19, 20 and 23). A recovery
+        // of a card refused again writes nothing: its card stays.
+        let ident = request.document_ident;
+        let Some(document_id) =
+            crate::phoneops::target(&tx, request.document_id, ident, request.library_space)?
+        else {
+            let message = crate::phoneops::refusal_message(&tx, ident)?.to_owned();
+            if crate::phoneops::recovering(&tx, operation)? {
+                anyhow::bail!("{message} Nada foi anexado; escolha outro registro.");
+            }
+            let card_id = crate::phoneops::park(
+                &tx,
+                &actor,
+                request.document_id,
+                ident,
+                request.name,
+                request.description,
+                request.data,
+                operation,
+            )?;
+            tx.commit()?;
+            return Err(TargetGone { card_id, message }.into());
+        };
         // Queued inside this transaction: the entry carries the identity of
         // the attachment it inserts. A rollback closes the log again.
         if queue_actor.is_some() {
             crate::idents::start_log(&tx)?;
         }
         if let Some(number) = request.expected_number {
-            if Store::live_document_number(&tx, request.document_id)?
+            if Store::live_document_number(&tx, document_id)?
                 .as_deref()
                 .map(str::trim)
                 != Some(number.trim())
@@ -744,32 +768,36 @@ impl Store {
         let id = insert_attachment(
             &tx,
             &actor,
-            Owner::Document(request.document_id),
+            Owner::Document(document_id),
             request.name,
             request.description,
             request.data,
             kind,
         )?;
-        if let Some(queue_actor) = &queue_actor {
-            crate::intranet::queue_attachment_locally(
+        let queued = match &queue_actor {
+            Some(queue_actor) => Some(crate::intranet::queue_attachment_locally(
                 &tx,
                 queue_actor,
-                request.document_id,
+                document_id,
                 request.name,
                 request.description,
                 request.data,
                 id,
-            )?;
-        }
+            )?),
+            None => None,
+        };
         if let Some(operation) = operation {
             crate::storage::record_operation(
                 &tx,
                 operation,
                 "attach",
-                request.document_id,
+                document_id,
                 Some(id),
                 Some(request.data.len() as i64),
             )?;
+            if let Some(uid) = &queued {
+                crate::phoneops::bind_outbox(&tx, operation, uid, ident)?;
+            }
         }
         if queue_actor.is_some() {
             crate::idents::stop_log(&tx)?;
@@ -1011,7 +1039,32 @@ pub struct AttachRequest<'a> {
     pub operation_id: Option<&'a str>,
     /// The number the person saw when choosing the document.
     pub expected_number: Option<&'a str>,
+    /// The identity of the record the app holds the file for, and the
+    /// space of the numbers it read it in (F3.1b2): the file goes to that
+    /// record or, refused, to a card ([`TargetGone`]).
+    pub document_ident: Option<&'a str>,
+    pub library_space: Option<&'a str>,
 }
+
+/// The record a file was taken for is not provably here any more (deleted,
+/// in the Lixeira, or a library replaced since): nothing was attached, and
+/// the file is kept in card `card_id` for the person to recover.
+#[derive(Debug)]
+pub struct TargetGone {
+    pub card_id: i64,
+    pub message: String,
+}
+
+impl std::fmt::Display for TargetGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} O arquivo não foi anexado: ficou guardado neste aparelho para você criar um registro com ele, anexá-lo a outro registro ou descartá-lo.",
+            self.message
+        )
+    }
+}
+impl std::error::Error for TargetGone {}
 
 /// The document chosen for an attachment is no longer the one the person saw
 /// (it was trashed, deleted or has another number): nothing was written.

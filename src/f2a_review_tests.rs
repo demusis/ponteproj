@@ -314,6 +314,8 @@ fn f2a_03_no_insert_log_survives_a_public_write() {
             data: b"conteudo do anexo do celular",
             operation_id: None,
             expected_number: number,
+            document_ident: None,
+            library_space: None,
         };
     let leaked: &'static str = Box::leak(number.into_boxed_str());
     store

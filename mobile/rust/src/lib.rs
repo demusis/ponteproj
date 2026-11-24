@@ -35,11 +35,16 @@ fn with_store<T>(work: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
 }
 
 /// The answer for an error: `{"ok":false,"error":"..."}`, plus `"code"` for the
-/// errors the app tells apart (today `target_changed`).
+/// errors the app tells apart: `target_changed`, and `target_gone` with the
+/// `card_id` that keeps the refused file (F3.1b2).
 fn error_answer(error: &anyhow::Error) -> Value {
     let mut value = json!({"ok": false, "error": format!("{error:#}")});
     if error.downcast_ref::<ponteproj::attachments::TargetChanged>().is_some() {
         value["code"] = json!("target_changed");
+    }
+    if let Some(gone) = error.downcast_ref::<ponteproj::attachments::TargetGone>() {
+        value["code"] = json!("target_gone");
+        value["card_id"] = json!(gone.card_id);
     }
     value
 }
@@ -610,6 +615,7 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_getDocument<'local
                 "tasks": tasks,
                 "categories": store.document_categories(document_id)?,
                 "categories_version": work_context_version(store, document_id),
+                "proof": attach_target(store, document_id)?,
             }))
         })
     })
@@ -1761,6 +1767,10 @@ fn optional_text(input: &Value, key: &str) -> Option<String> {
 /// - `expected_number`: the number the person saw when choosing the document;
 ///   if the document is gone, in the trash or has another number nothing is
 ///   written and the error carries `code: target_changed`.
+/// - `document_ident` and `library_space` (F3.1b2, from [`attach_target`]): the
+///   file goes to the record holding that identity in that space; otherwise
+///   nothing is attached, the file is kept in a card and the error carries
+///   `code: target_gone` with its `card_id` (also on a repeat).
 fn attach_file_with(
     store: &mut Store,
     document_id: i64,
@@ -1778,6 +1788,10 @@ fn attach_file_with(
                 done.kind == "attach",
                 "Este identificador de operação já foi usado por outra operação."
             );
+            if let (None, Some(card_id)) = (done.attachment_id, done.card_id) {
+                let message = store.refusal_message(done.document_ident.as_deref())?.to_owned();
+                return Err(ponteproj::attachments::TargetGone { card_id, message }.into());
+            }
             return Ok(json!({
                 "attachment_id": done.attachment_id,
                 "name": name.trim(),
@@ -1785,8 +1799,10 @@ fn attach_file_with(
             }));
         }
     }
+    let ident = optional_text(&options, "document_ident");
+    let space = optional_text(&options, "library_space");
     let bytes = read_attachment_file(path, name)?;
-    let id = if operation.is_none() && expected.is_none() {
+    let id = if operation.is_none() && expected.is_none() && ident.is_none() && space.is_none() {
         store.add_attachment(
             ponteproj::attachments::Owner::Document(document_id),
             name,
@@ -1801,6 +1817,8 @@ fn attach_file_with(
             data: &bytes,
             operation_id: operation.as_deref(),
             expected_number: expected.as_deref(),
+            document_ident: ident.as_deref(),
+            library_space: space.as_deref(),
         })?
     };
     Ok(json!({"attachment_id": id, "name": name.trim(), "size": bytes.len()}))
@@ -1832,8 +1850,6 @@ fn create_photo_record(store: &mut Store, input: &mut Value, image_path: &str) -
 /// one transaction (nothing at all if the file cannot be stored), so there is never
 /// a record without the file the person meant to keep.
 fn create_record(store: &mut Store, input: &Value, file_path: &str) -> Result<Value> {
-    use ponteproj::attachments::{validate_description, validate_file};
-    use ponteproj::record_import::{Created, NewAttachment, NewRecord};
     let str_of = |key: &str| input[key].as_str().unwrap_or("").trim().to_owned();
     // The app's idempotency key: a committed operation creates nothing again.
     let operation = optional_text(input, "operation_id");
@@ -1849,18 +1865,28 @@ fn create_record(store: &mut Store, input: &Value, file_path: &str) -> Result<Va
             return Ok(json!({ "document_id": done.document_id }));
         }
     }
-    let title = str_of("title");
-    let mut text = str_of("text");
     let file = if file_path.is_empty() {
         None
     } else {
         let name = str_of("file_name");
-        let description = str_of("file_description");
         let bytes = read_attachment_file(file_path, &name)?;
-        validate_file(&name, &bytes)?;
-        validate_description(&description)?;
-        Some((name, description, bytes))
+        Some((name, str_of("file_description"), bytes))
     };
+    create_record_with(store, input, file)
+}
+
+/// [`create_record`] with the file (name, description, bytes) in hand.
+fn create_record_with(store: &mut Store, input: &Value, file: Option<(String, String, Vec<u8>)>) -> Result<Value> {
+    use ponteproj::attachments::{validate_description, validate_file};
+    use ponteproj::record_import::{Created, NewAttachment, NewRecord};
+    let str_of = |key: &str| input[key].as_str().unwrap_or("").trim().to_owned();
+    let operation = optional_text(input, "operation_id");
+    let title = str_of("title");
+    let mut text = str_of("text");
+    if let Some((name, description, bytes)) = &file {
+        validate_file(name, bytes)?;
+        validate_description(description)?;
+    }
     anyhow::ensure!(
         file.is_some() || !text.is_empty(),
         "Não há nada para guardar: escreva um texto ou escolha um arquivo."
@@ -1968,13 +1994,24 @@ fn operation_status(store: &Store, input: &str) -> Result<Value> {
             if let Some(kind) = kind {
                 answer["kind"] = json!(kind);
             }
+            if done.kind == "attach" {
+                answer["outcome"] = json!(done.outcome);
+                if let Some(card) = done.card_id {
+                    answer["card_id"] = json!(card);
+                }
+                if done.outcome == "refused" {
+                    answer["message"] = json!(store.refusal_message(done.document_ident.as_deref())?);
+                }
+            }
             answer
         }
         None => json!({"done": false}),
     })
 }
 
-/// `{"operation_id":"<uuid>"}` -> `{ok:true, done:bool[, document_id:N, kind:"record"|"attach"]}`:
+/// `{"operation_id":"<uuid>"}` -> `{ok:true, done:bool[, document_id:N, kind:"record"|"attach"]}`,
+/// and for a file attached, its `outcome` (`accepted`, `pending` until an
+/// exchange, `refused` with its `card_id` and `message`):
 /// after a process death, the app asks whether the save it had started was
 /// committed, and whether it made a record or attached a file.
 #[no_mangle]
@@ -1990,37 +2027,134 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_operationStatus<'l
 }
 
 // ---------------------------------------------------------------------------
-// F3.1b2: a photo or file the app holds for a record (`PendingAttach`).
+// F3.1b2: a photo or file the app holds for a record (`PendingAttach`,
+// `desenho-f3-v3-adendo.md` §10): it goes to that record, proved by its
+// identity and the library space, or it is kept in a card that the recovery
+// screen offers to make a record of, to attach to another record, or to drop.
 
 /// The proof of record `document_id` the app keeps with a photo taken for
-/// it: `{ident, library_space}`.
-#[cfg(test)]
-fn attach_target(_store: &Store, _document_id: i64) -> Result<Value> {
-    Ok(json!({"ident": "", "library_space": ""}))
+/// it: `{ident, library_space}` (both empty when there is none).
+fn attach_target(store: &Store, document_id: i64) -> Result<Value> {
+    let (ident, space) = store.attach_proof(document_id)?;
+    Ok(json!({"ident": ident, "library_space": space}))
 }
 
-/// The attachments refused into a card and still waiting for the person.
-#[cfg(test)]
-fn refused_attachments(_store: &Store) -> Result<Value> {
-    anyhow::bail!("F3.1b2: ainda não implementado")
+/// The attachments refused into a card and still waiting for the person:
+/// `{items:[{operation_id, card_id, name, size, message}]}`, oldest first.
+fn refused_attachments(store: &Store) -> Result<Value> {
+    let items = store
+        .refused_attachments()?
+        .into_iter()
+        .map(|r| {
+            json!({"operation_id": r.operation_id, "card_id": r.card_id, "name": r.name,
+                   "size": r.size, "message": r.message})
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "items": items }))
 }
 
-/// "Criar registro com esta foto".
-#[cfg(test)]
-fn create_record_from_card(_store: &mut Store, _card_id: i64, _input: &Value) -> Result<Value> {
-    anyhow::bail!("F3.1b2: ainda não implementado")
+/// The operation id a recovery action must carry (adendo §10 rule 6: it is
+/// persisted by the app before the call, and makes the call idempotent).
+fn recovery_operation(input: &Value) -> Result<String> {
+    optional_text(input, "operation_id")
+        .context("Falta o identificador da operação de recuperação.")
 }
 
-/// "Anexar a outro registro…".
-#[cfg(test)]
-fn attach_from_card(_store: &mut Store, _card_id: i64, _document_id: i64, _options: &str) -> Result<Value> {
-    anyhow::bail!("F3.1b2: ainda não implementado")
+/// "Criar registro com esta foto": a new record (`fields` as for
+/// `createRecord`) holding the file of card `card_id`; the card is resolved
+/// in the record's transaction. A repeat of the operation creates nothing.
+fn create_record_from_card(store: &mut Store, card_id: i64, input: &Value) -> Result<Value> {
+    let operation = recovery_operation(input)?;
+    if store.operation_record(&operation)?.is_some() {
+        return create_record(store, input, "");
+    }
+    let file = store.card_file(card_id)?;
+    store.recover_card(card_id, &operation)?;
+    create_record_with(store, input, Some((file.name, file.description, file.bytes)))
 }
 
-/// "Descartar".
-#[cfg(test)]
-fn discard_card(_store: &mut Store, _card_id: i64) -> Result<Value> {
-    anyhow::bail!("F3.1b2: ainda não implementado")
+/// "Anexar a outro registro…": the file of card `card_id` to record
+/// `document_id`, chosen explicitly and sent with its own proof (`options`
+/// as for `attachFile`); the card is resolved in the attachment's
+/// transaction. A repeat attaches nothing; a record that is gone too
+/// writes nothing and leaves the card.
+fn attach_from_card(store: &mut Store, card_id: i64, document_id: i64, options: &str) -> Result<Value> {
+    let parsed: Value = serde_json::from_str(options).unwrap_or(Value::Null);
+    let operation = recovery_operation(&parsed)?;
+    if let Some(done) = store.operation_record(&operation)? {
+        anyhow::ensure!(
+            done.kind == "attach" && done.attachment_id.is_some(),
+            "Este identificador de operação já foi usado por outra operação."
+        );
+        return Ok(json!({"attachment_id": done.attachment_id, "size": done.size}));
+    }
+    let file = store.card_file(card_id)?;
+    store.recover_card(card_id, &operation)?;
+    let id = store.attach_to_document(&ponteproj::attachments::AttachRequest {
+        document_id,
+        name: &file.name,
+        description: &file.description,
+        data: &file.bytes,
+        operation_id: Some(&operation),
+        expected_number: optional_text(&parsed, "expected_number").as_deref(),
+        document_ident: optional_text(&parsed, "document_ident").as_deref(),
+        library_space: optional_text(&parsed, "library_space").as_deref(),
+    })?;
+    Ok(json!({"attachment_id": id, "size": file.bytes.len()}))
+}
+
+/// "Descartar": card `card_id` is resolved and its file let go.
+fn discard_card(store: &mut Store, card_id: i64) -> Result<Value> {
+    store.discard_card(card_id)?;
+    Ok(json!({}))
+}
+
+/// The refused files waiting for the person (see [`refused_attachments`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_refusedAttachments<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| with_store(|store| refused_attachments(store)))
+}
+
+/// "Criar registro com esta foto" (see [`create_record_from_card`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createRecordFromCard<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    card_id: jlong,
+    fields_json: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = json_arg(env, &fields_json)?;
+        with_store(|store| create_record_from_card(store, card_id, &input))
+    })
+}
+
+/// "Anexar a outro registro…" (see [`attach_from_card`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_attachFromCard<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    card_id: jlong,
+    document_id: jlong,
+    options_json: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let options = text(env, &options_json)?;
+        with_store(|store| attach_from_card(store, card_id, document_id, &options))
+    })
+}
+
+/// "Descartar" (see [`discard_card`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_discardCard<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    card_id: jlong,
+) -> jstring {
+    answer(&mut env, |_| with_store(|store| discard_card(store, card_id)))
 }
 
 // ---------------------------------------------------------------------------
@@ -4506,7 +4640,7 @@ mod tests {
         let path = work_file(&dir.0, "w.bin", b"conteudo anexado");
         let options = json!({"operation_id": OP_A}).to_string();
         let first = attach_file_with(&mut store, document, &path, "oficio.txt", "", &options).unwrap();
-        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach"}));
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach", "outcome": "pending"}));
         let queued = store.list_offline_outbox().unwrap().len();
         let events = store.list_team_events(500).unwrap().len();
         std::fs::remove_file(&path).unwrap();
@@ -4533,7 +4667,7 @@ mod tests {
         let made = create_record(&mut store, &with_operation(fields("Aviso", "texto"), OP_B), "").unwrap();
         let record = made["document_id"].as_i64().unwrap();
         // The exact answers of `operationStatus`.
-        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach"}));
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach", "outcome": "pending"}));
         assert_eq!(status(&store, OP_B), json!({"done": true, "document_id": record, "kind": "record"}));
         assert_eq!(status(&store, "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0aff"), json!({"done": false}));
         // `createRecord` with the id of the attach: an error, nothing written
@@ -4545,7 +4679,7 @@ mod tests {
             assert!(err.to_string().contains("outra operação"), "{kind}: {err}");
         }
         assert_eq!((traces(&store), live(&store), attachments_of(&store, document)), before);
-        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach"}));
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach", "outcome": "pending"}));
     }
 
     #[test]
@@ -7094,6 +7228,9 @@ dia 2026-12-26 Recesso do celular
             a.list_documents("").unwrap().iter().all(|d| d.title != "Registro R"),
             "R does not come back"
         );
-        assert_eq!(status(&phone, OP_F)["outcome"], json!("accepted"));
+        // A record made from the card is an operation of its own; only the
+        // file for a record carries an outcome.
+        let st = status(&phone, OP_F);
+        assert_eq!((st["kind"].clone(), st.get("outcome")), (json!("record"), None), "{st}");
     }
 }

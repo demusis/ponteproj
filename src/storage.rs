@@ -2190,6 +2190,13 @@ pub struct OperationRecord {
     pub attachment_id: Option<i64>,
     /// Its size in bytes.
     pub size: Option<i64>,
+    /// `accepted`, `pending` (queued, waiting for an exchange), `refused`
+    /// (its file kept in card `card_id`), or `recovered`/`discarded` after
+    /// the person dealt with that card (F3.1b2).
+    pub outcome: String,
+    pub card_id: Option<i64>,
+    /// The identity of the record the file was taken for.
+    pub document_ident: Option<String>,
 }
 
 /// Writes the row of a phone operation: the idempotency key of one action of
@@ -2210,7 +2217,7 @@ pub(crate) fn record_operation(
         "INSERT INTO phone_operations(operation_id,kind,document_id,attachment_id,size,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
         params![operation_id, kind, document_id, attachment_id, size, now()],
     )?;
-    Ok(())
+    crate::phoneops::recovered(conn, operation_id)
 }
 
 impl Store {
@@ -2224,7 +2231,7 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT kind,document_id,attachment_id,size FROM phone_operations WHERE operation_id=?1",
+                "SELECT kind,document_id,attachment_id,size,outcome,card_id,document_ident FROM phone_operations WHERE operation_id=?1",
                 [id],
                 |r| {
                     Ok(OperationRecord {
@@ -2232,6 +2239,9 @@ impl Store {
                         document_id: r.get(1)?,
                         attachment_id: r.get(2)?,
                         size: r.get(3)?,
+                        outcome: r.get(4)?,
+                        card_id: r.get(5)?,
+                        document_ident: r.get(6)?,
                     })
                 },
             )
@@ -2239,12 +2249,13 @@ impl Store {
     }
 
     /// Forgets the operations older than `days` days (the app only asks about
-    /// an operation after a process death, so a month is plenty).
+    /// an operation after a process death, so a month is plenty), except the
+    /// ones still waiting for an exchange or holding a refused file.
     pub fn prune_operations(&self, days: i64) -> Result<usize> {
         let cutoff = (Utc::now() - chrono::Duration::days(days))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
         Ok(self.conn.execute(
-            "DELETE FROM phone_operations WHERE created_at < ?1",
+            "DELETE FROM phone_operations WHERE created_at < ?1 AND outcome NOT IN ('pending','refused')",
             [cutoff],
         )?)
     }

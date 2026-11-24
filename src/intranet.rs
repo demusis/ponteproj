@@ -1050,7 +1050,7 @@ fn carded_uids(conn: &Connection) -> Result<std::collections::BTreeSet<String>> 
 /// Marks a card resolved (kept hidden, see [`SyncConflict::resolved_at`])
 /// and forgets the resolved cards beyond the limits; a card of an older
 /// version, without the change's `uid`, has nothing to remember and goes.
-fn retire_conflict(conn: &Connection, id: i64) -> Result<()> {
+pub(crate) fn retire_conflict(conn: &Connection, id: i64) -> Result<()> {
     let blob: Option<Vec<u8>> = conn
         .query_row(
             "SELECT payload FROM offline_conflicts WHERE id=?1",
@@ -1128,13 +1128,17 @@ fn archive_advice(error: &anyhow::Error, path: &std::path::Path) -> String {
 }
 
 /// Stores a conflict card, unless one for the same change (`mutation_uid`)
-/// is already here. Answers whether it was stored.
-fn insert_conflict(conn: &Connection, conflict: &SyncConflict) -> Result<bool> {
+/// is already here. Answers the card stored (`None`: one was here). A
+/// phone operation that queued the change is refused with that card, in
+/// this transaction (adendo §10 rule 4).
+pub(crate) fn insert_conflict(conn: &Connection, conflict: &SyncConflict) -> Result<Option<i64>> {
     if !conflict.mutation_uid.is_empty() {
-        let mut statement = conn.prepare("SELECT payload FROM offline_conflicts")?;
-        let rows = statement.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut statement = conn.prepare("SELECT id,payload FROM offline_conflicts")?;
+        let rows =
+            statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
         for row in rows {
-            let held: SyncConflict = match unseal(&row?)
+            let (id, blob) = row?;
+            let held: SyncConflict = match unseal(&blob)
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok())
             {
@@ -1142,7 +1146,10 @@ fn insert_conflict(conn: &Connection, conflict: &SyncConflict) -> Result<bool> {
                 None => continue,
             };
             if held.mutation_uid == conflict.mutation_uid {
-                return Ok(false);
+                if held.resolved_at.is_empty() {
+                    crate::phoneops::bind_card(conn, &conflict.mutation_uid, id)?;
+                }
+                return Ok(None);
             }
         }
     }
@@ -1150,7 +1157,9 @@ fn insert_conflict(conn: &Connection, conflict: &SyncConflict) -> Result<bool> {
         "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
         params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
     )?;
-    Ok(true)
+    let id = conn.last_insert_rowid();
+    crate::phoneops::bind_card(conn, &conflict.mutation_uid, id)?;
+    Ok(Some(id))
 }
 
 /// One field that differs between the host and the offline edit.
@@ -2115,6 +2124,7 @@ fn delete_sent_outboxes(conn: &Connection, sent: &[(i64, String)]) -> Result<()>
     for (id, uid) in sent {
         if queued.iter().any(|(q, q_uid)| q == id && q_uid == uid) {
             conn.execute("DELETE FROM offline_outbox WHERE id=?1", params![id])?;
+            crate::phoneops::bind_sent(conn, uid)?;
         }
     }
     Ok(())
@@ -2388,7 +2398,7 @@ pub(crate) fn queue_attachment_locally(
     description: &str,
     data: &[u8],
     attachment_id: i64,
-) -> Result<()> {
+) -> Result<String> {
     let frame = crate::idmap::ConnFrame(tx);
     let mutation = IntranetMutation::AddAttachment {
         owner_kind: crate::attachments::Owner::Document(document_id)
@@ -2405,6 +2415,7 @@ pub(crate) fn queue_attachment_locally(
     let idents =
         crate::idents::created_idents(tx, &mutation, &MutationReply::Id(attachment_id), &inserted)?;
     let refs = crate::idrefs::Refs::capture(tx, &mutation, None)?;
+    let uid = uuid::Uuid::new_v4().simple().to_string();
     insert_outbox_row(
         tx,
         &OutboxEntry {
@@ -2414,13 +2425,14 @@ pub(crate) fn queue_attachment_locally(
             label: mutation_label(&mutation),
             mutation,
             base: None,
-            uid: uuid::Uuid::new_v4().simple().to_string(),
+            uid: uid.clone(),
             created,
             attempted: false,
             idents,
             refs,
         },
-    )
+    )?;
+    Ok(uid)
 }
 
 /// The version number of an item inside a transaction; 0 when it never had one.
@@ -2566,6 +2578,7 @@ impl Store {
             )?;
         }
         crate::idmap::ensure_schema(&tx)?;
+        crate::phoneops::ensure_schema(&tx)?;
         if tx.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 9 {
             tx.pragma_update(None, "user_version", 9)?;
         }
@@ -3496,6 +3509,12 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         // The id floor of each table, before anything is removed (adendo §4).
         let floor = crate::idents::id_floor(&tx)?;
+        // What the space of numbers and a proof of deletion compare with.
+        let before = if notices {
+            Some(crate::phoneops::before_adoption(&tx)?)
+        } else {
+            None
+        };
         // A mapped library gives the copy's rows of the mapped kinds numbers
         // of its own (adendo §4); any other adoption stays verbatim.
         let mapping = if notices {
@@ -3872,6 +3891,9 @@ impl Store {
         // Never below a number given before, here or in the copy.
         crate::idents::keep_id_floor(&tx, &floor, &snapshot.id_high)?;
         finish(&tx)?;
+        if let Some(before) = before {
+            crate::phoneops::after_adoption(&tx, before, &snapshot.ident_epoch)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -7773,10 +7795,13 @@ impl Store {
         }
         entry.attempted = attempted;
         entry.uid = uid.to_owned();
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "UPDATE offline_outbox SET payload=?1 WHERE id=?2",
             params![seal(&serde_json::to_vec(&entry)?)?, entry_id],
         )?;
+        crate::phoneops::rename_outbox(&tx, uid_now, uid)?;
+        tx.commit()?;
         Ok(())
     }
 
