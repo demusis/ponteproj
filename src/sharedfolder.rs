@@ -1327,6 +1327,29 @@ mod tests {
         set_write_limit_for_test(size);
         write(&path, "senha-forte-123", &request, &payload, &blobs).unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().len(), size);
+        // A file of format 9 (its header carries the level) is measured as
+        // exactly, and refused the same way one byte under it.
+        set_write_limit_for_test(MAX_FILE_BYTES);
+        let nine = dir.path().join("ponte-sync-formato9.ponte");
+        let request = WriteRequest {
+            schema_version: crate::storage::LIBRARY_SCHEMA,
+            ..request
+        };
+        write_nine(&nine, "senha-forte-123", &request, &payload, &blobs).unwrap();
+        let size9 = std::fs::metadata(&nine).unwrap().len();
+        assert_eq!(
+            exact_len(&request, FORMAT_9, &payload, &blobs).unwrap(),
+            size9
+        );
+        assert!(size9 > exact_len(&request, FORMAT, &payload, &blobs).unwrap());
+        std::fs::remove_file(&nine).unwrap();
+        set_write_limit_for_test(size9 - 1);
+        let error = write_nine(&nine, "senha-forte-123", &request, &payload, &blobs)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Nada foi gravado"), "{error}");
+        assert!(!nine.exists());
+        set_write_limit_for_test(MAX_FILE_BYTES);
     }
 
     #[test]
