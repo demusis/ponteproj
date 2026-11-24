@@ -402,6 +402,7 @@ fn f3_0a2_legacy_queue_entry_is_marked_legacy_in_the_journal() {
     let doc = b.list_documents("").unwrap()[0].id;
     b.save_note(doc, "Nota da fila antiga").unwrap();
     edit_last_queued(&b, |entry| entry.refs = None);
+    unmapped(&b);
     let uid = b.list_offline_outbox().unwrap()[0].uid.clone();
     let report = fsync(&mut b);
     assert_eq!(report.conflicts, 0);
@@ -1024,6 +1025,7 @@ fn f3_0a2r_pre_uid_entry_survives_a_lost_answer() {
         entry.uid = String::new();
         entry.refs = None;
     });
+    unmapped(&t.client);
     t.online();
     hooks::CORRUPT_MUTATED.arm(&t.db);
     assert!(t.client.sync_from_host(false).is_err(), "answer unusable");
@@ -1189,6 +1191,7 @@ fn f3_0a2r_legacy_entry_from_a_divergent_journal_is_replayed() {
     let doc = b.list_documents("").unwrap()[0].id;
     b.save_note(doc, "Nota da fila antiga").unwrap();
     edit_last_queued(&b, |entry| entry.refs = None);
+    unmapped(&b);
     fsync(&mut b);
     // Only in B's guard, under a new uid: a change the folder never saw.
     let guard = guard_of(dir.path(), "b");
@@ -1287,4 +1290,13 @@ fn f3_0b_completion_after_a_fall_keeps_the_published_identity() {
         host_task_titled(&t.host, "Tarefa de B em X").document_id,
         Some(on_host)
     );
+}
+
+/// As a library updated from F2b with its old queue: never mapped (F3.0b),
+/// so a queued change without proofs still takes the legacy route.
+pub(crate) fn unmapped(store: &Store) {
+    store
+        .conn
+        .execute_batch("DROP TABLE IF EXISTS ident_meta;")
+        .unwrap();
 }

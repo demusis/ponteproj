@@ -1016,6 +1016,7 @@ fn f3_0a_old_merged_entry_then_new_edit_of_the_same_task_without_a_card() {
             ],
         )
         .unwrap();
+    crate::f3a2_tests::unmapped(&a);
     assert_eq!(a.item_version("task", id).unwrap().version, start + 2);
     let mut edit = current(&a);
     edit.title = "Edição depois da atualização".into();

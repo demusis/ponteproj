@@ -2039,6 +2039,29 @@ fn adopted_from_host(tx: &Connection, epoch: &str) -> Result<()> {
     crate::idents::set_origin(tx, "adopted", Some("principal"), Some(epoch))
 }
 
+/// The last statement of a transaction that commits a verbatim point (the
+/// adoption of a copy, a first copy published, the identities taken at the
+/// same revision): the library becomes mapped when its identities come from
+/// a copy or a main computer (`adopted`/`stamped`), no queued change is
+/// without proofs, nothing waits to be translated, and the copy is of level
+/// 2 (`level_two`). Idempotent; never unsets (adendo §2, frozen rule 15).
+fn settle_mapping(tx: &Connection, level_two: bool) -> Result<()> {
+    if !level_two || !crate::idents::has_idents(tx)? || crate::idmap::has_pending(tx)? {
+        return Ok(());
+    }
+    if !matches!(crate::idents::origin(tx)?.0.as_str(), "adopted" | "stamped") {
+        return Ok(());
+    }
+    let mut queued = tx.prepare("SELECT payload FROM offline_outbox")?;
+    for blob in queued.query_map([], |r| r.get::<_, Vec<u8>>(0))? {
+        let entry: OutboxEntry = serde_json::from_slice(&unseal(&blob?)?)?;
+        if entry.refs.is_none() {
+            return Ok(());
+        }
+    }
+    crate::idents::set_meta(tx, "mapped", 1)
+}
+
 /// Number and uid of every queued change. A change merged into a queued row
 /// (the same item edited again) keeps the number but gets a new uid, so the
 /// pair tells a row that was sent from one rewritten while it was sent.
@@ -4470,6 +4493,7 @@ impl Store {
             // card was unresolved): every later entry of the same item is
             // carded too, never applied over another device's version.
             let mut carded: BTreeMap<String, bool> = BTreeMap::new();
+            let mapped = crate::idents::is_mapped(&self.conn)?;
             for mut entry in outbox {
                 let item = mutation_target_key(&entry.mutation);
                 let carded_now = |carded: &mut BTreeMap<String, bool>, conflict: &SyncConflict| {
@@ -4584,7 +4608,8 @@ impl Store {
                 let routed = route_change(
                     (&entry.mutation, entry.base.as_ref()),
                     entry.refs.as_ref(),
-                    true,
+                    // Once mapped, a change without proofs is damaged (rule 4).
+                    !mapped,
                     aliased
                         .as_ref()
                         .map(|a| (a as &dyn crate::idrefs::IdentFrame, holds)),
@@ -4775,7 +4800,26 @@ impl Store {
             && !pushed_offline
             && !numbers_pending
             && self.projects_cache_stale();
-        let since = if force_full || replacing || pushed_offline || numbers_pending || projects_only
+        // A quiet library not mapped yet (nothing queued or translated)
+        // asks the whole snapshot once per revision: at the same revision
+        // it takes the identities and settles (adendo §2 rule 3).
+        let settling = !force_full
+            && !replacing
+            && !pushed_offline
+            && !numbers_pending
+            && !crate::idents::is_mapped(&self.conn)?
+            && self.list_offline_outbox()?.iter().all(|e| e.refs.is_some())
+            && crate::idents::meta(&self.conn, "settle_tried_revision")?
+                != Some(cfg.synced_revision);
+        if settling {
+            crate::idents::set_meta(&self.conn, "settle_tried_revision", cfg.synced_revision)?;
+        }
+        let since = if force_full
+            || replacing
+            || pushed_offline
+            || numbers_pending
+            || projects_only
+            || settling
         {
             None
         } else {
@@ -4843,9 +4887,10 @@ impl Store {
                 // took its identities (V2): before F2b the answer was "up to
                 // date" and this library stayed as it is (work kept here at
                 // that revision included). Only the identities are taken,
-                // and only when the content is the same.
+                // and only when the content is the same (and, settling, the
+                // mapping with them).
                 if !replacing
-                    && since == Some(cfg.synced_revision)
+                    && (since == Some(cfg.synced_revision) || settling)
                     && snapshot.revision == cfg.synced_revision
                 {
                     return self.take_identities_from(&snapshot);
@@ -4863,7 +4908,8 @@ impl Store {
                         |id| fetch_remote_attachment(&cfg_clone, id),
                         |tx| {
                             ensure_queue_settled(tx, &[])?;
-                            adopted_from_host(tx, &epoch)
+                            adopted_from_host(tx, &epoch)?;
+                            settle_mapping(tx, !epoch.is_empty())
                         },
                     )?;
                     return Ok(true);
@@ -4915,7 +4961,8 @@ impl Store {
                             conflict.unresolved = true;
                             insert_conflict(tx, &conflict)?;
                         }
-                        delete_sent_outboxes(tx, &moved)
+                        delete_sent_outboxes(tx, &moved)?;
+                        settle_mapping(tx, !epoch.is_empty())
                     },
                 )?;
                 Ok(true)
@@ -4949,6 +4996,7 @@ impl Store {
         if here == content(snapshot)? && crate::idents::has_idents(&tx)? {
             crate::idents::adopt_triples(&tx, snapshot)?;
             adopted_from_host(&tx, &snapshot.ident_epoch)?;
+            settle_mapping(&tx, !snapshot.ident_epoch.is_empty())?;
             tx.commit()?;
         }
         Ok(false)
@@ -6497,7 +6545,7 @@ impl Store {
                 let routed = route_change(
                     (&entry.mutation, entry.base.as_ref()),
                     entry.refs.as_ref().filter(|_| use_refs),
-                    true,
+                    !use_refs || !crate::idents::is_mapped(&self.conn)?,
                     Some((&store.conn, holds)),
                     (&ids, &*self, Some(&store)),
                 );
@@ -7238,7 +7286,9 @@ impl Store {
                 // their projects (see `projects_cache_stale`).
                 record_cache_schema(tx, crate::storage::SCHEMA_VERSION)?;
             }
-            crate::idmap::save_frame_journal(tx, &payload.journal)
+            crate::idmap::save_frame_journal(tx, &payload.journal)?;
+            // Both branches: the copy adopted, or the first one published.
+            settle_mapping(tx, nine_out && updated.synced_level >= sharedfolder::LEVEL)
         };
         #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) = crate::idents::hooks::BEFORE_ADOPTION.with(|h| h.borrow_mut().take()) {
@@ -7758,7 +7808,8 @@ impl Store {
                     |id| fetch_remote_attachment(&cfg_clone, id),
                     |tx| {
                         ensure_queue_settled(tx, &[])?;
-                        adopted_from_host(tx, &epoch)
+                        adopted_from_host(tx, &epoch)?;
+                        settle_mapping(tx, !epoch.is_empty())
                     },
                 ) {
                     // The change is on the main computer; this copy catches up

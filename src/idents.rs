@@ -366,6 +366,41 @@ pub fn origin(conn: &Connection) -> Result<(String, Option<String>, Option<Strin
         .unwrap_or_else(|| ("provisional".into(), None, None)))
 }
 
+/// A value of the mapping state of this library (`ident_meta`, local only):
+/// `mapped` (adendo §2) and `settle_tried_revision`.
+pub(crate) fn meta(conn: &Connection, key: &str) -> Result<Option<i64>> {
+    let kept: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='ident_meta')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !kept {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row("SELECT value FROM ident_meta WHERE key=?1", [key], |r| {
+            r.get(0)
+        })
+        .optional()?)
+}
+
+pub(crate) fn set_meta(conn: &Connection, key: &str, value: i64) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ident_meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);",
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO ident_meta(key,value) VALUES(?1,?2)",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Whether this library is mapped: set only by `settle_mapping`, never
+/// unset (frozen rule 15).
+pub(crate) fn is_mapped(conn: &Connection) -> Result<bool> {
+    Ok(meta(conn, "mapped")? == Some(1))
+}
+
 /// The rows a logged execution inserted, (ident kind, row id), with the
 /// identity each was given in the write that created it.
 pub(crate) type Inserted = std::collections::BTreeMap<(String, i64), String>;
@@ -398,6 +433,7 @@ pub(crate) const TABLES_SQL: &str = "
 DROP TABLE IF EXISTS item_ident;
 DROP TABLE IF EXISTS current_pointer;
 DROP TABLE IF EXISTS ident_state;
+DROP TABLE IF EXISTS ident_meta;
 CREATE TABLE item_ident(kind TEXT NOT NULL, row_id INTEGER NOT NULL, ident TEXT NOT NULL,
   PRIMARY KEY(kind,row_id)) WITHOUT ROWID;
 CREATE UNIQUE INDEX item_ident_ident ON item_ident(ident);
@@ -1482,7 +1518,7 @@ pub mod test_support {
             tx.execute_batch(&format!("DROP TRIGGER \"{name}\";"))?;
         }
         tx.execute_batch(
-            "DROP TABLE IF EXISTS item_ident; DROP TABLE IF EXISTS current_pointer; DROP TABLE IF EXISTS ident_state;",
+            "DROP TABLE IF EXISTS item_ident; DROP TABLE IF EXISTS current_pointer; DROP TABLE IF EXISTS ident_state; DROP TABLE IF EXISTS ident_meta;",
         )?;
         for (kind, _, _, sql) in schema_21() {
             if kind == "trigger" {
