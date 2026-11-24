@@ -166,6 +166,10 @@ pub mod mapper;
 /// records, under the rules of F3 (tests only).
 #[cfg(test)]
 mod pacote_tests;
+/// A task form open during a folder exchange: the version it expects and
+/// the question of the unsaved task (tests only).
+#[cfg(test)]
+mod tarefa_tests;
 
 pub mod dossier;
 
