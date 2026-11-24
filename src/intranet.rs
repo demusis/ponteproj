@@ -11932,6 +11932,7 @@ fn promotion_on() -> bool {
 /// What the card of a configured folder says of the file that holds its
 /// library (`header`, read by [`crate::folder_health::library_header`]):
 /// the pill, its tone and, for a computer joining the folder, what happens.
+#[cfg(feature = "desktop")]
 pub(crate) fn folder_pill(
     header: &crate::sharedfolder::Header,
     first_time: bool,
