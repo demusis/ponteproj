@@ -907,11 +907,30 @@ struct Entry {
     name: String,
     archived: bool,
 }
+/// Where the receipt of a plan on an existing record finds it.
+#[derive(Debug, PartialEq, Eq)]
+enum Resolved {
+    Row(i64),
+    /// Not here: deleted for good, in the epoch of identities the receipt
+    /// was written in (or a receipt of before F3 that names nothing).
+    Gone,
+    /// The identities were drawn again since, and the identity of the
+    /// receipt names nothing: the record cannot be recognised.
+    Renewed,
+}
+
+/// The refusal of a resumed plan whose record cannot be recognised after
+/// the identities were drawn again (decision Q2, as
+/// [`crate::renumber::RENEWED`] for an edit).
+const RENEWED_PLAN: &str = "document_number: o plano ainda tinha o que criar, mas os códigos dos registros foram renovados depois da execução interrompida (a cópia compartilhada ou o computador principal foi promovido ou restaurado em separado), e o documento dele não pôde ser reconhecido com certeza. Ele nunca é procurado pelo identificador do pedido nem pelo número, que dois registros de aparelhos diferentes podem ter iguais. Nada foi gravado, para não colocar as tarefas no documento errado. Confira o documento e crie o que falta à mão.";
+
 /// What is left to do for a plan, and where each item stands.
 struct State {
     tasks: Vec<(Option<TaskRow>, ItemState)>,
     doc_state: ItemState,
     doc: Option<DocRow>,
+    /// The record of the receipt cannot be recognised ([`Resolved::Renewed`]).
+    renewed: bool,
     /// The document the NUMBER of the file names now (`document_number`).
     number_doc: Option<(i64, bool)>,
     pending_tasks: Vec<usize>,
@@ -1163,25 +1182,38 @@ impl Store {
             None => stable,
         })
     }
-    /// The record of a receipt: by its identity; when no record holds it,
-    /// in the same epoch the record is gone (never another one by its
-    /// request); in another epoch (the identities were drawn again) it is
-    /// taken up by the stable identity, as before F3.
-    fn resolve_target(&self, target: &str) -> Result<Option<i64>> {
-        if let Some((named, stable)) = target
+    /// The record of a receipt. One that keeps an identity is found only by
+    /// it: when no record holds it, in the same epoch the record is gone,
+    /// and in another epoch (the identities were drawn again) it cannot be
+    /// recognised (decision Q2, [`crate::renumber::RENEWED`]). Neither is
+    /// ever looked for by its request id or its number: two records of two
+    /// devices can share both. A receipt without an identity (written
+    /// before F3) keeps the stable identity, as before.
+    fn resolve_target(&self, target: &str) -> Result<Resolved> {
+        if let Some((named, _)) = target
             .strip_prefix("ident:")
             .and_then(|rest| rest.split_once('|'))
         {
             use crate::idrefs::IdentFrame;
             let (epoch, ident) = named.split_once(':').unwrap_or_default();
             if let Some(row) = self.conn.row_of(crate::idmap::IdKind::Document, ident)? {
-                return Ok(Some(row));
+                return Ok(Resolved::Row(row));
             }
-            if crate::idents::origin(&self.conn)?.2.unwrap_or_default() == epoch {
-                return Ok(None);
-            }
-            return self.resolve_target(stable);
+            return Ok(
+                if crate::idents::origin(&self.conn)?.2.unwrap_or_default() == epoch {
+                    Resolved::Gone
+                } else {
+                    Resolved::Renewed
+                },
+            );
         }
+        Ok(match self.resolve_stable(target)? {
+            Some(row) => Resolved::Row(row),
+            None => Resolved::Gone,
+        })
+    }
+    /// The record of a receipt written before F3 (`request:`/`identity:`).
+    fn resolve_stable(&self, target: &str) -> Result<Option<i64>> {
         if let Some(request) = target.strip_prefix("request:") {
             return self.document_of_request(request);
         }
@@ -1364,10 +1396,21 @@ impl Store {
             Some(number) => self.document_by_number_any(number)?,
             None => None,
         };
+        // A plan that creates its record finds it by its own request id:
+        // that request made it (a duplicate creation under the same id is
+        // told apart by `guard_resumed_target`).
+        let mut renewed = false;
         let found = if new_document {
             self.document_of_request(&checked.request)?
         } else if let Some(run) = run.filter(|r| !r.target.is_empty()) {
-            self.resolve_target(&run.target)?
+            match self.resolve_target(&run.target)? {
+                Resolved::Row(row) => Some(row),
+                Resolved::Gone => None,
+                Resolved::Renewed => {
+                    renewed = true;
+                    None
+                }
+            }
         } else {
             number_doc.map(|(id, _)| id)
         };
@@ -1423,6 +1466,7 @@ impl Store {
             tasks,
             doc_state,
             doc,
+            renewed,
             number_doc,
         })
     }
@@ -1539,6 +1583,9 @@ impl Store {
                 "O plano ainda tem o que criar, mas o documento dele está na Lixeira. Restaure-o (ou conclua o que falta à mão) e repita o comando; nada é criado numa Lixeira."
             ),
             ItemState::Missing => {
+                // Before the number is read at all: it may name the record
+                // of another device now.
+                ensure!(!state.renewed, RENEWED_PLAN);
                 if let (Some(number), Some((other, _))) =
                     (&plan.document_number, state.number_doc)
                 {
@@ -4091,7 +4138,7 @@ mod tests {
             .unwrap();
         let identity = store.identity_of_document(id).unwrap();
         assert!(identity.starts_with("identity:"), "{identity}");
-        assert_eq!(store.resolve_target(&identity).unwrap(), Some(id));
+        assert_eq!(store.resolve_target(&identity).unwrap(), Resolved::Row(id));
         let by_request = {
             store
                 .conn
@@ -4103,7 +4150,10 @@ mod tests {
             store.identity_of_document(id).unwrap()
         };
         assert_eq!(by_request, "request:11111111-1111-4111-8111-111111111111");
-        assert_eq!(store.resolve_target(&by_request).unwrap(), Some(id));
+        assert_eq!(
+            store.resolve_target(&by_request).unwrap(),
+            Resolved::Row(id)
+        );
     }
 
     #[test]
