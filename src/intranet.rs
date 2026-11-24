@@ -4192,8 +4192,22 @@ impl Store {
             }
             IntranetMutation::PurgeTrash { kind, id } => {
                 let parsed = TrashKind::parse(&kind)?;
-                self.purge_trash_item(TrashTarget { kind: parsed, id })
-                    .map(|document| MutationReply::Id(document.unwrap_or(0)))
+                // A purge replayed or sent from another device: its effect
+                // already holds when the item is gone (purged here too, or a
+                // record `Refs::resolve` proved gone: id 0), and it never
+                // deletes an item that is no longer in the Lixeira.
+                match crate::trash::purge_finds(&self.conn, parsed, id)? {
+                    crate::trash::PurgeFinds::InTrash => self
+                        .purge_trash_item(TrashTarget { kind: parsed, id })
+                        .map(|document| MutationReply::Id(document.unwrap_or(0))),
+                    crate::trash::PurgeFinds::Gone => Ok(MutationReply::Id(0)),
+                    crate::trash::PurgeFinds::Live => {
+                        Err(anyhow::anyhow!("{}", crate::trash::PURGE_RESTORED))
+                    }
+                    crate::trash::PurgeFinds::UnderTrashed => {
+                        Err(anyhow::anyhow!("{}", crate::trash::PURGE_UNDER_TRASHED))
+                    }
+                }
             }
             IntranetMutation::DeleteDocument { id } => {
                 self.delete_document(id).map(|()| MutationReply::Unit)
@@ -4701,6 +4715,7 @@ impl Store {
                     aliased
                         .as_ref()
                         .map(|a| (a as &dyn crate::idrefs::IdentFrame, holds)),
+                    tag.as_ref().map(|t| t.epoch.as_str()),
                     (&ids, &*self, host.map(|s| s as &dyn crate::idmap::Frame)),
                 )
                 .and_then(|routed| {
@@ -6398,6 +6413,7 @@ impl Store {
                     entry.refs.as_ref().filter(|_| use_refs),
                     legacy,
                     Some((&store.conn, false)),
+                    Some(epoch.as_str()),
                     (&ids, &source.payload.snapshot, Some(&store)),
                 )
                 .and_then(|routed| {
@@ -6698,6 +6714,7 @@ impl Store {
                     entry.refs.as_ref().filter(|_| use_refs),
                     !use_refs || !crate::idents::is_mapped(&self.conn)?,
                     Some((&store.conn, holds)),
+                    Some(epoch.as_str()),
                     (&ids, &*self, Some(&store)),
                 )
                 .and_then(|routed| {
@@ -7679,6 +7696,20 @@ impl Store {
                         .keep_unseen_fields(mutation, donor.header.schema_version)
                         .map_err(|e| e.to_string())
                 });
+            // A purge of an item this copy did not create, whose number names
+            // nothing in the base (its numbers never name another item: the
+            // floor of the copies): already purged there. It deletes nothing
+            // and is no card; any item it names stays a card (unprovable).
+            if let (Err(reason), M::PurgeTrash { kind, id }) = (&remapped, &entry.mutation) {
+                if reason == crate::idmap::UNRESOLVED
+                    && crate::trash::purge_finds(&store.conn, TrashKind::parse(kind)?, *id)?
+                        == crate::trash::PurgeFinds::Gone
+                {
+                    ids.relearn(&entry.created, &[]);
+                    applied.insert(entry.uid.clone());
+                    continue;
+                }
+            }
             // Applied with the insert log open: what it inserted is the only
             // proof of what it created.
             // A failure of the log itself, once the change may be applied,
@@ -8943,9 +8974,24 @@ impl Store {
             // its proofs here, now. One that does not resolve here can only
             // be copied or dismissed. Older cards keep their numbers.
             if let Some(refs) = &item.refs {
-                let holds = refs.frame == crate::idrefs::frame_tag(&self.conn)?;
-                match refs.resolve(&item.mutation, item.base.as_ref(), &self.conn, holds) {
-                    Ok((mutation, base, _)) => (item.mutation, item.base) = (mutation, base),
+                let here = crate::idrefs::frame_tag(&self.conn)?;
+                let holds = refs.frame == here;
+                match refs.resolve(
+                    &item.mutation,
+                    item.base.as_ref(),
+                    &self.conn,
+                    holds,
+                    Some(&here.epoch),
+                ) {
+                    Ok((mutation, base, _)) => {
+                        // A purge is told by its proof now: resolved here, it
+                        // names its record (or none: done), whatever the
+                        // exchange that made the card could tell.
+                        if matches!(mutation, IntranetMutation::PurgeTrash { .. }) {
+                            item.unresolved = false;
+                        }
+                        (item.mutation, item.base) = (mutation, base)
+                    }
                     Err(_) => item.unresolved = true,
                 }
             }
@@ -8964,6 +9010,36 @@ impl Store {
             .into_iter()
             .find(|c| c.id == conflict_id)
             .context("Conflito de edição não encontrado.")?;
+
+        // A purge of the Lixeira is applied again only to the record it
+        // proves, and only while that record is in the Lixeira; one whose
+        // effect already holds is done.
+        if resolution != ConflictResolution::KeepHost {
+            if let IntranetMutation::PurgeTrash { kind, id } = &conflict.mutation {
+                if conflict.unresolved {
+                    bail!("{}", crate::trash::PURGE_UNPROVEN);
+                }
+                let finds = crate::trash::purge_finds(&self.conn, TrashKind::parse(kind)?, *id)?;
+                if finds == crate::trash::PurgeFinds::Gone {
+                    // Nothing to delete: purged already (proved gone by its
+                    // identity, or no item at all at its number).
+                    retire_conflict(&self.conn, conflict_id)?;
+                    return Ok(());
+                }
+                // An older card names its item by a number only, which a
+                // library addressed by identity cannot prove (rule 23).
+                if conflict.refs.is_none() && crate::idents::is_mapped(&self.conn)? {
+                    bail!("{}", crate::trash::PURGE_UNPROVEN);
+                }
+                match finds {
+                    crate::trash::PurgeFinds::Live => bail!("{}", crate::trash::PURGE_RESTORED),
+                    crate::trash::PurgeFinds::UnderTrashed => {
+                        bail!("{}", crate::trash::PURGE_UNDER_TRASHED)
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         // Its numbers mean nothing in the team's library: only redone.
         if conflict.unresolved && resolution != ConflictResolution::KeepHost {
@@ -10468,13 +10544,36 @@ pub fn explain_resolve_error(
             .trim();
         return format!("{head} {sentence} Para manter este uso, mude o horário ou a quantidade neste computador e salve de novo; para encerrar este aviso, use Dispensar o aviso.");
     }
-    let about_the_item = error.contains("na lixeira") || error.contains("não encontrad");
-    if about_the_item {
+    // A purge of the Lixeira that was not applied again, and why.
+    if error.contains(crate::trash::PURGE_RESTORED) {
+        return format!("{head} O item foi restaurado da Lixeira em outro aparelho e está em uso; ele não foi apagado de vez. Se ainda quiser apagá-lo, exclua-o de novo e apague-o em Ajustes ▸ Lixeira; para encerrar este aviso, use Dispensar o aviso.");
+    }
+    if error.contains(crate::trash::PURGE_UNDER_TRASHED) {
+        return format!("{head} O item saiu da Lixeira junto com o documento ou a tarefa a que pertence, que foi para a Lixeira em outro aparelho; ele não foi apagado de vez. Para apagá-lo, apague de vez esse documento ou essa tarefa em Ajustes ▸ Lixeira; para encerrar este aviso, use Dispensar o aviso.");
+    }
+    if error.contains(crate::trash::PURGE_UNPROVEN) {
+        return format!("{head} Não foi possível confirmar qual item da Lixeira esta alteração apagaria de vez, e nada foi apagado. Se ainda for preciso, apague o item em Ajustes ▸ Lixeira; para encerrar este aviso, use Dispensar o aviso.");
+    }
+    // Where the item stands, read with its negation: "não está na lixeira"
+    // is the opposite of "está na lixeira", and "não existe ou está na
+    // lixeira" is neither alone.
+    let lower = error.to_lowercase();
+    let not_in_trash =
+        lower.contains("não está na lixeira") || lower.contains("não está mais na lixeira");
+    let gone_or_in_trash = lower.contains("não existe ou está na lixeira");
+    let in_trash = !not_in_trash && !gone_or_in_trash && lower.contains("na lixeira");
+    let not_found = lower.contains("não encontrad");
+    if not_in_trash {
+        return format!("{head} O item desta alteração não está na Lixeira: ele foi restaurado ou já foi apagado de vez, talvez em outro aparelho. Para encerrar este aviso, use Dispensar o aviso.");
+    }
+    if in_trash || not_found || gone_or_in_trash {
         if let Some(block) = info.and_then(|i| i.block.as_ref()) {
             return format!("{head} {}", block_note(block, noun));
         }
-        return if error.contains("na lixeira") {
+        return if in_trash {
             format!("{head} O item desta alteração está na Lixeira. Restaure-o em Ajustes ▸ Lixeira e volte aqui, ou use Dispensar o aviso.")
+        } else if gone_or_in_trash {
+            format!("{head} O item de que esta alteração depende não existe mais ou está na Lixeira. Confira em Ajustes ▸ Lixeira e volte aqui, ou use Dispensar o aviso.")
         } else {
             format!("{head} O item desta alteração não existe mais no acervo. Para encerrar este aviso, use Dispensar o aviso.")
         };
@@ -12165,7 +12264,8 @@ pub(crate) type Routed = (
 
 /// Where a queued or journaled change goes in a receiving frame (adendo
 /// §3): by its proofs in `to` (the frame, and whether a `Frame` number
-/// holds there; none known: a card); without proofs, only when `legacy`,
+/// holds there, and its epoch of identities when known; none known: a
+/// card); without proofs, only when `legacy`,
 /// through the translation of numbers `ids` from `from` into `target`, as
 /// before F3. `Err`: the reason of its card, never a number to guess.
 fn route_change(
@@ -12173,6 +12273,7 @@ fn route_change(
     refs: Option<&crate::idrefs::Refs>,
     legacy: bool,
     to: Option<(&dyn crate::idrefs::IdentFrame, bool)>,
+    epoch: Option<&str>,
     (ids, from, target): (
         &crate::idmap::IdMap,
         &dyn crate::idmap::Frame,
@@ -12181,7 +12282,7 @@ fn route_change(
 ) -> std::result::Result<Routed, String> {
     match (refs, to) {
         (Some(refs), Some((frame, holds))) => refs
-            .resolve(mutation, base, frame, holds)
+            .resolve(mutation, base, frame, holds, epoch)
             .map(|(mutation, base, refs)| (mutation, base, Some(refs))),
         (Some(_), None) => Err(crate::idrefs::UNPROVEN.to_owned()),
         (None, _) if !legacy => Err(crate::idrefs::DAMAGED.to_owned()),
@@ -13326,7 +13427,7 @@ fn process_rpc_at(
                         revision: store.cabinet_revision()?,
                     };
                     let holds = refs.frame == here;
-                    match refs.resolve(&mutation, None, &store.conn, holds) {
+                    match refs.resolve(&mutation, None, &store.conn, holds, Some(&epoch)) {
                         // A manual edit's record is bound in the import's
                         // own transaction (adendo §9).
                         Ok((mutation, _, refs)) => {

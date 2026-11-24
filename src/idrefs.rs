@@ -804,14 +804,26 @@ impl Refs {
     /// base in the same frame and about the same item (frozen rule 7), and
     /// these proofs with their rows rewritten to those numbers (rule 8).
     /// Any failure is a card, never a number.
+    ///
+    /// `epoch` is the frame's epoch of identities (`None`: not known). A
+    /// purge of the Lixeira whose record is proved by an identity of that
+    /// same epoch that no row holds there is done already (purged there, or
+    /// gone with its document): it resolves to the item 0, which names
+    /// nothing, which every executor takes as done and which deletes
+    /// nothing. Proved otherwise, or in another epoch, it resolves as any
+    /// change: never to another record (frozen rule 23).
     pub(crate) fn resolve(
         &self,
         mutation: &IntranetMutation,
         base: Option<&IntranetMutation>,
         frame: &dyn IdentFrame,
         frame_holds: bool,
+        epoch: Option<&str>,
     ) -> Result<(IntranetMutation, Option<IntranetMutation>, Refs), String> {
         Refs::check(mutation, base, self)?;
+        if let Some(done) = self.purge_done(mutation, base, frame, epoch)? {
+            return Ok(done);
+        }
         let (mutation, proved) = resolve_sites(mutation, &self.mutation, frame, frame_holds)?;
         let (base, base_proved) = match base {
             Some(base) => {
@@ -851,6 +863,48 @@ impl Refs {
                 ..self.clone()
             },
         ))
+    }
+
+    /// See [`Refs::resolve`]: `Some` (the purge of item 0, with no site)
+    /// when `mutation` purges a record whose one proof is an identity of
+    /// `epoch`, the frame's, that no row of `frame` holds.
+    fn purge_done(
+        &self,
+        mutation: &IntranetMutation,
+        base: Option<&IntranetMutation>,
+        frame: &dyn IdentFrame,
+        epoch: Option<&str>,
+    ) -> Result<Option<(IntranetMutation, Option<IntranetMutation>, Refs)>, String> {
+        let IntranetMutation::PurgeTrash { kind, .. } = mutation else {
+            return Ok(None);
+        };
+        let same_epoch = epoch.is_some_and(|e| !e.is_empty() && e == self.frame.epoch);
+        let (true, None, [site]) = (same_epoch, base, self.mutation.as_slice()) else {
+            return Ok(None);
+        };
+        let Proof::Ident(ident) = &site.proof else {
+            return Ok(None);
+        };
+        if frame
+            .row_of(site.kind, ident)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        Ok(Some((
+            IntranetMutation::PurgeTrash {
+                kind: kind.clone(),
+                id: 0,
+            },
+            None,
+            Refs {
+                mutation: Vec::new(),
+                base: Vec::new(),
+                manual_target: None,
+                ..self.clone()
+            },
+        )))
     }
 
     /// Whether these proofs are the proofs of `mutation` and `base`: one per

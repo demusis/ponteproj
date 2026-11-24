@@ -79,6 +79,81 @@ pub enum ItemState {
     /// Not in the library at all (nor in the Lixeira).
     Missing,
 }
+/// A purge met an item that is live again: another device restored it.
+pub const PURGE_RESTORED: &str = "O item foi restaurado da Lixeira em outro aparelho e está em uso de novo; por isso não foi apagado de vez.";
+/// A purge met an item that left the Lixeira with the document or task it
+/// belongs to (which went to the Lixeira on another device).
+pub const PURGE_UNDER_TRASHED: &str = "O item não está mais na Lixeira por conta própria: o documento ou a tarefa a que ele pertence foi para a Lixeira em outro aparelho. Ele não foi apagado de vez.";
+/// A purge whose record cannot be proven here (an older change, without
+/// proofs, in a library addressed by identity): nothing is purged.
+pub const PURGE_UNPROVEN: &str = "Não foi possível confirmar, neste acervo, qual item da Lixeira esta alteração apagaria de vez; nada foi apagado.";
+
+/// What a purge of item `id` of `kind` finds in the library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PurgeFinds {
+    /// In the Lixeira: the purge applies.
+    InTrash,
+    /// Not in the library at all: already purged (here, or with its
+    /// document); the purge's effect holds and nothing is deleted.
+    Gone,
+    /// Live again, outside the Lixeira: restored on another device.
+    Live,
+    /// Still here, out of the Lixeira but hidden with the document or task
+    /// it belongs to, which is in the Lixeira.
+    UnderTrashed,
+}
+
+/// What a purge of item `id` of `kind` finds on `conn` (see [`PurgeFinds`]).
+/// A sentinel (0, negative) names no item: [`PurgeFinds::Gone`].
+pub fn purge_finds(conn: &Connection, kind: Kind, id: i64) -> Result<PurgeFinds> {
+    if id <= 0 {
+        return Ok(PurgeFinds::Gone);
+    }
+    if contains(conn, kind, id)? {
+        return Ok(PurgeFinds::InTrash);
+    }
+    let table = match kind {
+        Kind::Document => "documents",
+        Kind::Capture => "captures",
+        Kind::Task => "tasks",
+        Kind::Attachment => "attachments",
+    };
+    let exists: bool = conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE id=?1)"),
+        [id],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(PurgeFinds::Gone);
+    }
+    let live = match kind {
+        Kind::Document => true,
+        Kind::Capture => require_active_capture(conn, id).is_ok(),
+        Kind::Task => require_active_task(conn, id).is_ok(),
+        Kind::Attachment => {
+            let owner: Option<(String, i64)> = conn
+                .query_row(
+                    "SELECT owner_kind,owner_id FROM attachments WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            match owner {
+                Some((kind, owner)) if kind == "document" => {
+                    require_active_document(conn, owner).is_ok()
+                }
+                Some((kind, owner)) if kind == "task" => require_active_task(conn, owner).is_ok(),
+                _ => true,
+            }
+        }
+    };
+    Ok(if live {
+        PurgeFinds::Live
+    } else {
+        PurgeFinds::UnderTrashed
+    })
+}
+
 pub fn contains(conn: &Connection, kind: Kind, id: i64) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM trash WHERE kind=?1 AND item_id=?2)",

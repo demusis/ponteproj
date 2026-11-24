@@ -365,7 +365,7 @@ fn f3_1a_mapped_kind_without_identity_never_goes_by_number() {
         }],
         ..refs
     };
-    assert!(framed.resolve(&note, None, &a.conn, true).is_err());
+    assert!(framed.resolve(&note, None, &a.conn, true, None).is_err());
 }
 
 /// Obligation (c), with links mapped (kind set of the test): a mapped
