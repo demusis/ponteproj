@@ -680,8 +680,8 @@ impl Store {
     /// trash and has exactly that number; otherwise nothing at all is written and
     /// the error is [`TargetChanged`]. Returns the attachment id.
     pub fn attach_to_document(&mut self, request: &AttachRequest<'_>) -> Result<i64> {
-        let kind = validate_file(request.name, request.data)?;
-        validate_description(request.description)?;
+        let kind = validate_file(request.name, request.data).map_err(FileRefused::of)?;
+        validate_description(request.description).map_err(FileRefused::of)?;
         let operation = request
             .operation_id
             .map(str::trim)
@@ -734,7 +734,7 @@ impl Store {
         let Some(document_id) =
             crate::phoneops::target(&tx, request.document_id, ident, request.library_space)?
         else {
-            let message = crate::phoneops::refusal_message(&tx, ident)?.to_owned();
+            let message = crate::phoneops::immediate_message(&tx, ident)?;
             if crate::phoneops::recovering(&tx, operation)? {
                 anyhow::bail!("{message} Nada foi anexado; escolha outro registro.");
             }
@@ -747,6 +747,7 @@ impl Store {
                 request.description,
                 request.data,
                 operation,
+                None,
             )?;
             tx.commit()?;
             return Err(TargetGone { card_id, message }.into());
@@ -765,7 +766,7 @@ impl Store {
                 return Err(TargetChanged.into());
             }
         }
-        let id = insert_attachment(
+        let id = match insert_attachment(
             &tx,
             &actor,
             Owner::Document(document_id),
@@ -773,7 +774,46 @@ impl Store {
             request.description,
             request.data,
             kind,
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(error) => {
+                // The record is there but cannot take this file (the limit,
+                // the same content): a file the phone holds for it is kept in
+                // a card with that reason, in a transaction of its own (this
+                // one rolls back, its log with it), never let go (F3.1b2,
+                // `revisao-f3-1b2.md` finding 1).
+                let proved = |v: Option<&str>| v.map(str::trim).is_some_and(|v| !v.is_empty());
+                let keep = error.downcast_ref::<OwnerRefused>().is_some()
+                    && (proved(ident) || proved(request.library_space))
+                    && !crate::phoneops::recovering(&tx, operation)?
+                    && crate::phoneops::ready(&tx)?;
+                if !keep {
+                    return Err(error);
+                }
+                drop(tx);
+                let reason = error.to_string();
+                let tx = self
+                    .conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let card_id = crate::phoneops::park(
+                    &tx,
+                    &actor,
+                    document_id,
+                    ident,
+                    request.name,
+                    request.description,
+                    request.data,
+                    operation,
+                    Some(&reason),
+                )?;
+                tx.commit()?;
+                return Err(TargetGone {
+                    card_id,
+                    message: reason,
+                }
+                .into());
+            }
+        };
         let queued = match &queue_actor {
             Some(queue_actor) => Some(crate::intranet::queue_attachment_locally(
                 &tx,
@@ -966,27 +1006,30 @@ fn insert_attachment(
 ) -> Result<i64> {
     let document = Store::attachment_owner_document(tx, owner)?;
     let existing = list_active(tx, owner)?;
-    ensure!(
-        existing.len() < MAX_PER_OWNER,
-        "{} {} já tem {MAX_PER_OWNER} anexos, o máximo. {} ou junte vários arquivos num único PDF.",
-        if matches!(owner, Owner::Task(_)) {
-            "Esta"
-        } else {
-            "Este"
-        },
-        owner.noun(),
-        if owner.deletes_for_good() {
-            "Apague de vez um anexo que não seja mais necessário"
-        } else {
-            "Exclua um anexo que não seja mais necessário (ele vai para a Lixeira e pode ser restaurado)"
-        }
-    );
+    if existing.len() >= MAX_PER_OWNER {
+        return Err(OwnerRefused(format!(
+            "{} {} já tem {MAX_PER_OWNER} anexos, o máximo. {} ou junte vários arquivos num único PDF.",
+            if matches!(owner, Owner::Task(_)) {
+                "Esta"
+            } else {
+                "Este"
+            },
+            owner.noun(),
+            if owner.deletes_for_good() {
+                "Apague de vez um anexo que não seja mais necessário"
+            } else {
+                "Exclua um anexo que não seja mais necessário (ele vai para a Lixeira e pode ser restaurado)"
+            }
+        ))
+        .into());
+    }
     let sha256 = format!("{:x}", Sha256::digest(data));
     if let Some(same) = existing.iter().find(|a| a.sha256 == sha256) {
-        bail!(
+        return Err(OwnerRefused(format!(
             "Este arquivo já está anexado como “{}” (conteúdo idêntico). Se quiser outra descrição, edite a do anexo existente.",
             same.name
-        );
+        ))
+        .into());
     }
     let meta = AttachmentMeta {
         id: 0,
@@ -1047,8 +1090,9 @@ pub struct AttachRequest<'a> {
 }
 
 /// The record a file was taken for is not provably here any more (deleted,
-/// in the Lixeira, or a library replaced since): nothing was attached, and
-/// the file is kept in card `card_id` for the person to recover.
+/// in the Lixeira, or a library replaced since), or it cannot take this
+/// file (the limit, the same content): nothing was attached, and the file
+/// is kept in card `card_id` for the person to recover.
 #[derive(Debug)]
 pub struct TargetGone {
     pub card_id: i64,
@@ -1065,6 +1109,38 @@ impl std::fmt::Display for TargetGone {
     }
 }
 impl std::error::Error for TargetGone {}
+
+/// The file itself was refused (its name, type, content, size or
+/// description), so no record would take it: nothing was written (F3.1b2,
+/// `revisao-f3-1b2.md` finding 1). The phone app may let its copy go.
+#[derive(Debug)]
+pub struct FileRefused(pub String);
+
+impl FileRefused {
+    /// `error` (a check of the file) as this refusal, with the same words.
+    pub fn of(error: anyhow::Error) -> anyhow::Error {
+        anyhow::Error::new(FileRefused(format!("{error:#}")))
+    }
+}
+
+impl std::fmt::Display for FileRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for FileRefused {}
+
+/// The record cannot take this file (it has the most files it may, or the
+/// same content already): another record could.
+#[derive(Debug)]
+pub(crate) struct OwnerRefused(String);
+
+impl std::fmt::Display for OwnerRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for OwnerRefused {}
 
 /// The document chosen for an attachment is no longer the one the person saw
 /// (it was trashed, deleted or has another number): nothing was written.

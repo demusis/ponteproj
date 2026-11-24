@@ -54,8 +54,8 @@ internal data class Doc(
     val provisional: Boolean = false
 )
 
-/** Raised when the core answers {"ok":false}. */
-internal class CoreException(message: String, val code: String = "") : PonteException(message)
+/** Raised when the core answers {"ok":false}; [cardId]: the card that keeps a refused file (`target_gone`). */
+internal class CoreException(message: String, val code: String = "", val cardId: Long = 0L) : PonteException(message)
 
 /** Raised when the Keystore cannot decrypt the stored library key. */
 internal class KeyUnavailableException(cause: Throwable?) : Exception("key unavailable", cause)
@@ -273,7 +273,9 @@ internal object SyncRunner {
         if (!o.optBoolean("ok")) {
             // The one place where the core's texts reach the screen: worded for the phone here.
             // "code" is optional (an older core never sends it): a machine-readable reason next to the text.
-            throw CoreException(PhoneWords.adapt(o.optString("error", "Não foi possível concluir a operação.")), o.s("code"))
+            throw CoreException(
+                PhoneWords.adapt(o.optString("error", "Não foi possível concluir a operação.")), o.s("code"), o.optLong("card_id")
+            )
         }
         return o
     }

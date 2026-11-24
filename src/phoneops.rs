@@ -15,6 +15,13 @@ use std::collections::BTreeSet;
 pub const GONE_ELSEWHERE: &str = "O registro foi apagado em outro aparelho.";
 pub const IN_TRASH: &str = "O registro está na Lixeira.";
 pub const NOT_HERE: &str = "O registro não está mais disponível neste aparelho.";
+/// A file refused at once whose record is back (restored from the Lixeira,
+/// or proved again): it was not available then, and it is now.
+pub const WAS_UNAVAILABLE: &str =
+    "O arquivo não foi anexado porque o registro não estava disponível naquele momento.";
+
+/// The `ident_meta` key of the last card [`bind_waiting_cards`] looked at.
+const CARDS_SEEN: &str = "phone_cards_seen";
 
 /// How long a deletion proved by an adoption is remembered.
 const GONE_DAYS: i64 = 30;
@@ -28,7 +35,7 @@ pub(crate) fn ready(tx: &Connection) -> Result<bool> {
         return Ok(false);
     }
     let made: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('phone_operations') WHERE name='recovery_op')
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('phone_operations') WHERE name='refusal_reason')
             AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='gone_documents')",
         [],
         |r| r.get(0),
@@ -46,6 +53,10 @@ pub(crate) fn ready(tx: &Connection) -> Result<bool> {
         ("card_id", "INTEGER"),
         ("document_ident", "TEXT"),
         ("recovery_op", "TEXT"),
+        // What the recovery list shows without opening the card: the
+        // file's name (its size is in `size`) and the card's own reason.
+        ("file_name", "TEXT"),
+        ("refusal_reason", "TEXT"),
     ] {
         let kept: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('phone_operations') WHERE name=?1)",
@@ -150,13 +161,24 @@ pub(crate) fn after_adoption(tx: &Connection, before: Before, epoch: &str) -> Re
     Ok(())
 }
 
-/// What the app says of a refused file for the record of identity `ident`.
-pub(crate) fn refusal_message(conn: &Connection, ident: Option<&str>) -> Result<&'static str> {
-    let Some(ident) = ident.filter(|i| !i.is_empty()) else {
-        return Ok(NOT_HERE);
+/// Where the record of an identity is now, as the refusal of its file is
+/// told (`None`: no identity, or a library without them).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Record {
+    /// Retired by a same-epoch adoption (frozen rule 21).
+    Gone,
+    Trashed,
+    /// No live row holds it here.
+    Absent,
+    Active,
+}
+
+fn record_state(conn: &Connection, ident: Option<&str>) -> Result<Option<Record>> {
+    let Some(ident) = ident.map(str::trim).filter(|i| !i.is_empty()) else {
+        return Ok(None);
     };
     if !ready(conn)? {
-        return Ok(NOT_HERE);
+        return Ok(None);
     }
     let gone: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM gone_documents WHERE ident=?1)",
@@ -164,15 +186,79 @@ pub(crate) fn refusal_message(conn: &Connection, ident: Option<&str>) -> Result<
         |r| r.get(0),
     )?;
     if gone {
-        return Ok(GONE_ELSEWHERE);
+        return Ok(Some(Record::Gone));
     }
-    let trashed: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM item_ident i JOIN trash t ON t.kind='document' AND t.item_id=i.row_id
-         WHERE i.kind='document' AND i.ident=?1)",
-        [ident],
-        |r| r.get(0),
-    )?;
-    Ok(if trashed { IN_TRASH } else { NOT_HERE })
+    let row: Option<i64> = conn
+        .query_row(
+            "SELECT row_id FROM item_ident WHERE kind='document' AND ident=?1",
+            [ident],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(Some(Record::Absent));
+    };
+    if crate::trash::contains(conn, crate::trash::Kind::Document, row)? {
+        return Ok(Some(Record::Trashed));
+    }
+    Ok(Some(
+        if crate::trash::require_active_document(conn, row).is_ok() {
+            Record::Active
+        } else {
+            Record::Absent
+        },
+    ))
+}
+
+/// What the app says of a refused file for the record of identity `ident`
+/// (`revisao-f3-1b2.md` finding 2): where the record is, when that is why
+/// it cannot take the file (deleted elsewhere, in the Lixeira, not here);
+/// with the record alive, the card's own `reason` (the limit, the same
+/// content, a change after a card) or, for a file refused at once, that the
+/// record was not available then.
+pub(crate) fn refusal_message(
+    conn: &Connection,
+    ident: Option<&str>,
+    reason: Option<&str>,
+) -> Result<String> {
+    let reason = reason.map(str::trim).filter(|r| !r.is_empty());
+    Ok(match (record_state(conn, ident)?, reason) {
+        (Some(Record::Gone), _) => GONE_ELSEWHERE.to_owned(),
+        (Some(Record::Trashed), _) => IN_TRASH.to_owned(),
+        (Some(Record::Absent), _) => NOT_HERE.to_owned(),
+        (_, Some(reason)) => reason.to_owned(),
+        (Some(Record::Active), None) => WAS_UNAVAILABLE.to_owned(),
+        (None, None) => NOT_HERE.to_owned(),
+    })
+}
+
+/// What a file refused right now because its record is not proved here
+/// says: the record's place, or "não está mais disponível" (rule 21).
+pub(crate) fn immediate_message(conn: &Connection, ident: Option<&str>) -> Result<String> {
+    Ok(match record_state(conn, ident)? {
+        Some(Record::Gone) => GONE_ELSEWHERE,
+        Some(Record::Trashed) => IN_TRASH,
+        _ => NOT_HERE,
+    }
+    .to_owned())
+}
+
+/// The name, size and record of the file a card keeps (`None`: the card
+/// keeps no file for a record). The size is read off the encoding.
+fn file_of(mutation: &IntranetMutation) -> Option<(String, i64, i64)> {
+    match mutation {
+        IntranetMutation::AddAttachment {
+            owner_kind,
+            owner_id,
+            name,
+            data_base64,
+            ..
+        } if owner_kind == "document" => {
+            let digits = data_base64.trim_end_matches('=').len();
+            Some((name.clone(), (digits * 3 / 4) as i64, *owner_id))
+        }
+        _ => None,
+    }
 }
 
 /// The record a file for document `document_id` goes to, inside the
@@ -219,7 +305,9 @@ pub(crate) fn recovering(conn: &Connection, operation: Option<&str>) -> Result<b
 
 /// A file refused at once: kept in a card that holds the change as it was
 /// asked (the bytes with it), and its operation recorded as refused with
-/// that card, in the caller's transaction (frozen rule 20). Answers the card.
+/// that card, in the caller's transaction (frozen rule 20). `reason`: why
+/// the record, alive, could not take it (`None`: the record is not proved
+/// here). Answers the card.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn park(
     tx: &Connection,
@@ -230,18 +318,26 @@ pub(crate) fn park(
     description: &str,
     data: &[u8],
     operation: Option<&str>,
+    reason: Option<&str>,
 ) -> Result<i64> {
     use crate::idrefs::{Proof, Ref, Refs};
     let ident = ident.map(str::trim).filter(|i| !i.is_empty());
-    let message = refusal_message(tx, ident)?;
+    let (summary, said) = match reason {
+        Some(reason) => (reason.to_owned(), reason.to_owned()),
+        None => {
+            let message = immediate_message(tx, ident)?;
+            let said = format!("{message} O arquivo não foi anexado a nenhum registro.");
+            (message, said)
+        }
+    };
     let conflict = SyncConflict {
         id: 0,
         created_at: now(),
         actor: actor.to_owned(),
         item_label: format!("Anexo {}", name.trim()),
         local_summary: format!("Arquivo guardado neste aparelho: {}", name.trim()),
-        host_summary: message.to_owned(),
-        reason: format!("{message} O arquivo não foi anexado a nenhum registro."),
+        host_summary: summary,
+        reason: said,
         mutation: IntranetMutation::AddAttachment {
             owner_kind: "document".into(),
             owner_id: document_id,
@@ -280,8 +376,9 @@ pub(crate) fn park(
         )?;
         ready(tx)?;
         tx.execute(
-            "UPDATE phone_operations SET outcome='refused', card_id=?2, document_ident=?3 WHERE operation_id=?1",
-            params![operation, card, ident],
+            "UPDATE phone_operations SET outcome='refused', card_id=?2, document_ident=?3,
+               file_name=?4, refusal_reason=?5 WHERE operation_id=?1",
+            params![operation, card, ident, name.trim(), reason],
         )?;
     }
     Ok(card)
@@ -304,15 +401,102 @@ pub(crate) fn bind_outbox(
     Ok(())
 }
 
-/// In the transaction that stores card `card` of the queued change `uid`:
-/// its operation is refused, with that card (frozen rule 20).
-pub(crate) fn bind_card(conn: &Connection, uid: &str, card: i64) -> Result<()> {
+/// In the transaction that stores card `card` of the queued change
+/// `conflict`: its operation is refused, with that card (frozen rule 20),
+/// and keeps what the recovery list shows of it (the file's name and the
+/// card's reason), so that the list never opens the card.
+pub(crate) fn bind_card(conn: &Connection, conflict: &SyncConflict, card: i64) -> Result<()> {
+    let uid = conflict.mutation_uid.as_str();
     if !uid.is_empty() && ready(conn)? {
+        let file = file_of(&conflict.mutation);
         conn.execute(
-            "UPDATE phone_operations SET outcome='refused', card_id=?2 WHERE outbox_uid=?1",
-            params![uid, card],
+            "UPDATE phone_operations SET outcome='refused', card_id=?2, refusal_reason=?3,
+               file_name=COALESCE(?4,file_name), size=COALESCE(size,?5) WHERE outbox_uid=?1",
+            params![
+                uid,
+                card,
+                conflict.reason,
+                file.as_ref().map(|f| f.0.clone()),
+                file.as_ref().map(|f| f.1)
+            ],
         )?;
     }
+    Ok(())
+}
+
+/// In the transaction that resolves card `card` (by any path): an
+/// operation still refused with it is over, so it is never listed again.
+pub(crate) fn card_retired(conn: &Connection, card: i64) -> Result<()> {
+    if ready(conn)? {
+        conn.execute(
+            "UPDATE phone_operations SET outcome='resolved' WHERE card_id=?1 AND outcome='refused'",
+            [card],
+        )?;
+    }
+    Ok(())
+}
+
+/// Every card made since the last look that keeps a file for a record and
+/// has no operation (a share of an older Ponte de bolso, a file queued
+/// before this version, a card of a library left at schema 21) gets one,
+/// refused with it, so that the recovery list shows it and its three
+/// actions work (`revisao-f3-1b2.md` finding 3). Each card is opened once.
+fn bind_waiting_cards(conn: &Connection) -> Result<()> {
+    use crate::idrefs::Proof;
+    let seen = crate::idents::meta(conn, CARDS_SEEN)?.unwrap_or(0);
+    let last: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(id),0) FROM offline_conflicts",
+        [],
+        |r| r.get(0),
+    )?;
+    // A table that started again (never in place) is looked at whole.
+    let seen = if last < seen { 0 } else { seen };
+    if last == seen {
+        return Ok(());
+    }
+    let rows: Vec<(i64, Vec<u8>)> = conn
+        .prepare(
+            "SELECT c.id,c.payload FROM offline_conflicts c WHERE c.id>?1
+               AND NOT EXISTS(SELECT 1 FROM phone_operations o WHERE o.card_id=c.id) ORDER BY c.id",
+        )?
+        .query_map([seen], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, blob) in rows {
+        let Some(card) = crate::protection::unseal(&blob)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<SyncConflict>(&b).ok())
+            .filter(|c| c.resolved_at.is_empty())
+        else {
+            continue;
+        };
+        let Some((name, size, owner)) = file_of(&card.mutation) else {
+            continue;
+        };
+        let ident = card
+            .refs
+            .as_ref()
+            .and_then(|r| r.mutation.first())
+            .and_then(|r| match &r.proof {
+                Proof::Ident(ident) => Some(ident.clone()),
+                _ => None,
+            });
+        conn.execute(
+            "INSERT OR IGNORE INTO phone_operations(operation_id,kind,document_id,size,created_at,
+               outcome,card_id,document_ident,file_name,refusal_reason)
+             VALUES(?1,'attach',?2,?3,?4,'refused',?5,?6,?7,?8)",
+            params![
+                format!("cartao-{id}"),
+                owner,
+                size,
+                card.created_at,
+                id,
+                ident,
+                name,
+                card.reason
+            ],
+        )?;
+    }
+    crate::idents::set_meta(conn, CARDS_SEEN, last)?;
     Ok(())
 }
 
@@ -376,7 +560,7 @@ pub struct Refused {
     pub card_id: i64,
     pub name: String,
     pub size: usize,
-    pub message: &'static str,
+    pub message: String,
 }
 
 /// Card `card` while it waits, when it keeps the file of a refused phone
@@ -424,36 +608,58 @@ impl crate::storage::Store {
         Ok((ident.unwrap_or_default(), space(&self.conn)?))
     }
 
-    /// What the app says of a refused file for the record of `ident`.
-    pub fn refusal_message(&self, ident: Option<&str>) -> Result<&'static str> {
-        refusal_message(&self.conn, ident)
+    /// What the app says of a refused file for the record of `ident`,
+    /// refused for `reason` (see [`refusal_message`]).
+    pub fn refusal_message(&self, ident: Option<&str>, reason: Option<&str>) -> Result<String> {
+        refusal_message(&self.conn, ident, reason)
     }
 
-    /// The refused files whose card still waits, oldest first.
+    /// The refused files whose card still waits, oldest first: read from
+    /// their operations (name, size, reason), never from the files the
+    /// cards keep (`revisao-f3-1b2.md` finding 6).
     pub fn refused_attachments(&self) -> Result<Vec<Refused>> {
         if !ready(&self.conn)? {
             return Ok(Vec::new());
         }
-        let rows: Vec<(String, i64, Option<String>)> = self
+        bind_waiting_cards(&self.conn)?;
+        type Row = (
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        );
+        let rows: Vec<Row> = self
             .conn
             .prepare(
-                "SELECT operation_id,card_id,document_ident FROM phone_operations
-                 WHERE outcome='refused' AND card_id IS NOT NULL ORDER BY created_at,operation_id",
+                "SELECT o.operation_id,o.card_id,o.document_ident,o.file_name,o.size,o.refusal_reason
+                 FROM phone_operations o
+                 WHERE o.outcome='refused' AND o.card_id IS NOT NULL
+                   AND EXISTS(SELECT 1 FROM offline_conflicts c WHERE c.id=o.card_id)
+                 ORDER BY o.created_at,o.operation_id",
             )?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         let mut out = Vec::new();
-        for (operation_id, card_id, ident) in rows {
-            let Some(file) = waiting_card(&self.conn, card_id)?.and_then(|c| card_file_of(&c))
-            else {
-                continue;
+        for (operation_id, card_id, ident, name, size, reason) in rows {
+            // An operation bound before its name was kept: read once from
+            // its card.
+            let (name, size) = match (name, size) {
+                (Some(name), Some(size)) => (name, size.max(0) as usize),
+                _ => match waiting_card(&self.conn, card_id)?.and_then(|c| card_file_of(&c)) {
+                    Some(file) => (file.name, file.bytes.len()),
+                    None => continue,
+                },
             };
             out.push(Refused {
                 operation_id,
                 card_id,
-                name: file.name,
-                size: file.bytes.len(),
-                message: refusal_message(&self.conn, ident.as_deref())?,
+                name,
+                size,
+                message: refusal_message(&self.conn, ident.as_deref(), reason.as_deref())?,
             });
         }
         Ok(out)
@@ -461,6 +667,9 @@ impl crate::storage::Store {
 
     /// The file card `card_id` keeps, while it waits.
     pub fn card_file(&self, card_id: i64) -> Result<CardFile> {
+        if ready(&self.conn)? {
+            bind_waiting_cards(&self.conn)?;
+        }
         waiting_card(&self.conn, card_id)?
             .as_ref()
             .and_then(card_file_of)
@@ -472,7 +681,9 @@ impl crate::storage::Store {
     /// Before the recovery `operation` of card `card_id` runs: the card is
     /// resolved in the transaction that commits that operation.
     pub fn recover_card(&mut self, card_id: i64, operation: &str) -> Result<()> {
-        ready(&self.conn)?;
+        if ready(&self.conn)? {
+            bind_waiting_cards(&self.conn)?;
+        }
         let changed = self.conn.execute(
             "UPDATE phone_operations SET recovery_op=?2 WHERE card_id=?1 AND outcome='refused'",
             params![card_id, operation.trim()],
@@ -487,6 +698,9 @@ impl crate::storage::Store {
     /// "Descartar": card `card_id` is resolved and its file let go.
     pub fn discard_card(&mut self, card_id: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
+        if ready(&tx)? {
+            bind_waiting_cards(&tx)?;
+        }
         anyhow::ensure!(
             waiting_card(&tx, card_id)?.is_some(),
             "Este arquivo recusado não está mais guardado (já foi recuperado ou descartado)."

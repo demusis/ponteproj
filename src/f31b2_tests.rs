@@ -193,7 +193,14 @@ fn queued(store: &mut Store, document: i64, name: &str, data: &[u8], operation: 
 }
 
 /// The card an exchange makes of queued change `uid` (a file for `document`).
-fn late_card(store: &Store, uid: &str, document: i64, name: &str, data: &[u8], reason: &str) -> i64 {
+fn late_card(
+    store: &Store,
+    uid: &str,
+    document: i64,
+    name: &str,
+    data: &[u8],
+    reason: &str,
+) -> i64 {
     let conflict = SyncConflict {
         id: 0,
         created_at: "2026-11-24T10:00:00.000Z".into(),
@@ -260,7 +267,10 @@ fn f3_1b2c_the_list_decodes_no_file_and_a_resolved_card_keeps_none() {
     a.discard_card(second).unwrap();
     let resolved = card_payload(&a, second);
     assert!(!resolved.resolved_at.is_empty());
-    assert!(!resolved.mutation_uid.is_empty(), "still tells the change apart");
+    assert!(
+        !resolved.mutation_uid.is_empty(),
+        "still tells the change apart"
+    );
     assert_eq!(data_of(&resolved), "", "the file went with the card");
     assert_eq!(a.refused_attachments().unwrap().len(), 1);
 }
@@ -308,8 +318,9 @@ fn f3_1b2c_a_late_refusal_says_why_and_an_older_operation_is_listed() {
     );
     let listed = a.refused_attachments().unwrap();
     assert_eq!(listed.len(), 2);
-    assert_eq!(
-        (listed[1].card_id, listed[1].name.as_str(), listed[1].size),
-        (card, "foto2.pdf", 19)
-    );
+    let older = listed
+        .iter()
+        .find(|r| r.card_id == card)
+        .expect("the older operation's card is listed");
+    assert_eq!((older.name.as_str(), older.size), ("foto2.pdf", 19));
 }

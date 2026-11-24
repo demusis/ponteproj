@@ -6,8 +6,9 @@
 //! meanwhile.
 //!
 //! Every function answers a JSON string, `{"ok":true,...}` or
-//! `{"ok":false,"error":"..."}` (an error can also carry a `"code"`, today only
-//! `"target_changed"`); nothing panics across the JNI boundary.
+//! `{"ok":false,"error":"..."}` (an error can also carry a `"code"`:
+//! `"target_changed"`, `"target_gone"` with a `"card_id"`, `"file_refused"`);
+//! nothing panics across the JNI boundary.
 use anyhow::{Context, Result};
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jlong, jstring};
@@ -35,14 +36,21 @@ fn with_store<T>(work: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
 }
 
 /// The answer for an error: `{"ok":false,"error":"..."}`, plus `"code"` for the
-/// errors the app tells apart: `target_changed`, and `target_gone` with the
-/// `card_id` that keeps the refused file (F3.1b2).
+/// errors the app tells apart: `target_changed`; `target_gone` with the
+/// `card_id` that keeps the refused file (F3.1b2); `file_refused`, the file
+/// itself, which no record would take. Any other error carries no code: the
+/// app keeps the file it holds (`revisao-f3-1b2.md` finding 1).
 fn error_answer(error: &anyhow::Error) -> Value {
+    use ponteproj::attachments::{FileRefused, TargetChanged, TargetGone};
     let mut value = json!({"ok": false, "error": format!("{error:#}")});
-    if error.downcast_ref::<ponteproj::attachments::TargetChanged>().is_some() {
+    let find = |is: &dyn Fn(&(dyn std::error::Error + 'static)) -> bool| error.chain().any(is);
+    if find(&|e| e.is::<TargetChanged>()) {
         value["code"] = json!("target_changed");
     }
-    if let Some(gone) = error.downcast_ref::<ponteproj::attachments::TargetGone>() {
+    if find(&|e| e.is::<FileRefused>()) {
+        value["code"] = json!("file_refused");
+    }
+    if let Some(gone) = error.chain().find_map(|e| e.downcast_ref::<TargetGone>()) {
         value["code"] = json!("target_gone");
         value["card_id"] = json!(gone.card_id);
     }
@@ -1728,19 +1736,25 @@ const MAX_TITLE_BYTES: usize = 1000;
 
 /// Reads a working file to attach it, never more than the core's limit plus
 /// one byte: a file past the limit is refused with the core's own message
-/// before it is held in memory.
+/// before it is held in memory (`file_refused`: no record would take it). A
+/// file that cannot be read is no answer about the file.
 fn read_attachment_file(path: &str, name: &str) -> Result<Vec<u8>> {
-    use ponteproj::attachments::{size_message, MAX_ATTACHMENT_BYTES};
+    use ponteproj::attachments::{size_message, FileRefused, MAX_ATTACHMENT_BYTES};
     use std::io::Read;
+    let too_big = |size: u64| anyhow::Error::new(FileRefused(size_message(name, size)));
     let file = std::fs::File::open(path).context("O arquivo não pôde ser lido.")?;
     if let Ok(meta) = file.metadata() {
-        anyhow::ensure!(meta.len() <= MAX_ATTACHMENT_BYTES as u64, "{}", size_message(name, meta.len()));
+        if meta.len() > MAX_ATTACHMENT_BYTES as u64 {
+            return Err(too_big(meta.len()));
+        }
     }
     let mut bytes = Vec::new();
     file.take(MAX_ATTACHMENT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .context("O arquivo não pôde ser lido.")?;
-    anyhow::ensure!(bytes.len() <= MAX_ATTACHMENT_BYTES, "{}", size_message(name, bytes.len()));
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        return Err(too_big(bytes.len() as u64));
+    }
     Ok(bytes)
 }
 
@@ -1788,8 +1802,13 @@ fn attach_file_with(
                 done.kind == "attach",
                 "Este identificador de operação já foi usado por outra operação."
             );
-            if let (None, Some(card_id)) = (done.attachment_id, done.card_id) {
-                let message = store.refusal_message(done.document_ident.as_deref())?.to_owned();
+            // Refused into a card, at once or later at an exchange: the same
+            // card and words, never "attached".
+            if let (Some(card_id), true) =
+                (done.card_id, done.attachment_id.is_none() || done.outcome == "refused")
+            {
+                let message = store
+                    .refusal_message(done.document_ident.as_deref(), done.refusal_reason.as_deref())?;
                 return Err(ponteproj::attachments::TargetGone { card_id, message }.into());
             }
             return Ok(json!({
@@ -2000,7 +2019,8 @@ fn operation_status(store: &Store, input: &str) -> Result<Value> {
                     answer["card_id"] = json!(card);
                 }
                 if done.outcome == "refused" {
-                    answer["message"] = json!(store.refusal_message(done.document_ident.as_deref())?);
+                    answer["message"] = json!(store
+                        .refusal_message(done.document_ident.as_deref(), done.refusal_reason.as_deref())?);
                 }
             }
             answer

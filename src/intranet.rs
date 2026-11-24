@@ -1050,7 +1050,10 @@ fn carded_uids(conn: &Connection) -> Result<std::collections::BTreeSet<String>> 
 /// Marks a card resolved (kept hidden, see [`SyncConflict::resolved_at`])
 /// and forgets the resolved cards beyond the limits; a card of an older
 /// version, without the change's `uid`, has nothing to remember and goes.
+/// A resolved card keeps no file: only what tells its change apart
+/// (`revisao-f3-1b2.md` finding 6).
 pub(crate) fn retire_conflict(conn: &Connection, id: i64) -> Result<()> {
+    crate::phoneops::card_retired(conn, id)?;
     let blob: Option<Vec<u8>> = conn
         .query_row(
             "SELECT payload FROM offline_conflicts WHERE id=?1",
@@ -1064,6 +1067,9 @@ pub(crate) fn retire_conflict(conn: &Connection, id: i64) -> Result<()> {
     match card {
         Some(mut card) if !card.mutation_uid.is_empty() => {
             card.resolved_at = now_iso();
+            if let IntranetMutation::AddAttachment { data_base64, .. } = &mut card.mutation {
+                data_base64.clear();
+            }
             conn.execute(
                 "UPDATE offline_conflicts SET payload=?1 WHERE id=?2",
                 params![seal(&serde_json::to_vec(&card)?)?, id],
@@ -1147,7 +1153,7 @@ pub(crate) fn insert_conflict(conn: &Connection, conflict: &SyncConflict) -> Res
             };
             if held.mutation_uid == conflict.mutation_uid {
                 if held.resolved_at.is_empty() {
-                    crate::phoneops::bind_card(conn, &conflict.mutation_uid, id)?;
+                    crate::phoneops::bind_card(conn, conflict, id)?;
                 }
                 return Ok(None);
             }
@@ -1158,7 +1164,7 @@ pub(crate) fn insert_conflict(conn: &Connection, conflict: &SyncConflict) -> Res
         params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
     )?;
     let id = conn.last_insert_rowid();
-    crate::phoneops::bind_card(conn, &conflict.mutation_uid, id)?;
+    crate::phoneops::bind_card(conn, conflict, id)?;
     Ok(Some(id))
 }
 

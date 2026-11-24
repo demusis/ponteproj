@@ -1793,10 +1793,35 @@ internal object Controller {
         }, { refusedFiles = it }, { }, fail = "Não foi possível ler os arquivos não anexados.")
     }
 
-    /** Hoje, where the card of the refused files is. */
+    /**
+     * The files taken for a record that the core did not take yet, or refused at a start ([PendingAttachFlow]): Hoje
+     * lists them with the reason, and "Tentar de novo" / "Descartar" (or "Entendi").
+     */
+    var pendingNotices by mutableStateOf<List<PendingNotice>>(emptyList())
+        internal set
+
+    fun retryPending(n: PendingNotice) = Intake.retryPending(n.operationId)
+
+    /** "Descartar" is asked once more on the snackbar, since the file cannot come back; "Entendi" just goes. */
+    fun discardPending(n: PendingNotice) {
+        if (!n.canRetry) {
+            Intake.discardPending(n.operationId)
+            return
+        }
+        say("Descartar ${n.name}? Ele não poderá ser recuperado.", action = "Descartar", long = true) {
+            Intake.discardPending(n.operationId)
+        }
+    }
+
+    /**
+     * Hoje, where the cards of the refused and the kept files are ("Ver em Hoje"). Something being typed stays as it
+     * is (`revisao-f3-1b2.md` finding 4): the cards are only read again.
+     */
     fun showRefused() {
-        stack.clear()
-        selectTab(0)
+        if (PendingAttachRules.seeInToday(stack.toList(), Intake.attachBusy)) {
+            stack.clear()
+            selectTab(0)
+        }
         refreshRefused()
     }
 

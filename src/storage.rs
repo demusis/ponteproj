@@ -2197,6 +2197,9 @@ pub struct OperationRecord {
     pub card_id: Option<i64>,
     /// The identity of the record the file was taken for.
     pub document_ident: Option<String>,
+    /// Why the record could not take its file, in the card's own words
+    /// (`None`: the record was not proved here).
+    pub refusal_reason: Option<String>,
 }
 
 /// Writes the row of a phone operation: the idempotency key of one action of
@@ -2230,9 +2233,9 @@ impl Store {
         }
         // A library left at schema 21 has none of the F3.1b2 columns.
         let sql = if crate::phoneops::ready(&self.conn)? {
-            "SELECT kind,document_id,attachment_id,size,outcome,card_id,document_ident FROM phone_operations WHERE operation_id=?1"
+            "SELECT kind,document_id,attachment_id,size,outcome,card_id,document_ident,refusal_reason FROM phone_operations WHERE operation_id=?1"
         } else {
-            "SELECT kind,document_id,attachment_id,size,'accepted',NULL,NULL FROM phone_operations WHERE operation_id=?1"
+            "SELECT kind,document_id,attachment_id,size,'accepted',NULL,NULL,NULL FROM phone_operations WHERE operation_id=?1"
         };
         Ok(self
             .conn
@@ -2245,6 +2248,7 @@ impl Store {
                     outcome: r.get(4)?,
                     card_id: r.get(5)?,
                     document_ident: r.get(6)?,
+                    refusal_reason: r.get(7)?,
                 })
             })
             .optional()?)

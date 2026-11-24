@@ -83,6 +83,10 @@ internal fun TodayScreen(
     onCreateFromRefused: (RefusedFile) -> Unit = {},
     onAttachRefused: (RefusedFile) -> Unit = {},
     onDiscardRefused: (RefusedFile) -> Unit = {},
+    /** The files kept on the phone that the core did not take yet, or refused at a start; empty: no card. */
+    pending: List<PendingNotice> = emptyList(),
+    onRetryPending: (PendingNotice) -> Unit = {},
+    onDiscardPending: (PendingNotice) -> Unit = {},
     /** "Abrir o registro": gets the document id. */
     onOpenNoticeDocument: (Long) -> Unit = {},
     /** "Entendi": gets the notice id. */
@@ -98,7 +102,7 @@ internal fun TodayScreen(
     val currentWeek = weekStart != null && weekStart == WeekPlan.mondayOf(java.time.LocalDate.now())
     val weekDeadlines = if (currentWeek) week.sumOf { it.deadlines.size } else 0
     // Items before the "Atrasadas" header: error, summary, renumbered records, follow-ups, risks, week module.
-    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (notices.isNotEmpty()) 1 else 0) + (if (refused.isNotEmpty()) 1 else 0) + (if (risks.isNotEmpty()) 1 else 0) + (if (followUpCount > 0) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
+    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (notices.isNotEmpty()) 1 else 0) + (if (refused.isNotEmpty()) 1 else 0) + (if (pending.isNotEmpty()) 1 else 0) + (if (risks.isNotEmpty()) 1 else 0) + (if (followUpCount > 0) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
     LazyColumn(
         Modifier.fillMaxSize(),
         state = listState,
@@ -143,6 +147,7 @@ internal fun TodayScreen(
         if (refused.isNotEmpty()) item(key = "refused") {
             RefusedCard(refused, recoveryBusy, onCreateFromRefused, onAttachRefused, onDiscardRefused)
         }
+        if (pending.isNotEmpty()) item(key = "pending") { PendingCard(pending, onRetryPending, onDiscardPending) }
         if (followUpCount > 0) item(key = "follow-ups") {
             ResourceCountCard("Cobranças de hoje", followUpCount, Tone.ACCENT, onOpenFollowUps)
         }
@@ -243,6 +248,34 @@ internal fun RefusedCard(
                         TextAction(create, { if (!busy) onCreate(f) })
                         TextAction(attach, { if (!busy) onAttach(f) })
                         TextAction(discard, { if (!busy) onDiscard(f) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The files taken for a record and kept on the phone because the core did not take them (`revisao-f3-1b2.md` finding
+ * 1): each says why, with "Tentar de novo" and "Descartar"; one the core refused at a start says why, with "Entendi".
+ */
+@Composable
+internal fun PendingCard(files: List<PendingNotice>, onRetry: (PendingNotice) -> Unit, onDiscard: (PendingNotice) -> Unit) {
+    val c = Ponte.colors
+    Column(Modifier.fillMaxWidth()) {
+        SectionHeader(PendingAttachRules.noticeBanner(files.size), color = c.warning)
+        files.forEach { f ->
+            FlatRow(null) {
+                Column {
+                    Text(f.name, fontSize = 15.sp, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(f.message, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                    Column(Modifier.padding(top = 2.dp)) {
+                        if (f.canRetry) {
+                            TextAction(PendingAttachRules.RETRY, { onRetry(f) })
+                            TextAction(PendingAttachRules.DISCARD, { onDiscard(f) })
+                        } else {
+                            TextAction(PendingAttachRules.UNDERSTOOD, { onDiscard(f) })
+                        }
                     }
                 }
             }

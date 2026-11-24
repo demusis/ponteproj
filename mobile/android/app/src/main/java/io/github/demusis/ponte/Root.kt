@@ -119,7 +119,9 @@ internal fun AppRoot() {
                                 onDismissNotice = c::dismissRenumberNotice,
                                 refused = c.refusedFiles, recoveryBusy = c.recoveryBusy,
                                 onCreateFromRefused = c::createFromRefused, onAttachRefused = c::openRecoveryPick,
-                                onDiscardRefused = c::discardRefused
+                                onDiscardRefused = c::discardRefused,
+                                pending = c.pendingNotices, onRetryPending = c::retryPending,
+                                onDiscardPending = c::discardPending
                             )
                             // Tarefas | Projetos | Atendimentos | Recursos: they have no tab of their own (four is the limit);
                             // the title of the frame chooses among them.
