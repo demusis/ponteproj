@@ -1655,6 +1655,9 @@ pub mod test_support {
                 | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
             |_| Ok(99i64),
         )?;
+        // The one order of versions reads moments with this build's
+        // converter (the invariants read the current note by it).
+        super::register_functions(&conn)?;
         Ok(conn)
     }
 
@@ -1703,11 +1706,26 @@ pub mod test_support {
         )
     }
 
+    /// The current note of a document as the product chooses it: the
+    /// order of the product's read (`storage::current_note_query`, the one
+    /// order of versions of this library).
+    pub fn current_note(conn: &Connection, document: i64) -> Result<Option<i64>> {
+        Ok(conn.query_row(
+            &format!(
+                "SELECT {}",
+                super::current_note_sql("?1", super::has_idents(conn)?)
+            ),
+            [document],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Every way the library breaks the F2a invariants, in words: each row
     /// of the twelve kinds has exactly one well-formed identity and no
     /// identity names a missing row; each document has one pointer row,
-    /// whose note is the newest note (`max(id)`) and whose analysis is the
-    /// current analysis; no pointer row names a missing document.
+    /// whose note is the current note and whose analysis is the current
+    /// analysis, both as the product reads them; no pointer row names a
+    /// missing document.
     pub fn invariant_problems(conn: &Connection) -> Result<Vec<String>> {
         let mut problems = Vec::new();
         let count = |sql: &str| -> Result<i64> { Ok(conn.query_row(sql, [], |r| r.get(0))?) };
@@ -1760,11 +1778,7 @@ pub mod test_support {
                 problems.push(format!("documento {doc} sem ponteiro"));
                 continue;
             };
-            let newest_note: Option<i64> = conn.query_row(
-                "SELECT max(id) FROM notes WHERE document_id=?1",
-                [doc],
-                |r| r.get(0),
-            )?;
+            let newest_note = current_note(conn, doc)?;
             if note != newest_note {
                 problems.push(format!(
                     "documento {doc}: nota atual {note:?}, a regra dá {newest_note:?}"
