@@ -401,6 +401,74 @@ pub(crate) fn is_mapped(conn: &Connection) -> Result<bool> {
     Ok(meta(conn, "mapped")? == Some(1))
 }
 
+/// The id floor of each table of the twelve kinds (adendo §4 rule 1):
+/// `max(id_high, sqlite_sequence, max(id))`, read at the start of a
+/// transaction, before anything of it removes a row.
+pub(crate) fn id_floor(conn: &Connection) -> Result<std::collections::BTreeMap<String, i64>> {
+    let kept = |name: &str| -> Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [name],
+            |r| r.get(0),
+        )?)
+    };
+    let (high, seq) = (kept("id_high")?, kept("sqlite_sequence")?);
+    let mut out = std::collections::BTreeMap::new();
+    for (_, table) in KINDS {
+        let read = |sql: &str| -> Result<i64> {
+            Ok(conn
+                .query_row(sql, [table], |r| r.get::<_, Option<i64>>(0))?
+                .unwrap_or(0))
+        };
+        let mut floor: i64 = conn.query_row(
+            &format!("SELECT coalesce(max(id),0) FROM {table}"),
+            [],
+            |r| r.get(0),
+        )?;
+        if high {
+            floor = floor.max(read("SELECT max(high) FROM id_high WHERE tbl=?1")?);
+        }
+        if seq {
+            floor = floor.max(read("SELECT max(seq) FROM sqlite_sequence WHERE name=?1")?);
+        }
+        out.insert(table.to_owned(), floor);
+    }
+    Ok(out)
+}
+
+/// Ends a transaction that began with `floor`: the high-water mark of each
+/// table (`id_high` and `sqlite_sequence`) becomes the largest of `floor`,
+/// `carried` (a copy's own, `CabinetSnapshot::id_high`) and what the table
+/// holds now. It never goes down: no number given before is given again.
+pub(crate) fn keep_id_floor(
+    tx: &Connection,
+    floor: &std::collections::BTreeMap<String, i64>,
+    carried: &std::collections::BTreeMap<String, i64>,
+) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS id_high(tbl TEXT PRIMARY KEY, high INTEGER NOT NULL);",
+    )?;
+    for (table, now) in id_floor(tx)? {
+        let high = [floor.get(&table), carried.get(&table)]
+            .into_iter()
+            .flatten()
+            .fold(now, |a, b| a.max(*b));
+        tx.execute(
+            "INSERT OR REPLACE INTO id_high(tbl,high) VALUES(?1,?2)",
+            params![table, high],
+        )?;
+        tx.execute(
+            "UPDATE sqlite_sequence SET seq=?2 WHERE name=?1 AND seq<?2",
+            params![table, high],
+        )?;
+        tx.execute(
+            "INSERT INTO sqlite_sequence(name,seq) SELECT ?1,?2 WHERE NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name=?1)",
+            params![table, high],
+        )?;
+    }
+    Ok(())
+}
+
 /// The rows a logged execution inserted, (ident kind, row id), with the
 /// identity each was given in the write that created it.
 pub(crate) type Inserted = std::collections::BTreeMap<(String, i64), String>;

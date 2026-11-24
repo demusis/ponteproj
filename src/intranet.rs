@@ -651,6 +651,11 @@ pub struct CabinetSnapshot {
     /// the main computer's nonce). Absent where `idents` is.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ident_epoch: String,
+    /// The highest number each id table of a copy of format 9 ever gave,
+    /// by table (adendo §4 rule 2): the library that loads the copy never
+    /// numbers below it, so a row removed from the copy is never reused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub id_high: BTreeMap<String, i64>,
 }
 
 /// The first library schema that stores recursos.
@@ -3272,6 +3277,7 @@ impl Store {
             generation: String::new(),
             idents: Vec::new(),
             ident_epoch: String::new(),
+            id_high: BTreeMap::new(),
         })
     }
 
@@ -3474,6 +3480,8 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // The id floor of each table, before anything is removed (adendo §4).
+        let floor = crate::idents::id_floor(&tx)?;
         // The numbers this library shows, to compare with the copy's.
         let presented = if notices {
             crate::renumber::Presented::read(&tx)
@@ -3831,6 +3839,8 @@ impl Store {
         );
         // The identities the copy carries (format 9, team V2) go with its rows.
         crate::idents::adopt_triples(&tx, snapshot)?;
+        // Never below a number given before, here or in the copy.
+        crate::idents::keep_id_floor(&tx, &floor, &snapshot.id_high)?;
         finish(&tx)?;
         tx.commit()?;
         Ok(())
@@ -6705,12 +6715,18 @@ impl Store {
                             .unwrap_or_default()
                     };
                     crate::idents::attach(&store.conn, &mut snapshot, &epoch)?;
+                    // The highest number each table of the copy ever gave,
+                    // the replay included (adendo §4 rule 2).
+                    snapshot.id_high = crate::idents::id_floor(&store.conn)?;
                 }
                 let blobs = collect_blobs(store, &snapshot)?;
                 (snapshot, blobs)
             }
             None => {
-                let snapshot = self.export_snapshot()?;
+                let mut snapshot = self.export_snapshot()?;
+                if nine_out {
+                    snapshot.id_high = crate::idents::id_floor(&self.conn)?;
+                }
                 let blobs = collect_blobs(self, &snapshot)?;
                 (snapshot, blobs)
             }

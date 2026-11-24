@@ -65,6 +65,7 @@ fn nine_content(path: &Path) -> (Value, usize, String) {
     copy.payload.snapshot.idents.clear();
     // The proofs of level 2 (F3) are no content of format 8 either.
     copy.payload.refs_since = None;
+    copy.payload.snapshot.id_high.clear();
     for e in copy.payload.journal.iter_mut() {
         e.idents.clear();
         e.refs = None;

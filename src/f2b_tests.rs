@@ -316,7 +316,9 @@ fn f2b_b1_divergent_merge_with_a_reused_row() {
         .unwrap();
     only(&mut a, &pen);
     let y = doc_by_number(&a, &number("a", 2)).unwrap();
-    assert_eq!(y, x, "Y reused X's row");
+    // F3.0b (adendo §4): the copy keeps its id floor, so Y no longer takes
+    // the row X left.
+    assert_ne!(y, x, "a removed copy row is never given again");
     let ident_y = ident_of(&a, "document", y).unwrap();
     assert_ne!(ident_x, ident_y);
     // B moves the Drive on (newest copy), then A merges both.
