@@ -3486,6 +3486,22 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         // The id floor of each table, before anything is removed (adendo §4).
         let floor = crate::idents::id_floor(&tx)?;
+        // A mapped library gives the copy's rows of the mapped kinds numbers
+        // of its own (adendo §4); any other adoption stays verbatim.
+        let mapping = if notices {
+            crate::mapper::plan(&tx, snapshot, &floor)?
+        } else {
+            Default::default()
+        };
+        let mapped;
+        let snapshot = if mapping.is_empty() {
+            snapshot
+        } else {
+            prepared_file_blobs = mapping.rekey("file", prepared_file_blobs);
+            prepared_attachment_blobs = mapping.rekey("attachment", prepared_attachment_blobs);
+            mapped = crate::mapper::apply(snapshot, &mapping);
+            &mapped
+        };
         // The numbers this library shows, to compare with the copy's.
         let presented = if notices {
             crate::renumber::Presented::read(&tx)

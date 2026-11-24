@@ -179,7 +179,7 @@ pub type Visit<'a> = dyn FnMut(IdKind, &mut i64) -> Result<(), String> + 'a;
 /// its name, which follows them (`C{c}`, `C{c}F{f}P{p}[OCR]` or
 /// `A{a}H{hash}`, whose attachment is a site of its own). The name it had
 /// and the one it got, when it changed.
-fn visit_source(
+pub(crate) fn visit_source(
     name: &mut String,
     document_id: &mut i64,
     capture_id: &mut i64,
