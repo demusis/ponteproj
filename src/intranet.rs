@@ -5955,11 +5955,10 @@ impl Store {
                     .into(),
             ));
         }
-        for (path, nine, _) in entries {
-            let found: Vec<String> = crate::sharedfolder::conflict_copies_of(path)
-                .into_iter()
-                .chain(crate::sharedfolder::conflict_copies_of(nine))
-                .collect();
+        // P6: the same rule as the folder card of 0.51 (`folder_health`), for
+        // the old name and for its file of format 9.
+        for (path, _, _) in entries {
+            let found = crate::folder_health::conflict_copy_names(path);
             if !found.is_empty() {
                 return Ok(Some(format!(
                     "a pasta tem cópias em conflito da nuvem ({}); junte o que for preciso e apague-as",
@@ -6838,10 +6837,10 @@ impl Store {
                 "uma alteração deste computador não pôde ser aplicada; resolva o aviso dela",
             ));
         }
-        let nine_out = nine_mode || promote.is_some();
+        let mut nine_out = nine_mode || promote.is_some();
 
         reporter.step("Reunindo PDFs e anexos…");
-        let (final_snapshot, source): (_, &Store) = match &temp {
+        let (mut final_snapshot, source): (_, &Store) = match &temp {
             Some(store) => {
                 #[cfg(any(test, feature = "test-support"))]
                 crate::idents::hooks::PEEK_TEMP.with(|h| {
@@ -6898,8 +6897,8 @@ impl Store {
         for entry in &journal {
             removed.note(&entry.mutation, entry.refs.as_ref());
         }
-        let result_index = crate::coverage::ResultIndex::of(&final_snapshot);
-        let final_identity = sharedfolder::snapshot_identity(&final_snapshot);
+        let mut result_index = crate::coverage::ResultIndex::of(&final_snapshot);
+        let mut final_identity = sharedfolder::snapshot_identity(&final_snapshot);
         // The identity of each copy's content, computed once.
         let identities: BTreeMap<PathBuf, String> = copies
             .iter()
@@ -6923,7 +6922,7 @@ impl Store {
                 .min()
                 .unwrap_or(revision)
         });
-        let payload = Payload {
+        let mut payload = Payload {
             snapshot: final_snapshot.clone(),
             applied: applied.into_iter().collect(),
             journal,
@@ -6932,12 +6931,12 @@ impl Store {
         // One moment for every file this exchange writes: copies written
         // together say so (the same revision, writer and moment).
         let written_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let format = if nine_out {
+        let mut format = if nine_out {
             sharedfolder::FORMAT_9
         } else {
             sharedfolder::FORMAT
         };
-        let request = WriteRequest {
+        let mut request = WriteRequest {
             lineage,
             revision,
             writer: &cfg.folder_writer,
@@ -6971,7 +6970,39 @@ impl Store {
         // and the seal can still push it over) is refused here, so that no
         // copy is kept aside for a rewrite that is not going to happen.
         if too_big_early.is_none() {
-            let exact = sharedfolder::exact_len(&request, format, &payload, &blobs)?;
+            let mut exact = sharedfolder::exact_len(&request, format, &payload, &blobs)?;
+            if exact > sharedfolder::write_limit() && promote.is_some() {
+                // The promotion would write a file that does not fit (the
+                // file of format 9 carries the identities and the level): it
+                // waits, like any other unmet condition, and this exchange
+                // goes on in format 8, which may still fit. Nothing of the
+                // cut leaves the temporary library: the result of format 8
+                // carries no identity, epoch or highest numbers, its journal
+                // no proof, and its index and identity are taken again.
+                promote = None;
+                nine_out = false;
+                report.promotion_wait = Some(promotion_wait_line(&format!(
+                    "o acervo não cabe no arquivo novo da pasta (daria {}; o limite é {}). {}",
+                    crate::folder_health::format_size(exact),
+                    crate::folder_health::format_size(sharedfolder::MAX_FILE_BYTES),
+                    crate::folder_health::ADVICE.trim_end_matches('.')
+                )));
+                final_snapshot.idents.clear();
+                final_snapshot.ident_epoch.clear();
+                final_snapshot.id_high.clear();
+                for entry in payload.journal.iter_mut() {
+                    entry.idents.clear();
+                    entry.refs = None;
+                    entry.legacy = false;
+                }
+                payload.snapshot = final_snapshot.clone();
+                payload.refs_since = None;
+                result_index = crate::coverage::ResultIndex::of(&final_snapshot);
+                final_identity = sharedfolder::snapshot_identity(&final_snapshot);
+                format = sharedfolder::FORMAT;
+                request.schema_version = crate::storage::SCHEMA_VERSION;
+                exact = sharedfolder::exact_len(&request, format, &payload, &blobs)?;
+            }
             if exact > sharedfolder::write_limit() {
                 too_big_early = Some(crate::folder_health::too_big_message(Some(exact)));
             }
@@ -7231,7 +7262,7 @@ impl Store {
             self.keep_conflicts(&conflicts)?;
             bail!(
                 "A atualização do arquivo da pasta parou: {}. Os arquivos antigos ficaram como estavam e as alterações continuam guardadas neste computador; a próxima sincronização continua de onde parou.",
-                failures.join("; ")
+                failures.join("; ").trim_end_matches('.')
             );
         }
         if changed_content {
@@ -14119,7 +14150,7 @@ impl IntranetPanel {
                 widgets::section(ui, "Pastas");
                 crate::help_ui::help(ui, "Os computadores trocam o acervo por um arquivo protegido pela sua senha, guardado nas pastas que você escolher: Google Drive, OneDrive, pendrive, pasta da rede. Pode ser mais de uma pasta; o Ponte usa a cópia mais recente e grava em todas as que alcançar.");
             });
-            widgets::small_muted(ui, "O arquivo ponte-sync.ponte fica dentro de cada pasta.");
+            widgets::small_muted(ui, "O arquivo ponte-sync.ponte fica dentro de cada pasta (desde a 0.52, o acervo vai em ponte-sync-formato9.ponte, ao lado dele).");
             ui.add_space(theme::S2);
             let mut remove: Option<usize> = None;
             for (index, path) in self.draft.folder_files.clone().iter().enumerate() {

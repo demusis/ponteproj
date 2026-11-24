@@ -141,6 +141,11 @@ internal object PhoneWords {
         Regex("""Nenhuma pasta pôde ser gravada: O acervo passa de 512 MB e não cabe no arquivo de sincronização( \(daria [^)]*\))?\. Nada foi gravado\. .*?As alterações continuam guardadas neste computador\.""", any) to
             "O acervo passa de 512 MB e não cabe no arquivo de sincronização$1. Nada foi gravado. ${FolderRoom.ADVICE} " +
             "As alterações continuam guardadas neste aparelho.",
+        // src/intranet.rs (sync_with_folders, the first exchange on the file of the new format): the same refusal
+        // by size, in the words of 0.51 (the Lixeira and the attachments are handled on the computer).
+        Regex("""A atualização do arquivo da pasta parou: O acervo passa de 512 MB e não cabe no arquivo de sincronização( \(daria [^)]*\))?\. Nada foi gravado\. .*?Os arquivos antigos ficaram como estavam e as alterações continuam guardadas neste computador; a próxima sincronização continua de onde parou\.""", any) to
+            "O acervo passa de 512 MB e não cabe no arquivo de sincronização$1. Nada foi gravado. ${FolderRoom.ADVICE} " +
+            "As alterações continuam guardadas neste aparelho.",
         // src/intranet.rs:2794
         Regex("""Nenhuma pasta pôde ser gravada: .*?\. As alterações continuam guardadas neste computador\.""", any) to
             "Não foi possível gravar o arquivo de sincronização. As alterações continuam guardadas neste aparelho.",

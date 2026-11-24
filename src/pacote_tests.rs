@@ -448,11 +448,20 @@ fn a_library_that_fits_in_format_8_but_not_in_9_keeps_syncing_in_8() {
     assert!(!report.written_to.is_empty(), "{report:?}");
     assert!(a.list_offline_outbox().unwrap().is_empty());
     still_eight(&a);
-    sync(&mut b);
+    // B is a computer of this version too, with the same library: it does
+    // not fit either, receives and sends in format 8.
+    limit(1500);
+    let report = try_sync(&mut b);
+    sharedfolder::set_write_limit_for_test(sharedfolder::MAX_FILE_BYTES);
+    report.expect("B receives");
     assert_eq!(b.load_document(document).unwrap().note, "Nota de A");
-    // And A receives what B sends.
     b.save_note(document, "Outra nota de B").unwrap();
-    sync(&mut b);
+    limit(1500);
+    let report = try_sync(&mut b);
+    sharedfolder::set_write_limit_for_test(sharedfolder::MAX_FILE_BYTES);
+    waits(&report.expect("B sends in format 8"));
+    still_eight(&b);
+    // And A receives what B sent.
     limit(16);
     let report = try_sync(&mut a);
     sharedfolder::set_write_limit_for_test(sharedfolder::MAX_FILE_BYTES);

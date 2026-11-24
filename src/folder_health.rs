@@ -257,6 +257,49 @@ fn is_divergent_rest(rest: &str) -> bool {
         .is_some_and(|code| code.len() == 16 && code.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
+/// What `candidate` is beside the configured file `real_name`, whose file of
+/// format 9 is `nine_name` (both bare names): a copy of either (see
+/// [`classify`]), never the file of format 9 itself, which holds the
+/// library. The one rule of the folder card, of the cleaning and of the
+/// promotion's wait for conflict copies (design F2 §3.4, P6).
+pub fn sibling_kind(real_name: &str, nine_name: &str, candidate: &str) -> Option<Sibling> {
+    if candidate.eq_ignore_ascii_case(nine_name) {
+        return None;
+    }
+    classify(nine_name, candidate).or_else(|| classify(real_name, candidate))
+}
+
+/// The names of the copies the cloud made (see [`sibling_kind`]) of the
+/// configured file `real` or of its file of format 9, in its folder, sorted.
+/// By name alone, so a copy the cloud has not finished bringing down counts
+/// too, and with no cap on the folder's size (the card lists only Ponte
+/// files, among the first [`MAX_ENTRIES`]): the promotion waits at least
+/// whenever the card warns. A folder that cannot be read gives none (the
+/// exchange says that on its own).
+pub fn conflict_copy_names(real: &Path) -> Vec<String> {
+    let nine = crate::sharedfolder::nine_path(real);
+    let (Some(real_name), Some(nine_name), Some(folder)) = (
+        real.file_name().and_then(|n| n.to_str()),
+        nine.file_name().and_then(|n| n.to_str()),
+        real.parent().filter(|p| !p.as_os_str().is_empty()),
+    ) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = std::fs::read_dir(folder)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| {
+                    sibling_kind(real_name, nine_name, name) == Some(Sibling::ConflictCopy)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
 /// Whether a file this old is offered for cleaning.
 pub fn is_old(age: Duration) -> bool {
     age > Duration::from_secs(OLD_ARCHIVE_DAYS * 24 * 60 * 60)
@@ -431,18 +474,33 @@ fn configured_set(paths: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
-/// The lineage of the library the shared file at `real` belongs to (read
-/// from the file of format 9 beside it when the name holds no file).
+/// The lineage of the library the shared file at `real` belongs to, read
+/// from the file that holds it ([`live_file`]: the file of format 9 when it
+/// is there). A file of another library written at the old name meanwhile
+/// (an older Ponte that started a library of its own) is never the
+/// reference; a file of format 9 that cannot be read gives none, and then
+/// nothing is offered.
 fn lineage_of(real: &Path) -> Option<String> {
-    [real.to_path_buf(), crate::sharedfolder::nine_path(real)]
-        .iter()
-        .find_map(|path| crate::sharedfolder::read_header(path).ok().flatten())
+    crate::sharedfolder::read_header(&live_file(real))
+        .ok()
+        .flatten()
         .map(|header| header.lineage)
 }
 
-/// The header the card of the configured path `real` describes.
+/// The header of the file that holds the library of the configured path
+/// `real` ([`live_file`]), the one the card of the folder describes: since
+/// the format 9, the file `<nome>-formato9.ponte`, never the small stub at
+/// `real`, which keeps the revision of the exchange that wrote it. A stub
+/// whose file of format 9 is not in the folder is said as such.
 pub fn library_header(real: &Path) -> anyhow::Result<Option<crate::sharedfolder::Header>> {
-    crate::sharedfolder::read_header(real)
+    let header = crate::sharedfolder::read_header(&live_file(real))?;
+    if let Some(stub) = header.as_ref().filter(|h| !h.points_to.is_empty()) {
+        anyhow::bail!(
+            "O arquivo da pasta passou para {}, que ainda não está nesta pasta. Espere a nuvem terminar de sincronizar.",
+            stub.points_to
+        );
+    }
+    Ok(header)
 }
 
 /// The file that holds the library for the configured path `real`: since
@@ -520,12 +578,7 @@ fn scan_one(
     };
     for entry in entries.flatten().take(MAX_ENTRIES) {
         let name = entry.file_name().to_string_lossy().into_owned();
-        // A copy of the old name or of the file of format 9 beside it; the
-        // file of format 9 itself is the library, never a copy.
-        if name.eq_ignore_ascii_case(nine_name) {
-            continue;
-        }
-        let Some(kind) = classify(nine_name, &name).or_else(|| classify(real_name, &name)) else {
+        let Some(kind) = sibling_kind(real_name, nine_name, &name) else {
             continue;
         };
         let path = entry.path();
@@ -735,7 +788,11 @@ pub fn delete_old_archives(
 ) -> (Vec<PathBuf>, Vec<String>) {
     let mut deleted = Vec::new();
     let mut skipped = Vec::new();
-    let Some(real_name) = real.file_name().and_then(|n| n.to_str()) else {
+    let nine = crate::sharedfolder::nine_path(real);
+    let (Some(real_name), Some(nine_name)) = (
+        real.file_name().and_then(|n| n.to_str()),
+        nine.file_name().and_then(|n| n.to_str()),
+    ) else {
         return (deleted, skipped);
     };
     let Some(folder) = real.parent().filter(|p| !p.as_os_str().is_empty()) else {
@@ -746,9 +803,11 @@ pub fn delete_old_archives(
     for found in chosen {
         let name = found.name.as_str();
         let skip = |why: &str| format!("{name}: {why}");
+        // The same names the scan offers: a copy kept aside of the old name
+        // or of the file of format 9 (never that file itself).
         if found.path.parent() != real.parent()
             || found.path.file_name().and_then(|n| n.to_str()) != Some(name)
-            || classify(real_name, name) != Some(Sibling::Divergent)
+            || sibling_kind(real_name, nine_name, name) != Some(Sibling::Divergent)
         {
             skipped.push(skip("não é uma cópia guardada ao lado deste arquivo"));
             continue;
@@ -915,6 +974,76 @@ mod tests {
         assert_ne!(
             classify(REAL, "ponte-sync-divergente-a1b2c3d4e5f60789.ponte"),
             Some(Sibling::ConflictCopy)
+        );
+    }
+
+    /// Revisão do pacote, achado 5: one rule for the card and for the
+    /// promotion's wait (P6), for the old name and for the file of format 9
+    /// beside it; the file of format 9 itself, the stub and the Ponte's own
+    /// files are never copies.
+    #[test]
+    fn the_card_and_the_promotion_tell_conflict_copies_by_the_same_rule() {
+        const NINE: &str = "ponte-sync-formato9.ponte";
+        for name in [
+            "ponte-sync (1).ponte",
+            "ponte-sync (cópia em conflito de Maria).ponte",
+            "Cópia de ponte-sync.ponte",
+            "ponte-sync-NOTEBOOK-01.ponte",
+            "ponte-sync-DESKTOP-ABC123.ponte",
+            "ponte-sync-formato9 (1).ponte",
+            "Copy of ponte-sync-formato9.ponte",
+            "ponte-sync-formato9-NOTEBOOK-01.ponte",
+        ] {
+            assert_eq!(
+                sibling_kind(REAL, NINE, name),
+                Some(Sibling::ConflictCopy),
+                "{name}"
+            );
+        }
+        for name in [
+            "ponte-sync.ponte",
+            "ponte-sync-formato9.ponte",
+            "PONTE-SYNC-FORMATO9.ponte",
+            "ponte-sync-guarda.ponte",
+            "ponte-sync-formato9-guarda.ponte",
+            "ponte-sync-formato9-pendente.ponte",
+            "ponte-sync-divergente-a1b2c3d4e5f60789.ponte",
+            "ponte-sync-formato9-divergente-a1b2c3d4e5f60789.ponte",
+            "ponte-sync-antigo.ponte",
+            "outro (1).ponte",
+        ] {
+            assert_ne!(
+                sibling_kind(REAL, NINE, name),
+                Some(Sibling::ConflictCopy),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            sibling_kind(
+                REAL,
+                NINE,
+                "ponte-sync-formato9-divergente-a1b2c3d4e5f60789.ponte"
+            ),
+            Some(Sibling::Divergent)
+        );
+        // On disk: by name, the copies of both files, sorted.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join(REAL);
+        for name in [
+            REAL,
+            NINE,
+            "ponte-sync-NOTEBOOK-01.ponte",
+            "ponte-sync-formato9 (1).ponte",
+            "ponte-sync-guarda.ponte",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        assert_eq!(
+            conflict_copy_names(&real),
+            [
+                "ponte-sync-NOTEBOOK-01.ponte",
+                "ponte-sync-formato9 (1).ponte"
+            ]
         );
     }
 

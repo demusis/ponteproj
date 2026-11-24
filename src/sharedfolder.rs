@@ -860,67 +860,6 @@ pub fn aliases(paths: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
     None
 }
 
-/// The words cloud clients put in the name of a conflict copy.
-const CONFLICT_WORDS: [&str; 4] = [
-    "cópia em conflito",
-    "copia em conflito",
-    "conflicted copy",
-    "copia en conflicto",
-];
-
-/// Whether `candidate` (a bare file name) is a copy that a cloud client made
-/// of `real` (`ponte-sync (1).ponte`, `… (cópia em conflito …).ponte`,
-/// `Cópia de ponte-sync.ponte`): the same rule as the folder check of 0.51,
-/// conservative (the Ponte's own files and other names never match).
-pub fn is_conflict_copy(real: &str, candidate: &str) -> bool {
-    let split = |name: &str| -> Option<(String, String)> {
-        let lower = name.to_lowercase();
-        let dot = lower.rfind('.')?;
-        Some((lower[..dot].to_owned(), lower[dot + 1..].to_owned()))
-    };
-    let (Some((real_stem, real_ext)), Some((stem, ext))) = (split(real), split(candidate)) else {
-        return false;
-    };
-    if ext != real_ext || candidate.eq_ignore_ascii_case(real) || candidate.starts_with('.') {
-        return false;
-    }
-    for prefix in ["cópia de ", "copia de ", "copy of "] {
-        if stem.strip_prefix(prefix) == Some(real_stem.as_str()) {
-            return true;
-        }
-    }
-    let Some(rest) = stem.strip_prefix(real_stem.as_str()) else {
-        return false;
-    };
-    if rest.is_empty() || rest.starts_with('-') || rest.contains(".tmp-") {
-        return false;
-    }
-    let numbered = rest
-        .strip_prefix(" (")
-        .and_then(|r| r.strip_suffix(')'))
-        .is_some_and(|inner| !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()));
-    numbered || CONFLICT_WORDS.iter().any(|word| rest.contains(word))
-}
-
-/// The conflict copies (see [`is_conflict_copy`]) of `path` beside it.
-pub fn conflict_copies_of(path: &Path) -> Vec<String> {
-    let (Some(folder), Some(real)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
-    else {
-        return Vec::new();
-    };
-    let mut found: Vec<String> = std::fs::read_dir(folder)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|name| is_conflict_copy(real, name))
-                .collect()
-        })
-        .unwrap_or_default();
-    found.sort();
-    found
-}
-
 fn put_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -1510,28 +1449,14 @@ mod tests {
         );
     }
 
+    /// The conflict copies of the folder are told by `folder_health`
+    /// (`sibling_kind`), the one rule of the card and of the promotion.
     #[test]
-    fn aliases_and_cloud_conflict_copies() {
+    fn aliases_of_the_same_file() {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("ponte-sync.ponte");
         assert!(aliases(&[a.clone(), dir.path().join("PONTE-SYNC.ponte")]).is_some());
         assert!(aliases(&[a.clone(), dir.path().join("ponte-sync-formato9.ponte")]).is_some());
         assert!(aliases(&[a.clone(), dir.path().join("outro.ponte")]).is_none());
-        for name in [
-            "ponte-sync (1).ponte",
-            "ponte-sync (cópia em conflito de Maria).ponte",
-            "Cópia de ponte-sync.ponte",
-        ] {
-            assert!(is_conflict_copy("ponte-sync.ponte", name), "{name}");
-        }
-        for name in [
-            "ponte-sync.ponte",
-            "ponte-sync-formato9.ponte",
-            "ponte-sync-guarda.ponte",
-            "ponte-sync-divergente-a1b2c3d4e5f60789.ponte",
-            "outro (1).ponte",
-        ] {
-            assert!(!is_conflict_copy("ponte-sync.ponte", name), "{name}");
-        }
     }
 }
