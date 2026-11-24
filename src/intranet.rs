@@ -6689,7 +6689,7 @@ impl Store {
                             }),
                             ..entry.clone()
                         };
-                        let mut conflict = card_of(&entry, &sent, &error, base_snapshot);
+                        let mut conflict = card_of(entry, &sent, &error, base_snapshot);
                         conflict.unresolved = unresolved;
                         conflict.identity = identity;
                         conflicts.push(conflict);

@@ -630,8 +630,12 @@ impl Removed {
             return;
         }
         match proof {
-            None => drop(self.legacy.insert((kind, id))),
-            Some(Some(Proof::Ident(ident))) => drop(self.idents.insert((kind, ident.clone()))),
+            None => {
+                self.legacy.insert((kind, id));
+            }
+            Some(Some(Proof::Ident(ident))) => {
+                self.idents.insert((kind, ident.clone()));
+            }
             // Proved by no identity: it explains nothing.
             Some(_) => {}
         }

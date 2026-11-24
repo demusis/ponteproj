@@ -99,7 +99,9 @@ pub(crate) fn plan(
         let mut rest = Vec::new();
         for (_, id) in rows.iter().filter(|(k, _)| k == kind) {
             match carried.get(&(*kind, *id)).and_then(|i| here.get(*i)) {
-                Some(local) => drop(map.insert(*id, *local)),
+                Some(local) => {
+                    map.insert(*id, *local);
+                }
                 None => rest.push(*id),
             }
         }
