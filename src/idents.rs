@@ -384,7 +384,12 @@ pub(crate) fn meta(conn: &Connection, key: &str) -> Result<Option<i64>> {
         .optional()?)
 }
 
+/// Kept only in a library of schema 22: one left at 21 for this opening
+/// works as before F2a and gets no table of it.
 pub(crate) fn set_meta(conn: &Connection, key: &str, value: i64) -> Result<()> {
+    if !has_idents(conn)? {
+        return Ok(());
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS ident_meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);",
     )?;
@@ -483,8 +488,12 @@ pub struct Rekeyed {
     pub skipped: usize,
 }
 
-/// The identity of row `row` of kind `kind`.
+/// The identity of row `row` of kind `kind` (none in a library left at
+/// schema 21).
 pub(crate) fn ident_of(conn: &Connection, kind: &str, row: i64) -> Result<Option<String>> {
+    if !has_idents(conn)? {
+        return Ok(None);
+    }
     Ok(conn
         .query_row(
             "SELECT ident FROM item_ident WHERE kind=?1 AND row_id=?2",
@@ -854,17 +863,31 @@ pub(crate) fn close_carry(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Whether the durable log was ever made in this library (never in one
+/// left at schema 21: a change that carries identities is not served
+/// there).
+fn carry_log_kept(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='carry_log')",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
 /// Forgets the durable log of `uid` (its rekey is done, or it was refused).
 pub(crate) fn end_carry(conn: &Connection, uid: &str) -> Result<()> {
-    ensure_carry_log(conn)?;
-    conn.execute("DELETE FROM carry_log WHERE uid=?1", [uid])?;
+    if carry_log_kept(conn)? {
+        conn.execute("DELETE FROM carry_log WHERE uid=?1", [uid])?;
+    }
     Ok(())
 }
 
 /// Whether the effect of the carried change `uid` committed and its rekey
 /// did not (a row it inserted is still in the log).
 pub(crate) fn carry_pending(conn: &Connection, uid: &str) -> Result<bool> {
-    ensure_carry_log(conn)?;
+    if !carry_log_kept(conn)? {
+        return Ok(false);
+    }
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM carry_log WHERE uid=?1 AND row_id>0)",
         [uid],

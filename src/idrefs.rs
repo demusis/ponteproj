@@ -82,9 +82,13 @@ pub(crate) trait IdentFrame {
 
 impl IdentFrame for Connection {
     /// The row holding `ident`; else the row holding the identity a late
-    /// receipt bound it to (`idents::bind_inserted`).
+    /// receipt bound it to (`idents::bind_inserted`). None in a library
+    /// left at schema 21: no row there holds an identity.
     fn row_of(&self, kind: IdKind, ident: &str) -> Result<Option<i64>> {
         use rusqlite::OptionalExtension;
+        if !crate::idents::has_idents(self)? {
+            return Ok(None);
+        }
         let holder = |ident: &str| -> Result<Option<i64>> {
             Ok(self
                 .query_row(
@@ -487,12 +491,18 @@ pub(crate) fn reply_sites(
 /// each id goes to the row holding its proof's identity here (v2 §2.5).
 /// An id without a proof gives [`APPLIED`]; one whose item is not here,
 /// [`APPLIED_GONE`]. Never the number of the copy.
+///
+/// A library left at schema 21 for this opening is never mapped: it adopted
+/// the copy verbatim, so the numbers of the answer are its own.
 pub(crate) fn translate_reply(
     conn: &Connection,
     mutation: &IntranetMutation,
     mut reply: crate::intranet::MutationReply,
     proof: &[Ref],
 ) -> Result<crate::intranet::MutationReply> {
+    if !crate::idents::has_idents(conn)? {
+        return Ok(reply);
+    }
     visit_reply(mutation, &mut reply, &mut |kind, id| {
         let ident = proof.iter().find_map(|r| match &r.proof {
             Proof::Ident(ident) if r.kind == kind && r.row == *id => Some(ident),

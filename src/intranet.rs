@@ -4836,11 +4836,13 @@ impl Store {
         // it takes the identities and settles (adendo §2 rule 3). The try
         // is spent only where the snapshot is compared with this library
         // (`take_identities_from`): a main computer out of reach, or an
-        // answer at another revision, leaves it for the next exchange.
+        // answer at another revision, leaves it for the next exchange. A
+        // library left at schema 21 has no identities to take.
         let settling = !force_full
             && !replacing
             && !pushed_offline
             && !numbers_pending
+            && crate::idents::has_idents(&self.conn)?
             && !crate::idents::is_mapped(&self.conn)?
             && self.list_offline_outbox()?.iter().all(|e| e.refs.is_some())
             && crate::idents::meta(&self.conn, "settle_tried_revision")?
