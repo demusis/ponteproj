@@ -136,14 +136,130 @@ fn own_ids<'a>(s: &'a mut CabinetSnapshot, kind: &str) -> Vec<&'a mut i64> {
         "note" => ids(&mut s.notes, |r| &mut r.id),
         "draft" => ids(&mut s.drafts, |r| &mut r.id),
         "analysis" => ids(&mut s.analyses, |r| &mut r.id),
-        "file" => ids(&mut s.files_meta, |r| &mut r.id),
+        // The sealed metadata of a file and of an attachment, and the value
+        // of an example, repeat the row's number.
+        "file" => s
+            .files_meta
+            .iter_mut()
+            .flat_map(|r| [&mut r.id, &mut r.summary.id])
+            .collect(),
         "link" => ids(&mut s.document_links, |r| &mut r.id),
         "task" => ids(&mut s.tasks, |r| &mut r.id),
-        "attachment" => ids(&mut s.attachments, |r| &mut r.id),
+        "attachment" => s
+            .attachments
+            .iter_mut()
+            .flat_map(|r| [&mut r.id, &mut r.meta.id])
+            .collect(),
         "saiop" => ids(&mut s.saiop_attendances, |r| &mut r.attendance.id),
         "saiop_batch" => ids(&mut s.saiop_batches, |r| &mut r.id),
-        "example" => ids(&mut s.templates.examples, |r| &mut r.id),
+        "example" => s
+            .templates
+            .examples
+            .iter_mut()
+            .flat_map(|r| [&mut r.id, &mut r.value.id])
+            .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// A reference to an item: one that is always there, or one that may be
+/// absent.
+pub(crate) enum Site<'a> {
+    One(&'a mut i64),
+    Maybe(&'a mut Option<i64>),
+}
+
+/// Visits every reference of `s` to an item of an ident kind
+/// (`f1-inventario.md` §A), with the kind it names: the columns, the
+/// copies of a number inside a payload (an analysis's version, a
+/// generation's record, a use's value) and the polymorphic owners. The
+/// rows' own numbers, the Lixeira, the version rows and the sources follow
+/// rules of their own ([`apply`]).
+pub(crate) fn visit_references(s: &mut CabinetSnapshot, visit: &mut dyn FnMut(&'static str, Site)) {
+    use Site::{Maybe, One};
+    for d in &mut s.documents {
+        visit("capture", Maybe(&mut d.latest_capture_id));
+    }
+    for c in &mut s.captures {
+        visit("document", One(&mut c.document_id));
+    }
+    for r in &mut s.requests {
+        visit("document", One(&mut r.document_id));
+        visit("capture", One(&mut r.capture_id));
+    }
+    for n in &mut s.notes {
+        visit("document", One(&mut n.document_id));
+    }
+    for d in &mut s.drafts {
+        visit("document", One(&mut d.document_id));
+        visit("capture", One(&mut d.capture_id));
+    }
+    for a in &mut s.analyses {
+        visit("document", One(&mut a.document_id));
+        visit("capture", One(&mut a.capture_id));
+        visit("capture", One(&mut a.analysis.capture_id));
+    }
+    for t in &mut s.tasks {
+        visit("document", Maybe(&mut t.document_id));
+        visit("task", Maybe(&mut t.parent_task_id));
+        for dependency in &mut t.dependencies {
+            visit("task", One(dependency));
+        }
+    }
+    for (document, _) in &mut s.work_contexts {
+        visit("document", One(document));
+    }
+    for f in &mut s.files_meta {
+        visit("capture", One(&mut f.capture_id));
+    }
+    for p in &mut s.page_texts {
+        visit("file", One(&mut p.file_id));
+    }
+    for l in &mut s.document_links {
+        visit("document", One(&mut l.source_id));
+        visit("document", One(&mut l.target_id));
+    }
+    for r in &mut s.capture_refs {
+        visit("capture", One(&mut r.capture_id));
+        visit("document", One(&mut r.owner_document));
+        match r.owner_kind.as_str() {
+            "draft" => visit("draft", One(&mut r.owner_id)),
+            "analysis" => visit("analysis", One(&mut r.owner_id)),
+            _ => {}
+        }
+    }
+    for e in &mut s.team_events {
+        visit("document", Maybe(&mut e.document_id));
+    }
+    for a in &mut s.saiop_attendances {
+        let a = &mut a.attendance;
+        visit("saiop_batch", Maybe(&mut a.batch_id));
+        visit("document", Maybe(&mut a.document_id));
+        for task in &mut a.task_ids {
+            visit("task", One(task));
+        }
+    }
+    for a in &mut s.attachments {
+        if let Some(kind) = crate::idmap::IdKind::from_owner(&a.owner_kind) {
+            visit(crate::idents::kind_of(kind), One(&mut a.owner_id));
+        }
+        visit("document", Maybe(&mut a.document_id));
+    }
+    for g in &mut s.templates.generations {
+        visit("document", One(&mut g.document_id));
+        visit("capture", One(&mut g.capture_id));
+        visit("draft", Maybe(&mut g.draft_id));
+        let r = &mut g.record;
+        visit("document", One(&mut r.document_id));
+        visit("capture", One(&mut r.capture_id));
+        visit("draft", Maybe(&mut r.draft_id));
+    }
+    for u in &mut s.resources.uses {
+        visit("document", Maybe(&mut u.document_id));
+        let v = &mut u.value;
+        visit("document", Maybe(&mut v.document_id));
+        visit("saiop", Maybe(&mut v.saiop_id));
+        visit("task", Maybe(&mut v.task_id));
     }
 }
 
@@ -216,11 +332,12 @@ fn sources(list: &mut [crate::evidence::Source], m: &Mapping) -> BTreeMap<String
 }
 
 /// `snapshot` in this library's numbers ([`plan`]): the rows' own numbers,
-/// their identities, the version rows (v2 §2.8: a row key follows its row,
-/// and is dropped when the copy has no such row; the cabinet counter and
-/// the uid keys stay), the Lixeira by the same rule, and the sources with
-/// the citations and facts that name them (adendo §7). What else refers to
-/// a mapped kind follows in the step that maps it (F3.1a onwards).
+/// their identities, every reference to an item ([`visit_references`]; one
+/// the copy does not have is named by no number here: 0, or none), the
+/// version rows (v2 §2.8: a row key follows its row, and is dropped when
+/// the copy has no such row; the cabinet counter and the uid keys stay),
+/// the Lixeira by the same rule, and the sources with the citations and
+/// facts that name them (adendo §7).
 pub(crate) fn apply(snapshot: &CabinetSnapshot, m: &Mapping) -> CabinetSnapshot {
     let mut s = snapshot.clone();
     for kind in m.0.keys() {
@@ -230,6 +347,19 @@ pub(crate) fn apply(snapshot: &CabinetSnapshot, m: &Mapping) -> CabinetSnapshot 
             }
         }
     }
+    visit_references(&mut s, &mut |kind, site| match site {
+        Site::One(id) if *id > 0 => {
+            if let Some(here) = m.get(kind, *id) {
+                *id = here.unwrap_or(0);
+            }
+        }
+        Site::Maybe(id) => {
+            if let Some(here) = id.filter(|n| *n > 0).and_then(|n| m.get(kind, n)) {
+                *id = here;
+            }
+        }
+        Site::One(_) => {}
+    });
     for IdentRow(kind, row, _) in &mut s.idents {
         if let Some(Some(here)) = m.get(kind, *row) {
             *row = here;
