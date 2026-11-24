@@ -120,6 +120,10 @@ mod f31b1_review_tests;
 /// native host on a crossed pair (tests only).
 #[cfg(test)]
 mod f31b1_tests;
+/// F3.1b2 of Frente F: acceptance tests of the deletion proved by a
+/// same-epoch adoption and of the library space (tests only).
+#[cfg(test)]
+mod f31b2_tests;
 /// F3.0a1 of Frente F: acceptance tests of the level barrier, the floor
 /// observed and the refs of every producer (tests only).
 #[cfg(test)]

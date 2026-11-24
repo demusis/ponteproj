@@ -1990,6 +1990,40 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_operationStatus<'l
 }
 
 // ---------------------------------------------------------------------------
+// F3.1b2: a photo or file the app holds for a record (`PendingAttach`).
+
+/// The proof of record `document_id` the app keeps with a photo taken for
+/// it: `{ident, library_space}`.
+#[cfg(test)]
+fn attach_target(_store: &Store, _document_id: i64) -> Result<Value> {
+    Ok(json!({"ident": "", "library_space": ""}))
+}
+
+/// The attachments refused into a card and still waiting for the person.
+#[cfg(test)]
+fn refused_attachments(_store: &Store) -> Result<Value> {
+    anyhow::bail!("F3.1b2: ainda não implementado")
+}
+
+/// "Criar registro com esta foto".
+#[cfg(test)]
+fn create_record_from_card(_store: &mut Store, _card_id: i64, _input: &Value) -> Result<Value> {
+    anyhow::bail!("F3.1b2: ainda não implementado")
+}
+
+/// "Anexar a outro registro…".
+#[cfg(test)]
+fn attach_from_card(_store: &mut Store, _card_id: i64, _document_id: i64, _options: &str) -> Result<Value> {
+    anyhow::bail!("F3.1b2: ainda não implementado")
+}
+
+/// "Descartar".
+#[cfg(test)]
+fn discard_card(_store: &mut Store, _card_id: i64) -> Result<Value> {
+    anyhow::bail!("F3.1b2: ainda não implementado")
+}
+
+// ---------------------------------------------------------------------------
 // The responsible people, the atendimentos (read-only) and the search over the
 // whole library. Pure functions over the store, tested on the host.
 
@@ -6800,5 +6834,266 @@ dia 2026-12-26 Recesso do celular
             assert_eq!(texts(store, titled(store, X)), vec!["Texto de A"]);
             assert!(store.list_sync_conflicts().unwrap().is_empty());
         }
+    }
+
+    // ------------------------------------------------------------ F3.1b2 --
+
+    const OP_C: &str = "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a0c";
+    const OP_D: &str = "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a0d";
+    const OP_E: &str = "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a0e";
+    const OP_F: &str = "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a0f";
+    const OP_G: &str = "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a10";
+    const OP_H: &str = "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a11";
+
+    const GONE_ELSEWHERE: &str = "O registro foi apagado em outro aparelho.";
+    const IN_TRASH: &str = "O registro está na Lixeira.";
+    const NOT_HERE: &str = "O registro não está mais disponível neste aparelho.";
+
+    /// The options the app sends with a `PendingAttach` (adendo §10 rule 1):
+    /// its operation, and the record's identity and the library space as
+    /// `getDocument` gave them when the person chose the record.
+    fn pending(operation: &str, proof: &Value) -> String {
+        json!({
+            "operation_id": operation,
+            "document_ident": proof["ident"],
+            "library_space": proof["library_space"],
+        })
+        .to_string()
+    }
+
+    /// The card of an attachment the core refused at once (`target_gone`).
+    fn refused_card(answer: &Result<Value>) -> i64 {
+        let error = answer.as_ref().expect_err("refused, not attached");
+        let said = error_answer(error);
+        assert_eq!(said["code"], json!("target_gone"), "{said}");
+        said["card_id"]
+            .as_i64()
+            .unwrap_or_else(|| panic!("a card holds the file: {said}"))
+    }
+
+    fn refused_operations(store: &Store) -> Vec<String> {
+        refused_attachments(store).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["operation_id"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// Adendo §10 (R2-10), `f3_1b2_phone_op_survives_refusals_and_space_change`,
+    /// the core's half (the app's half is `PendingAttachTest`). The app holds
+    /// record D with its identity and the library space; the library is
+    /// replaced and the held number names another record, E. Delivering is
+    /// refused: nothing is attached to E, the photo is kept in a card in the
+    /// same transaction as the refusal (frozen rules 19, 20, 23), and asking
+    /// again after a process death answers the same, with one card. The
+    /// recovery screen's three actions: "Anexar a outro registro…" (E, chosen
+    /// explicitly) and "Criar registro com esta foto" each make exactly one
+    /// effect when repeated and resolve the card; "Descartar" ends it. A
+    /// replaced library never says "apagado" (rule 21); a record in the
+    /// Lixeira says so.
+    ///
+    /// Red on `77e24b7`: the core knows neither the identity nor the space,
+    /// so the photo goes to E; there is no card and no recovery.
+    #[test]
+    fn f3_1b2_phone_op_survives_refusals_and_space_change() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular");
+        let d = manual(&mut phone, "Registro D", "Texto de D");
+        let held = attach_target(&phone, d).unwrap();
+        for key in ["ident", "library_space"] {
+            assert!(
+                held[key].as_str().is_some_and(|v| !v.is_empty()),
+                "getDocument gives the {key}: {held}"
+            );
+        }
+        assert_eq!(attach_target(&phone, d).unwrap(), held, "stable");
+        drop(phone);
+
+        // The library is replaced (the person chose another file, the app
+        // made a new one): the number held on the screen names E now.
+        let mut phone = open(&dir.0, "celular-novo.sqlite3", "Celular");
+        let e = manual(&mut phone, "Registro E", "Texto de E");
+        assert_eq!(e, d, "the held number is reused");
+        let to_e = attach_target(&phone, e).unwrap();
+        assert_ne!(to_e["library_space"], held["library_space"]);
+        assert_ne!(to_e["ident"], held["ident"]);
+
+        let photo = work_file(&dir.0, "foto.bin", b"%PDF-1.4 foto do celular");
+        let first = attach_file_with(&mut phone, d, &photo, "foto.pdf", "Foto tirada no celular", &pending(OP_C, &held));
+        let card = refused_card(&first);
+        assert!(attachments_of(&phone, e).is_empty(), "nothing is attached to E");
+        let st = status(&phone, OP_C);
+        assert_eq!(st["done"], json!(true), "{st}");
+        assert_eq!(st["outcome"], json!("refused"), "{st}");
+        assert_eq!(st["card_id"], json!(card), "{st}");
+        assert_eq!(st["message"], json!(NOT_HERE), "a replaced library never says apagado: {st}");
+        // The process died after the refusal: the same operation again,
+        // even with the working file gone, answers the same; one card.
+        std::fs::remove_file(&photo).unwrap();
+        let again = attach_file_with(&mut phone, d, &photo, "foto.pdf", "Foto tirada no celular", &pending(OP_C, &held));
+        assert_eq!(refused_card(&again), card);
+        assert_eq!(phone.list_sync_conflicts().unwrap().len(), 1);
+        assert!(attachments_of(&phone, e).is_empty());
+        let listed = refused_attachments(&phone).unwrap();
+        let item = &listed["items"][0];
+        assert_eq!(item["operation_id"], json!(OP_C), "{listed}");
+        assert_eq!(item["card_id"], json!(card), "{listed}");
+        assert_eq!(item["name"], json!("foto.pdf"), "{listed}");
+        assert_eq!(item["message"], json!(NOT_HERE), "{listed}");
+
+        // The space alone is checked too: E's identity with the old space.
+        let photo = work_file(&dir.0, "foto2.bin", b"%PDF-1.4 outra foto");
+        let mixed = json!({"ident": to_e["ident"], "library_space": held["library_space"]});
+        let other_card = refused_card(&attach_file_with(&mut phone, e, &photo, "foto2.pdf", "", &pending(OP_D, &mixed)));
+        assert!(attachments_of(&phone, e).is_empty(), "a space mismatch never attaches");
+        assert_ne!(other_card, card);
+
+        // "Anexar a outro registro…": E, chosen explicitly, by its proof.
+        let one = attach_from_card(&mut phone, card, e, &pending(OP_E, &to_e)).unwrap();
+        let two = attach_from_card(&mut phone, card, e, &pending(OP_E, &to_e)).unwrap();
+        assert_eq!(one, two);
+        assert_eq!(attachments_of(&phone, e), ["foto.pdf"]);
+        let st = status(&phone, OP_E);
+        assert_eq!((st["done"].clone(), st["kind"].clone()), (json!(true), json!("attach")), "{st}");
+        assert_eq!(refused_operations(&phone), [OP_D], "the card of OP_C is resolved");
+
+        // "Criar registro com esta foto", twice: one record with the photo.
+        let before = live(&phone);
+        let input = with_operation(
+            json!({"kind": "papel", "title": "Foto recuperada", "origin": "", "date": "", "text": ""}),
+            OP_F,
+        );
+        let made = create_record_from_card(&mut phone, other_card, &input).unwrap();
+        assert_eq!(create_record_from_card(&mut phone, other_card, &input).unwrap(), made);
+        assert_eq!(live(&phone), before + 1);
+        let record = made["document_id"].as_i64().unwrap();
+        assert_eq!(attachments_of(&phone, record), ["foto2.pdf"]);
+        assert_eq!(attachments_of(&phone, e), ["foto.pdf"]);
+        assert!(refused_operations(&phone).is_empty());
+        assert_eq!(status(&phone, OP_F)["kind"], json!("record"));
+
+        // A record in the Lixeira: refused with its own words; "Descartar".
+        let trashed = manual(&mut phone, "Registro na Lixeira", "Texto");
+        let proof = attach_target(&phone, trashed).unwrap();
+        phone
+            .trash_item(ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id: trashed })
+            .unwrap();
+        let photo = work_file(&dir.0, "foto3.bin", b"%PDF-1.4 terceira foto");
+        let card = refused_card(&attach_file_with(&mut phone, trashed, &photo, "foto3.pdf", "", &pending(OP_G, &proof)));
+        assert_eq!(status(&phone, OP_G)["message"], json!(IN_TRASH));
+        // Attaching from the card to a record that is gone too: nothing is
+        // written and the card stays.
+        assert!(attach_from_card(&mut phone, card, trashed, &pending(OP_H, &proof)).is_err());
+        assert_eq!(status(&phone, OP_H), json!({"done": false}));
+        assert_eq!(refused_operations(&phone), [OP_G]);
+        discard_card(&mut phone, card).unwrap();
+        assert!(refused_operations(&phone).is_empty());
+        assert!(attachments_of(&phone, trashed).is_empty());
+        assert!(
+            attach_from_card(&mut phone, card, e, &pending(OP_H, &to_e)).is_err(),
+            "a discarded card holds nothing to attach"
+        );
+        assert_eq!(attachments_of(&phone, e), ["foto.pdf"]);
+    }
+
+    /// Adendo §10 rules 4 and 5, the late refusal. The phone attaches a
+    /// photo to R (accepted here, queued); computer A deletes R for good
+    /// before the phone exchanges. The exchange refuses the photo into a
+    /// card, and the operation is bound to that card in the card's own
+    /// transaction (never inferred from the queue). R was retired by a
+    /// same-epoch adoption, so the phone says "apagado em outro aparelho",
+    /// now and for a stale screen that tries again. A photo of a record that
+    /// survives is accepted. "Criar registro com esta foto" reaches A, and R
+    /// does not come back.
+    ///
+    /// Red on `77e24b7`: the operation has no outcome and no card, and the
+    /// core keeps no proof of deletion.
+    #[test]
+    fn f3_1b2_late_refusal_is_bound_to_its_card_and_says_deleted_elsewhere() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        promote_on();
+        let drive = dir.0.join("drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        let mut a = open(&dir.0, "a.sqlite3", "Computador A");
+        a.import_capture(&numbered("SEFAZ-PRO-2026/08200", "Primeiro."))
+            .unwrap();
+        sync_files(&mut a, &[&drive]);
+        let mut b = open(&dir.0, "b.sqlite3", "Computador B");
+        sync_files(&mut b, &[&drive]);
+        assert!(sync_files(&mut a, &[&drive]).promoted);
+        sync_files(&mut b, &[&drive]);
+        let nine = ponteproj::sharedfolder::nine_path(&drive);
+        let work = dir.0.join("work.ponte");
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular");
+        let phone_sync = |phone: &mut Store| {
+            std::fs::copy(&nine, &work).unwrap();
+            let answer = sync_paths(phone, &work_s, "", KEY).unwrap();
+            std::fs::copy(&work, &nine).unwrap();
+            answer
+        };
+        phone_sync(&mut phone);
+        phone_sync(&mut phone);
+        a.create_manual_document(&manual_fields("Registro R", "Texto de R"))
+            .unwrap();
+        a.create_manual_document(&manual_fields("Registro S", "Texto de S"))
+            .unwrap();
+        sync_files(&mut a, &[&drive]);
+        phone_sync(&mut phone);
+        let (r, s) = (titled(&phone, "Registro R"), titled(&phone, "Registro S"));
+        let (to_r, to_s) = (attach_target(&phone, r).unwrap(), attach_target(&phone, s).unwrap());
+
+        let photo = work_file(&dir.0, "foto.bin", b"%PDF-1.4 foto de R");
+        attach_file_with(&mut phone, r, &photo, "foto-r.pdf", "", &pending(OP_C, &to_r)).unwrap();
+        let photo = work_file(&dir.0, "foto2.bin", b"%PDF-1.4 foto de S");
+        attach_file_with(&mut phone, s, &photo, "foto-s.pdf", "", &pending(OP_D, &to_s)).unwrap();
+        for op in [OP_C, OP_D] {
+            let st = status(&phone, op);
+            assert_eq!(st["outcome"], json!("pending"), "queued, not yet accepted: {st}");
+        }
+
+        let r_a = titled(&a, "Registro R");
+        let target = || ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id: r_a };
+        a.trash_item(target()).unwrap();
+        a.purge_trash_item(target()).unwrap();
+        sync_files(&mut a, &[&drive]);
+        phone_sync(&mut phone);
+
+        let st = status(&phone, OP_C);
+        assert_eq!(st["outcome"], json!("refused"), "{st}");
+        let card = st["card_id"]
+            .as_i64()
+            .unwrap_or_else(|| panic!("bound to its card: {st}"));
+        assert_eq!(st["message"], json!(GONE_ELSEWHERE), "{st}");
+        assert_eq!(status(&phone, OP_D)["outcome"], json!("accepted"));
+        assert_eq!(refused_operations(&phone), [OP_C]);
+        // A stale screen tries R again: refused at once, with the same words.
+        let photo = work_file(&dir.0, "foto3.bin", b"%PDF-1.4 outra foto de R");
+        refused_card(&attach_file_with(&mut phone, r, &photo, "foto-r2.pdf", "", &pending(OP_E, &to_r)));
+        assert_eq!(status(&phone, OP_E)["message"], json!(GONE_ELSEWHERE));
+
+        let input = with_operation(
+            json!({"kind": "papel", "title": "Foto de R recuperada", "origin": "", "date": "", "text": ""}),
+            OP_F,
+        );
+        let made = create_record_from_card(&mut phone, card, &input).unwrap();
+        assert_eq!(create_record_from_card(&mut phone, card, &input).unwrap(), made);
+        assert_eq!(refused_operations(&phone), [OP_E]);
+        phone_sync(&mut phone);
+        sync_files(&mut a, &[&drive]);
+        let recovered = titled(&a, "Foto de R recuperada");
+        assert_eq!(attachments_of(&a, recovered), ["foto-r.pdf"]);
+        assert_eq!(attachments_of(&a, titled(&a, "Registro S")), ["foto-s.pdf"]);
+        assert!(
+            a.list_documents("").unwrap().iter().all(|d| d.title != "Registro R"),
+            "R does not come back"
+        );
+        assert_eq!(status(&phone, OP_F)["outcome"], json!("accepted"));
     }
 }
