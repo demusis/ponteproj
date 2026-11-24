@@ -344,6 +344,7 @@ fn f3_1a_mapped_kind_without_identity_never_goes_by_number() {
             kind: IdKind::Document,
             row: doc,
             proof: Proof::Frame,
+            link: None,
         }],
         ..refs
     };

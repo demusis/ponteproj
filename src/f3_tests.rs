@@ -687,6 +687,7 @@ fn f3_0a1_refs_check_per_site() {
         kind,
         row,
         proof: Proof::Frame,
+        link: None,
     };
     let note = IntranetMutation::RelinkTask {
         task_id: 42,
@@ -761,11 +762,13 @@ fn f3_0a1_refs_check_per_site() {
                 kind: IdKind::Task,
                 row: 42,
                 proof: Proof::Ident("ab".repeat(16)),
+                link: None,
             },
             Ref {
                 kind: IdKind::Document,
                 row: 7,
                 proof: Proof::Unprovable,
+                link: None,
             },
         ],
         ..good

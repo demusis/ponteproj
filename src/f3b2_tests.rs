@@ -393,6 +393,7 @@ fn f3_0_guard_never_explains_x_by_y_purge() {
             kind: IdKind::Document,
             row: x,
             proof: Proof::Ident(ident.into()),
+            link: None,
         }],
         ..Refs::default()
     };

@@ -40,6 +40,19 @@ pub struct Ref {
     pub kind: IdKind,
     pub row: i64,
     pub proof: Proof,
+    /// For a link: its two ends and kind where the change was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkProof>,
+}
+
+/// A link by what it joins (v2 §2.1, links): the identities of its source
+/// and target records and the hash of its kind. Found by them only when
+/// exactly one link matches; none or two make a card.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkProof {
+    pub source: String,
+    pub target: String,
+    pub kind_hash: Vec<u8>,
 }
 
 /// The frame a change was made in: the epoch of the identities and the
@@ -78,6 +91,26 @@ pub const UNPROVEN: &str = "A alteração se refere a um item que não pôde ser
 pub(crate) trait IdentFrame {
     /// The row of `kind` that holds `ident` there.
     fn row_of(&self, kind: IdKind, ident: &str) -> Result<Option<i64>>;
+
+    /// The links there from record `source` to record `target` (their
+    /// numbers there) whose kind hashes to `kind_hash`, two at most.
+    fn links_between(&self, source: i64, target: i64, kind_hash: &[u8]) -> Result<Vec<i64>>;
+
+    /// The one link there that joins the records `proof` names by identity
+    /// with its kind; `None` when no link or more than one does.
+    fn link_by_ends(&self, proof: &LinkProof) -> Result<Option<i64>> {
+        let (Some(source), Some(target)) = (
+            self.row_of(IdKind::Document, &proof.source)?,
+            self.row_of(IdKind::Document, &proof.target)?,
+        ) else {
+            return Ok(None);
+        };
+        let found = self.links_between(source, target, &proof.kind_hash)?;
+        Ok(match found[..] {
+            [one] => Some(one),
+            _ => None,
+        })
+    }
 }
 
 impl IdentFrame for Connection {
@@ -106,6 +139,15 @@ impl IdentFrame for Connection {
             },
         }
     }
+
+    fn links_between(&self, source: i64, target: i64, kind_hash: &[u8]) -> Result<Vec<i64>> {
+        Ok(self
+            .prepare(
+                "SELECT id FROM document_links WHERE source_id=?1 AND target_id=?2 AND kind_hash=?3 LIMIT 2",
+            )?
+            .query_map(rusqlite::params![source, target, kind_hash], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
 }
 
 /// The main computer's frame seen by a sender that keeps the bindings of
@@ -125,6 +167,10 @@ impl IdentFrame for Aliased<'_> {
             None => Ok(None),
         }
     }
+
+    fn links_between(&self, source: i64, target: i64, kind_hash: &[u8]) -> Result<Vec<i64>> {
+        self.frame.links_between(source, target, kind_hash)
+    }
 }
 
 impl IdentFrame for crate::intranet::CabinetSnapshot {
@@ -135,6 +181,16 @@ impl IdentFrame for crate::intranet::CabinetSnapshot {
             .iter()
             .find(|crate::idents::IdentRow(k, _, i)| k == kind && i == ident)
             .map(|row| row.1))
+    }
+
+    fn links_between(&self, source: i64, target: i64, kind_hash: &[u8]) -> Result<Vec<i64>> {
+        Ok(self
+            .document_links
+            .iter()
+            .filter(|l| l.source_id == source && l.target_id == target && l.kind_hash == kind_hash)
+            .map(|l| l.id)
+            .take(2)
+            .collect())
     }
 }
 
@@ -157,11 +213,21 @@ fn resolve_sites(
             return Ok(());
         }
         let site = proofs.next().ok_or_else(|| DAMAGED.to_owned())?;
-        let row = match &site.proof {
-            Proof::Ident(ident) => frame
-                .row_of(kind, ident)
+        // A link whose identity is not there (each device derived it with
+        // one of its own, or it had none): the one link of the same ends
+        // and kind, never one of two (v2 §2.1).
+        let by_ends = || match site.link.as_ref().filter(|_| kind == IdKind::Link) {
+            Some(proof) => frame
+                .link_by_ends(proof)
                 .map_err(|e| e.to_string())?
-                .ok_or_else(|| UNPROVEN.to_owned())?,
+                .ok_or_else(|| UNPROVEN.to_owned()),
+            None => Err(UNPROVEN.to_owned()),
+        };
+        let row = match &site.proof {
+            Proof::Ident(ident) => match frame.row_of(kind, ident).map_err(|e| e.to_string())? {
+                Some(row) => row,
+                None => by_ends()?,
+            },
             // A mapped kind's number is this library's own, never the
             // copy's: it holds nowhere else (obligation (c), F3.1a).
             Proof::Frame
@@ -169,7 +235,8 @@ fn resolve_sites(
             {
                 *id
             }
-            _ => return Err(UNPROVEN.into()),
+            Proof::Unprovable => by_ends()?,
+            Proof::Frame => return Err(UNPROVEN.into()),
         };
         *id = row;
         proved.push(Ref {
@@ -568,9 +635,43 @@ pub(crate) fn prove(
                 None if crate::mapper::addressed(crate::idents::kind_of(kind)) => Proof::Unprovable,
                 None => Proof::Frame,
             };
-            Ok(Ref { kind, row, proof })
+            let link = match kind {
+                IdKind::Link if idents => link_proof(conn, row)?,
+                _ => None,
+            };
+            Ok(Ref {
+                kind,
+                row,
+                proof,
+                link,
+            })
         })
         .collect()
+}
+
+/// The ends of link `row` here by identity, and its kind; `None` when the
+/// link, or an end's identity, is not here.
+fn link_proof(conn: &Connection, row: i64) -> Result<Option<LinkProof>> {
+    use rusqlite::OptionalExtension;
+    let Some((source, target, kind_hash)) = conn
+        .query_row(
+            "SELECT source_id,target_id,kind_hash FROM document_links WHERE id=?1",
+            [row],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get(2)?)),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let end = |id| crate::idents::ident_of(conn, "document", id);
+    Ok(match (end(source)?, end(target)?) {
+        (Some(source), Some(target)) => Some(LinkProof {
+            source,
+            target,
+            kind_hash,
+        }),
+        _ => None,
+    })
 }
 
 impl Refs {

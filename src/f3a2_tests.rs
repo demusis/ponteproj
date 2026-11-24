@@ -262,6 +262,7 @@ fn f3_0a2_frame_and_base_never_fall_back_to_number() {
             kind: IdKind::Attachment,
             row: a2,
             proof: Proof::Ident(y_ident.clone()),
+            link: None,
         }];
     });
     t.online();
