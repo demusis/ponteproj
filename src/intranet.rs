@@ -1018,6 +1018,10 @@ pub struct SyncConflict {
     /// not come back as a new card.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub resolved_at: String,
+    /// The proofs of `mutation` and `base` as they were captured, in that
+    /// frame (F3.0b, v2 §2.7); `None` on older cards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refs: Option<crate::idrefs::Refs>,
 }
 
 /// How many resolved cards are remembered, and for how long.
@@ -6736,7 +6740,7 @@ impl Store {
         // summarized (what is summarized away no longer explains anything).
         let mut removed = crate::coverage::Removed::default();
         for entry in &journal {
-            removed.note(&entry.mutation);
+            removed.note(&entry.mutation, entry.refs.as_ref());
         }
         let result_index = crate::coverage::ResultIndex::of(&final_snapshot);
         let final_identity = sharedfolder::snapshot_identity(&final_snapshot);
@@ -12074,6 +12078,7 @@ fn build_sync_conflict(
         identity: Vec::new(),
         mutation_uid: entry.uid.clone(),
         resolved_at: String::new(),
+        refs: None,
     }
 }
 
@@ -17083,6 +17088,7 @@ mod tests {
             identity: Vec::new(),
             mutation_uid: String::new(),
             resolved_at: String::new(),
+            refs: None,
         };
         let diffs = store.conflict_differences(&conflict);
         let by_label = |label: &str| {
@@ -17916,6 +17922,7 @@ mod conflict_card_tests {
             identity: Vec::new(),
             mutation_uid: String::new(),
             resolved_at: String::new(),
+            refs: None,
         }
     }
 
@@ -18919,6 +18926,7 @@ mod resources_sync_tests {
             identity: Vec::new(),
             mutation_uid: String::new(),
             resolved_at: String::new(),
+            refs: None,
         };
         let save_use = |item: &ResourceUse| {
             conflict(IntranetMutation::SaveResourceUse {
@@ -20077,6 +20085,7 @@ mod resources_sync_tests {
             identity: Vec::new(),
             mutation_uid: String::new(),
             resolved_at: String::new(),
+            refs: None,
         };
         // Same thing but for the kind: equal, with nothing to compare.
         let mut other_kind = held.clone();

@@ -105,6 +105,11 @@ mod f3_tests;
 /// host's durable insertion log and the receipt asked first (tests only).
 #[cfg(test)]
 mod f3a2_tests;
+/// F3.0b-ii of Frente F: acceptance tests of the adoption mapping, the
+/// retired sources, coverage and report by identity and the card envelope
+/// (tests only).
+#[cfg(test)]
+mod f3b2_tests;
 /// F3.0b-i of Frente F: acceptance tests of the activation of the mapping,
 /// the id floor kept by the copy and the translation of the answers (tests
 /// only).
@@ -116,6 +121,8 @@ pub mod formatfloor;
 pub mod idents;
 /// The id sites of a change and the proof of each (F3).
 pub mod idrefs;
+/// The adoption mapping of a mapped library (F3.0b).
+pub mod mapper;
 
 pub mod dossier;
 

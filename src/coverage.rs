@@ -571,7 +571,8 @@ pub(crate) struct Removed {
 }
 
 impl Removed {
-    pub(crate) fn note(&mut self, mutation: &IntranetMutation) {
+    pub(crate) fn note(&mut self, mutation: &IntranetMutation, refs: Option<&crate::idrefs::Refs>) {
+        let _ = refs;
         use IntranetMutation as M;
         match mutation {
             M::PurgeTrash { kind, id } if kind == "document" => {
