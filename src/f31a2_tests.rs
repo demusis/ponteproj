@@ -344,6 +344,44 @@ fn f3_1a_purge_and_reuse_never_redirect_a_held_number() {
     assert_eq!(doc(&b, Y), Some(held_y));
 }
 
+/// revisao-f3-1a-ii #3. A card shows the change next to the item it names
+/// in the copy. On the crossed pair B queues a note on X (its number here
+/// is Y's in the copy) after A wrote a note on Y and purged X: the note is
+/// a card, and its summary of the copy is never Y's note (X is not there).
+///
+/// Red on `bcafb9b`: the summary looks the copy up with this library's
+/// number of X, which names Y there.
+#[test]
+fn f3_1a_a_card_never_shows_another_record_of_the_copy() {
+    let (_dir, mut a, mut b, _held_y) = crossed();
+    let held_x = doc(&b, X).unwrap();
+    assert_eq!(doc(&a, Y), Some(held_x), "B's number of X is Y's on A");
+    a.save_note(held_x, "Nota de A em Y").unwrap();
+    let x_on_a = doc(&a, X).unwrap();
+    let target = |id| crate::trash::Target {
+        kind: crate::trash::Kind::Document,
+        id,
+    };
+    a.trash_item(target(x_on_a)).unwrap();
+    a.purge_trash_item(target(x_on_a)).unwrap();
+    sync(&mut a);
+    b.save_note(held_x, "Nota de B em X").unwrap();
+    sync(&mut b);
+    let c = cards(&b);
+    assert_eq!(c.len(), 1, "B's note on X is a card");
+    assert_eq!(c[0].local_summary, "Nota deste computador: Nota de B em X");
+    assert!(
+        !c[0].host_summary.contains("Nota de A em Y"),
+        "the card shows Y's note as X's: {}",
+        c[0].host_summary
+    );
+    assert_eq!(
+        c[0].host_summary,
+        "Nota no computador principal: (registro não localizado no computador principal)"
+    );
+    assert_eq!(note(&b, Y), "Nota de A em Y", "Y keeps A's note");
+}
+
 // ---------------------------------------------- a link by its two ends --
 
 /// The links of the record `number` here, as (active, reason).
