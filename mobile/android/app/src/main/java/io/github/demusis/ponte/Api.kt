@@ -191,6 +191,28 @@ internal object Api {
         ShareDraftRules.OperationStatus.Unknown
     }
 
+    /** Hands [p] to the core with its operation and the proof the app held (F3.1b2). */
+    fun attachPending(p: PendingAttach) {
+        c(core.attachFile(p.docId, p.staged, p.name, p.description, PendingAttachRules.options(p)))
+    }
+
+    /** The core's whole answer about operation [operationId]; null when there is none (never thrown). */
+    fun operationStatusJson(operationId: String): JSONObject? = try {
+        JSONObject(core.operationStatus(JSONObject().put("operation_id", operationId).toString()))
+    } catch (_: Throwable) {
+        null
+    }
+
+    fun refusedFiles(): List<RefusedFile> = PendingAttachRules.refused(c(core.refusedAttachments()))
+    fun createRecordFromCard(cardId: Long, fields: String): Long =
+        c(core.createRecordFromCard(cardId, fields)).optLong("document_id")
+    fun attachFromCard(cardId: Long, documentId: Long, options: String) {
+        c(core.attachFromCard(cardId, documentId, options))
+    }
+    fun discardCard(cardId: Long) {
+        c(core.discardCard(cardId))
+    }
+
     fun mailAccounts(): List<JSONObject> = c(core.listMailAccounts()).optJSONArray("accounts").objs()
     fun saveMailAccount(json: String): String = c(core.saveMailAccount(json)).s("uid")
     fun deleteMailAccount(uid: String) { c(core.deleteMailAccount(uid)) }

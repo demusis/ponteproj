@@ -106,6 +106,9 @@ internal sealed class Route {
 
     /** The list of documents to attach a shared file to. */
     object SharePick : Route() { override val key get() = "sharepick" }
+
+    /** "Anexar a outro registro…" of the file kept in card [cardId] (F3.1b2); not restored, like [SharePick]. */
+    data class RecoveryPick(val cardId: Long) : Route() { override val key get() = "recpick:$cardId" }
     object Settings : Route() { override val key get() = "settings" }
 
     /** The account form; an empty uid is a new account. */
@@ -431,6 +434,7 @@ internal object Controller {
                 Route.Photo -> restorePhoto(s.getBundle("photo"))
                 // Never in the saved stack (see Route.Share), but the match must be complete.
                 Route.Share, Route.SharePick -> stack.remove(r)
+                is Route.RecoveryPick -> stack.remove(r)
             }
         }
         if (documentId >= 0) loadDocument()
@@ -1771,10 +1775,93 @@ internal object Controller {
             fail = "Não foi possível dispensar o aviso. Tente de novo.")
     }
 
+    // ---------------------------------------------------------------- refused files (F3.1b2)
+
+    /** The files the core refused for a record and keeps in a card (the card of Hoje). */
+    var refusedFiles by mutableStateOf<List<RefusedFile>>(emptyList())
+        private set
+
+    /** A recovery action is with the core: the buttons wait. */
+    var recoveryBusy by mutableStateOf(false)
+        private set
+
+    private val recoveryOps by lazy { RecoveryOps(java.io.File(app.filesDir, RecoveryOps.FILE)) }
+
+    fun refreshRefused() {
+        SyncRunner.background({
+            Api.refusedFiles().also { list -> recoveryOps.keepOnly(list.map { it.cardId }.toSet()) }
+        }, { refusedFiles = it }, { }, fail = "Não foi possível ler os arquivos não anexados.")
+    }
+
+    /** Hoje, where the card of the refused files is. */
+    fun showRefused() {
+        stack.clear()
+        selectTab(0)
+        refreshRefused()
+    }
+
+    /** Runs a recovery [action] with the card's one operation, persisted before the core is called (frozen rule 22). */
+    private fun recover(f: RefusedFile, done: String, action: (String) -> Long) {
+        if (recoveryBusy) return
+        recoveryBusy = true
+        SyncRunner.background({
+            val op = recoveryOps.opFor(f.cardId)
+            action(op).also {
+                recoveryOps.forget(f.cardId)
+                SyncRunner.refreshDocs()
+            }
+        }, { id ->
+            recoveryBusy = false
+            refreshRefused()
+            say(done)
+            if (id > 0) openDocument(id) else render()
+            requestSync(null, auto = true)
+        }, {
+            recoveryBusy = false
+            refreshRefused()
+            say(it, long = true)
+        }, fail = "Não foi possível recuperar o arquivo. Tente de novo.")
+    }
+
+    /** "Criar registro com esta foto": a new record holding the file (its title says where it came from). */
+    fun createFromRefused(f: RefusedFile) = recover(f, "Registro criado com o arquivo.") { op ->
+        val fields = org.json.JSONObject().put("kind", "papel").put("title", "Arquivo recuperado: " + f.name)
+            .put("origin", "").put("date", "").put("text", "").put("operation_id", op)
+        Api.createRecordFromCard(f.cardId, fields.toString())
+    }
+
+    /** "Anexar a outro registro…": the person chooses the record. */
+    fun openRecoveryPick(f: RefusedFile) {
+        if (!recoveryBusy) push(Route.RecoveryPick(f.cardId))
+    }
+
+    fun attachRefused(cardId: Long, doc: Doc) {
+        val f = refusedFiles.firstOrNull { it.cardId == cardId } ?: return
+        stack.removeAll { it is Route.RecoveryPick }
+        recover(f, "Arquivo anexado a ${doc.number.ifEmpty { doc.title }}.") { op ->
+            // The proof of the record chosen, read now, goes with the file: it lands there or nowhere.
+            val proof = Api.document(doc.id).toDocDetail().proof
+            val options = org.json.JSONObject().put("operation_id", op)
+                .put("document_ident", proof.ident).put("library_space", proof.space)
+            Api.attachFromCard(cardId, doc.id, options.toString())
+            doc.id
+        }
+    }
+
+    /** "Descartar": asked once more on the snackbar, since the file cannot come back. */
+    fun discardRefused(f: RefusedFile) {
+        if (recoveryBusy) return
+        say("Descartar ${f.name}? Ele não poderá ser recuperado.", action = "Descartar", long = true) {
+            recover(f, "Arquivo descartado.") { Api.discardCard(f.cardId); 0L }
+        }
+    }
+
     private fun refreshToday() {
         refreshWeek()
         refreshRisks()
         refreshRenumberNotices()
+        refreshRefused()
+        Intake.resumePending()
         SyncRunner.background({
             val o = Api.today()
             val tasksOf = { key: String -> o.optJSONArray(key).objs().map { it.toTask() } }

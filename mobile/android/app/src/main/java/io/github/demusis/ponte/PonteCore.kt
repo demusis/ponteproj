@@ -180,6 +180,17 @@ class PonteCore {
      * an older core leaves it out.
      */
     external fun operationStatus(json: String): String
+
+    /**
+     * F3.1b2: the files the core refused for a record and keeps in a card, `{items:[{operation_id, card_id, name,
+     * size, message}]}`, and the three ways out of a card, each idempotent by the "operation_id" it carries: a new
+     * record with the file (fields as in [createRecord]), the file attached to another record (options as in
+     * [attachFile]), or the file dropped.
+     */
+    external fun refusedAttachments(): String
+    external fun createRecordFromCard(cardId: Long, fieldsJson: String): String
+    external fun attachFromCard(cardId: Long, documentId: Long, optionsJson: String): String
+    external fun discardCard(cardId: Long): String
     external fun listMailAccounts(): String
     external fun saveMailAccount(json: String): String
     external fun deleteMailAccount(uid: String): String

@@ -401,7 +401,8 @@ internal fun JSONObject.toDocDetail(): DocDetail {
         files = files + atts,
         text = s("text"),
         categories = optJSONArray("categories").strings(),
-        categoriesVersion = optLong("categories_version")
+        categoriesVersion = optLong("categories_version"),
+        proof = optJSONObject("proof")?.let { AttachProof(it.s("ident"), it.s("library_space")) } ?: AttachProof()
     )
 }
 

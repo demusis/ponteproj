@@ -116,7 +116,10 @@ internal fun AppRoot() {
                                 risks = c.risks, onOpenTask = c::openTask,
                                 followUpCount = c.attendances.followUps.size, onOpenFollowUps = c::openFollowUps,
                                 notices = c.renumberNotices, onOpenNoticeDocument = c::openDocument,
-                                onDismissNotice = c::dismissRenumberNotice
+                                onDismissNotice = c::dismissRenumberNotice,
+                                refused = c.refusedFiles, recoveryBusy = c.recoveryBusy,
+                                onCreateFromRefused = c::createFromRefused, onAttachRefused = c::openRecoveryPick,
+                                onDiscardRefused = c::discardRefused
                             )
                             // Tarefas | Projetos | Atendimentos | Recursos: they have no tab of their own (four is the limit);
                             // the title of the frame chooses among them.
@@ -224,8 +227,8 @@ private fun RouteScreen(route: Route) {
             onToggleTask = c::toggleTask, onNewTask = c::openNewTask, onEditNote = c::openNote,
             onOpenFile = c::openFile, onReadText = c::openText, onOpenTask = { c.openTask(it.id) },
             attachBusy = Intake.attachBusy,
-            onAttachPhoto = { d -> doc?.let { Intake.attachPhoto(it.id, d) } },
-            onAttachFile = { d -> doc?.let { Intake.attachPick(it.id, d) } },
+            onAttachPhoto = { d -> doc?.let { Intake.attachPhoto(it.id, it.proof, d) } },
+            onAttachFile = { d -> doc?.let { Intake.attachPick(it.id, it.proof, d) } },
             onCategories = c::saveDocumentCategories, onCreateCategory = c::createCategory
         )
         is Route.EditTask -> TaskScreen(
@@ -312,6 +315,11 @@ private fun RouteScreen(route: Route) {
         Route.SharePick -> DocumentPickerScreen(
             docs = c.docs, currentId = 0L, busy = false,
             onBack = c::back, onPick = Intake::pickTarget, title = "Anexar a um documento",
+            matches = c.pickMatches, onQuery = c::setPickQuery
+        )
+        is Route.RecoveryPick -> DocumentPickerScreen(
+            docs = c.docs, currentId = 0L, busy = c.recoveryBusy,
+            onBack = c::back, onPick = { c.attachRefused(route.cardId, it) }, title = PendingAttachRules.ACTIONS[1],
             matches = c.pickMatches, onQuery = c::setPickQuery
         )
         Route.Photo -> PhotoScreen(

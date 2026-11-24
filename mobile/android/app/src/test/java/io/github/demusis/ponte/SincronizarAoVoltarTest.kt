@@ -54,6 +54,7 @@ class SincronizarAoVoltarTest {
         val editing = listOf(
             Route.Note(1), Route.NewTask(1), Route.NewTask(0, "p"), Route.EditTask(1), Route.Pick(1), Route.ProjectEdit(""),
             Route.ProjectEdit("a"), Route.ProjectInclude("a"), Route.Account(""), Route.Photo, Route.Share, Route.SharePick,
+            Route.RecoveryPick(1),
             Route.Settings, Route.Setup
         )
         val reading = listOf(

@@ -78,6 +78,11 @@ internal fun TodayScreen(
     onOpenFollowUps: () -> Unit = {},
     /** Records renumbered by a sync and not read yet, newest first; empty: no card. */
     notices: List<RenumberNotice> = emptyList(),
+    refused: List<RefusedFile> = emptyList(),
+    recoveryBusy: Boolean = false,
+    onCreateFromRefused: (RefusedFile) -> Unit = {},
+    onAttachRefused: (RefusedFile) -> Unit = {},
+    onDiscardRefused: (RefusedFile) -> Unit = {},
     /** "Abrir o registro": gets the document id. */
     onOpenNoticeDocument: (Long) -> Unit = {},
     /** "Entendi": gets the notice id. */
@@ -93,7 +98,7 @@ internal fun TodayScreen(
     val currentWeek = weekStart != null && weekStart == WeekPlan.mondayOf(java.time.LocalDate.now())
     val weekDeadlines = if (currentWeek) week.sumOf { it.deadlines.size } else 0
     // Items before the "Atrasadas" header: error, summary, renumbered records, follow-ups, risks, week module.
-    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (notices.isNotEmpty()) 1 else 0) + (if (risks.isNotEmpty()) 1 else 0) + (if (followUpCount > 0) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
+    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (notices.isNotEmpty()) 1 else 0) + (if (refused.isNotEmpty()) 1 else 0) + (if (risks.isNotEmpty()) 1 else 0) + (if (followUpCount > 0) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
     LazyColumn(
         Modifier.fillMaxSize(),
         state = listState,
@@ -135,6 +140,9 @@ internal fun TodayScreen(
             }
         }
         if (notices.isNotEmpty()) item(key = "renumbered") { RenumberCard(notices, onOpenNoticeDocument, onDismissNotice) }
+        if (refused.isNotEmpty()) item(key = "refused") {
+            RefusedCard(refused, recoveryBusy, onCreateFromRefused, onAttachRefused, onDiscardRefused)
+        }
         if (followUpCount > 0) item(key = "follow-ups") {
             ResourceCountCard("Cobranças de hoje", followUpCount, Tone.ACCENT, onOpenFollowUps)
         }
@@ -209,6 +217,35 @@ internal fun RenumberCard(notices: List<RenumberNotice>, onOpen: (Long) -> Unit,
         val more = RenumberRules.moreText(notices)
         if (more.isNotEmpty()) {
             Text(more, Modifier.padding(horizontal = ROW_MARGIN, vertical = 8.dp), fontSize = 14.sp, color = c.muted)
+        }
+    }
+}
+
+/**
+ * The recovery of the files the core refused for a record (F3.1b2, frozen rule 22): each says why, and offers
+ * "Criar registro com esta foto", "Anexar a outro registro…" and "Descartar".
+ */
+@Composable
+internal fun RefusedCard(
+    files: List<RefusedFile>, busy: Boolean,
+    onCreate: (RefusedFile) -> Unit, onAttach: (RefusedFile) -> Unit, onDiscard: (RefusedFile) -> Unit
+) {
+    val c = Ponte.colors
+    Column(Modifier.fillMaxWidth()) {
+        SectionHeader(PendingAttachRules.banner(files.size), color = c.warning)
+        files.forEach { f ->
+            FlatRow(null) {
+                Column {
+                    Text(f.name, fontSize = 15.sp, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(f.message, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                    Column(Modifier.padding(top = 2.dp)) {
+                        val (create, attach, discard) = PendingAttachRules.ACTIONS
+                        TextAction(create, { if (!busy) onCreate(f) })
+                        TextAction(attach, { if (!busy) onAttach(f) })
+                        TextAction(discard, { if (!busy) onDiscard(f) })
+                    }
+                }
+            }
         }
     }
 }

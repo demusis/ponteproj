@@ -123,7 +123,7 @@ internal object ForegroundSync {
     fun editing(route: Route): Boolean = when (route) {
         is Route.Note, is Route.NewTask, is Route.EditTask, is Route.Pick,
         is Route.ProjectEdit, is Route.ProjectInclude, is Route.Account,
-        Route.Photo, Route.Share, Route.SharePick, Route.Settings, Route.Setup -> true
+        Route.Photo, Route.Share, Route.SharePick, is Route.RecoveryPick, Route.Settings, Route.Setup -> true
         is Route.Document, is Route.Text, is Route.Project, is Route.Attendance,
         is Route.ResourceUse, is Route.Resource, Route.Search -> false
     }

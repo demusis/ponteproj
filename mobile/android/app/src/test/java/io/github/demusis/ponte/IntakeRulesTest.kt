@@ -126,7 +126,8 @@ class IntakeRulesTest {
         assertFalse(NavGuard.busy(listOf(Route.Document(1), Route.Text(1), Route.Attendance(2)), false))
         val unsaved = listOf(
             Route.Photo, Route.Share, Route.SharePick, Route.Settings, Route.Setup, Route.Search,
-            Route.Account(""), Route.Account("u1"), Route.Note(1), Route.NewTask(0), Route.EditTask(3), Route.Pick(3)
+            Route.Account(""), Route.Account("u1"), Route.Note(1), Route.NewTask(0), Route.EditTask(3), Route.Pick(3),
+            Route.RecoveryPick(4)
         )
         for (r in unsaved) assertTrue(r.toString(), NavGuard.busy(listOf(Route.Document(1), r), false))
         // An attach in progress counts, even from a plain ficha.

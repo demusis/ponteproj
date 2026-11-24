@@ -294,13 +294,21 @@ internal object Intake {
         private set
 
     private var attachDocId = 0L
+    private var attachProof = AttachProof()
     private var attachDescription = ""
     private var attachPhoto: File? = null
 
+    /**
+     * The photos and files taken for a record, on disk with the record's proof before the core sees them (F3.1b2,
+     * adendo §10 rule 1): in the private files folder, never the cache, so neither a cold start nor a process death
+     * loses one (see [resumePending]).
+     */
+    private val pendingStore by lazy { PendingAttachStore(File(app.filesDir, PendingAttachStore.DIR)) }
+
     private fun cleanDescription(d: String) = ShareRules.capChars(d.trim(), AttachLimits.maxDescriptionChars)
 
-    /** The camera, for a picture to attach to document [documentId]. */
-    fun attachPhoto(documentId: Long, description: String) {
+    /** The camera, for a picture to attach to document [documentId] ([proof]: what the ficha read of it). */
+    fun attachPhoto(documentId: Long, proof: AttachProof, description: String) {
         if (attachBusy || Controller.locked || documentId <= 0) return
         val a = MainActivity.live ?: return
         val dir = File(app.cacheDir, PonteFiles.DIR_PHOTOS).apply { mkdirs() }
@@ -312,6 +320,7 @@ internal object Intake {
             clipData = ClipData.newRawUri("foto", uri)
         }
         attachDocId = documentId
+        attachProof = proof
         attachDescription = cleanDescription(description)
         attachPhoto = f
         try {
@@ -326,10 +335,8 @@ internal object Intake {
         }
     }
 
-    /** A result of the camera or the picker, already in a private working file, waiting for the unlock. */
-    private class Parked(val docId: Long, val file: File, val name: String, val description: String)
-
-    private var parked: Parked? = null
+    /** A result of the camera or the picker, already kept on disk, waiting for the unlock. */
+    private var parked: PendingAttach? = null
 
     /** The camera picture being shrunk (kept out of the lock's cleanup meanwhile). */
     @Volatile private var resizing: File? = null
@@ -348,6 +355,7 @@ internal object Intake {
             return
         }
         val docId = attachDocId
+        val proof = attachProof
         val description = attachDescription.ifEmpty { "Foto tirada no celular" }
         attachDocId = 0L
         attachBusy = true
@@ -358,7 +366,7 @@ internal object Intake {
                 Images.resizeForUpload(f, out)
                 val name = "foto-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmmss")) + ".jpg"
                 f.delete()
-                ui { resizing = null; deliver(docId, out, name, description) }
+                ui { resizing = null; deliver(docId, proof, out, name, description) }
             } catch (e: Throwable) {
                 f.delete()
                 out.delete()
@@ -369,38 +377,79 @@ internal object Intake {
     }
 
     /**
-     * A working file is ready for [docId]: attach it now, or park it while the app is locked (and
-     * still in front of the person; a locked app that is already out of sight keeps nothing).
+     * A working file is ready for [docId]: it is kept on disk with the record's proof first (adendo §10 rule 1), then
+     * attached now, or parked while the app is locked (a locked app out of sight attaches it at the next start).
      */
-    private fun deliver(docId: Long, file: File, name: String, description: String) {
+    private fun deliver(docId: Long, proof: AttachProof, file: File, name: String, description: String) {
+        val p = try {
+            pendingStore.adopt(file, docId, proof, name, description)
+        } catch (_: Throwable) {
+            file.delete()
+            attachBusy = false
+            Controller.say("Não foi possível guardar o arquivo no aparelho. Confira o espaço livre e tente de novo.", long = true)
+            return
+        }
         when (IntakeRules.attachResult(true, true, Controller.locked)) {
-            IntakeRules.Result.ATTACH -> runAttach(docId, file, name, description)
+            IntakeRules.Result.ATTACH -> runAttach(p)
             IntakeRules.Result.PARK -> {
                 val front = MainActivity.live?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED) == true
-                if (front) {
-                    parked?.file?.delete()
-                    parked = Parked(docId, file, name, description)
-                } else {
-                    file.delete()
-                    attachBusy = false
-                }
+                if (front) parked = p else attachBusy = false
             }
-            IntakeRules.Result.DROP -> { file.delete(); attachBusy = false }
+            IntakeRules.Result.DROP -> attachBusy = false
         }
     }
 
     /** From the compose tree once the app is unlocked: what waited behind the lock is attached now. */
     fun onUnlocked() {
-        val p = parked ?: return
+        val p = parked
         parked = null
-        runAttach(p.docId, p.file, p.name, p.description)
+        if (p != null) {
+            attachBusy = true
+            runAttach(p)
+        }
+        resumePending()
+    }
+
+    /** The records of this process already handed to the core, or being handed (never twice at once). */
+    private val delivering = HashSet<String>()
+
+    /**
+     * At start (and after the unlock): every [PendingAttach] left by an earlier run becomes what the core says of its
+     * operation — delivered again with the same operation, cleaned, or sent to the recovery card of Hoje.
+     */
+    fun resumePending() {
+        if (Controller.locked || !SyncRunner.ready) return
+        val left = try { pendingStore.all() } catch (_: Throwable) { emptyList() }
+        left.filter { delivering.add(it.operationId) }.forEach { p ->
+            SyncRunner.background({
+                when (PendingAttachRules.next(Api.operationStatusJson(p.operationId))) {
+                    PendingAttachRules.Next.DELIVER -> attachOnce(p)
+                    PendingAttachRules.Next.CLEAN -> { pendingStore.remove(p); PendingAttachRules.Next.CLEAN to null }
+                    PendingAttachRules.Next.RECOVER -> { pendingStore.remove(p); PendingAttachRules.Next.RECOVER to null }
+                    PendingAttachRules.Next.KEEP -> PendingAttachRules.Next.KEEP to null
+                }
+            }, { (next, _) ->
+                if (next == PendingAttachRules.Next.KEEP) delivering.remove(p.operationId)
+                if (next == PendingAttachRules.Next.RECOVER) Controller.refreshRefused()
+            }, { delivering.remove(p.operationId) }, fail = "")
+        }
+    }
+
+    /** [p] to the core; its staging and record go only once the core answered for it. (Background thread.) */
+    private fun attachOnce(p: PendingAttach): Pair<PendingAttachRules.Next, Throwable?> {
+        val error = try { Api.attachPending(p); null } catch (e: Throwable) { e }
+        val next = PendingAttachRules.afterAttach(error)
+        if (next != PendingAttachRules.Next.KEEP) pendingStore.remove(p)
+        if (error == null) SyncRunner.refreshDocs()
+        return next to error
     }
 
     /** The system picker (any type, one file), for a file to attach to document [documentId]. */
-    fun attachPick(documentId: Long, description: String) {
+    fun attachPick(documentId: Long, proof: AttachProof, description: String) {
         if (attachBusy || Controller.locked || documentId <= 0) return
         val a = MainActivity.live ?: return
         attachDocId = documentId
+        attachProof = proof
         attachDescription = cleanDescription(description)
         try {
             val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -423,13 +472,14 @@ internal object Intake {
     fun onAttachPicked(uri: Uri?) {
         if (uri == null || attachDocId <= 0 || attachBusy) return
         val docId = attachDocId
+        val proof = attachProof
         val description = attachDescription
         attachDocId = 0L
         attachBusy = true
         stager.execute {
             try {
                 val s = stage(uri, null, allowBigImage = false)
-                ui { deliver(docId, s.file, s.name, description) }
+                ui { deliver(docId, proof, s.file, s.name, description) }
             } catch (e: Throwable) {
                 val m = PhoneWords.explain(e, "Não foi possível ler o arquivo. Tente de novo.")
                 ui { attachBusy = false; Controller.say(m, long = true) }
@@ -437,26 +487,36 @@ internal object Intake {
         }
     }
 
-    /** Hands the working file to the core; it is deleted on every path. */
-    private fun runAttach(docId: Long, work: File, name: String, description: String) {
-        SyncRunner.background({
-            try {
-                Api.attachFile(docId, work.absolutePath, name, description)
-                SyncRunner.refreshDocs()
-            } finally {
-                try { work.delete() } catch (_: Throwable) { }
+    /**
+     * Hands [p] to the core with its operation and proof. The staging goes once the core answered (attached, queued,
+     * refused into a card, or the file itself refused); with no answer it stays for the next start (frozen rule 22).
+     */
+    private fun runAttach(p: PendingAttach) {
+        delivering.add(p.operationId)
+        SyncRunner.background({ attachOnce(p) }, { (next, error) ->
+            attachBusy = false
+            if (next == PendingAttachRules.Next.KEEP) delivering.remove(p.operationId)
+            when {
+                next == PendingAttachRules.Next.RECOVER -> {
+                    Controller.refreshRefused()
+                    Controller.say(error?.message.orEmpty(), action = "Ver em Hoje", long = true) { Controller.showRefused() }
+                }
+                error != null -> Controller.say(PhoneWords.explain(error, KEPT), long = true)
+                else -> {
+                    Controller.render()
+                    Controller.refreshDocument()
+                    Controller.say("Anexo adicionado.")
+                    Controller.requestSync(null, auto = true)
+                }
             }
         }, {
             attachBusy = false
-            Controller.render()
-            Controller.refreshDocument()
-            Controller.say("Anexo adicionado.")
-            Controller.requestSync(null, auto = true)
-        }, {
-            attachBusy = false
+            delivering.remove(p.operationId)
             Controller.say(it, long = true)
-        }, fail = "Não foi possível anexar o arquivo. Tente de novo.")
+        }, fail = KEPT)
     }
+
+    private const val KEPT = "Não foi possível anexar o arquivo agora; ele ficou guardado no aparelho e será anexado quando o Ponte de bolso abrir de novo."
 
     // ------------------------------------------------------------------ what other apps share
 
@@ -982,11 +1042,10 @@ internal object Intake {
         }
     }
 
-    /** A result parked for the unlock is thrown away (the person left without unlocking). */
+    /** The person left without unlocking: the result parked stays on disk and is attached at the next start. */
     private fun dropParked() {
-        val p = parked ?: return
+        if (parked == null) return
         parked = null
-        try { p.file.delete() } catch (_: Throwable) { }
         attachBusy = false
     }
 
