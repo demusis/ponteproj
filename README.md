@@ -18,7 +18,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
 | **Celular (Android)** | **Ponte de bolso**, que acompanha o Ponte pela pasta compartilhada: [`mobile/README.md`](mobile/README.md) |
 | **Para quem mexe no código** | [`CONTRIBUINDO.md`](CONTRIBUINDO.md): módulos, build, testes e publicação |
-| **Versão** | 0.51.0 (extensão 0.4.1; Ponte de bolso 0.27.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.52.0 (extensão 0.4.1; Ponte de bolso 0.28.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -65,7 +65,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.51.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.52.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
