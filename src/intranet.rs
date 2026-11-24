@@ -4550,8 +4550,12 @@ impl Store {
                     // kept as a card, never sent again, and the queue goes
                     // on (review F3.0a2, finding 6).
                     let learned = ids.learn(&entry.created, None);
-                    let mut conflict =
-                        build_sync_conflict(&entry, UNCERTAIN_STATE, host_frame.as_deref());
+                    let mut conflict = build_sync_conflict(
+                        &entry,
+                        UNCERTAIN_STATE,
+                        host_frame.as_deref(),
+                        Named::Here(&self.conn),
+                    );
                     conflict.unresolved = true;
                     carded_now(&mut carded, &conflict);
                     self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
@@ -4623,8 +4627,12 @@ impl Store {
                 // one expects the version that entry would have left.
                 if let Some(unresolved) = item.as_ref().and_then(|i| carded.get(i)).copied() {
                     let learned = ids.learn(&entry.created, None);
-                    let mut conflict =
-                        build_sync_conflict(&entry, AFTER_A_CARD, host_frame.as_deref());
+                    let mut conflict = build_sync_conflict(
+                        &entry,
+                        AFTER_A_CARD,
+                        host_frame.as_deref(),
+                        Named::Here(&self.conn),
+                    );
                     conflict.unresolved = unresolved;
                     conflict.identity = identity;
                     self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
@@ -4687,7 +4695,8 @@ impl Store {
                             .unwrap_or_else(|_| entry.mutation.clone()),
                         ..entry.clone()
                     };
-                    let mut conflict = card_of(&entry, &sent, &reason, host_frame.as_deref());
+                    let mut conflict =
+                        card_of(&entry, &sent, &reason, host_frame.as_deref(), Named::InCopy);
                     conflict.identity = identity;
                     carded_now(&mut carded, &conflict);
                     self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
@@ -4707,8 +4716,12 @@ impl Store {
                         if let Some(doc) = creation {
                             creation_results.insert(doc, crate::renumber::CreationOutcome::Refused);
                         }
-                        let mut conflict =
-                            build_sync_conflict(&entry, &reason, host_frame.as_deref());
+                        let mut conflict = build_sync_conflict(
+                            &entry,
+                            &reason,
+                            host_frame.as_deref(),
+                            Named::Here(&self.conn),
+                        );
                         conflict.unresolved = true;
                         conflict.identity = identity;
                         carded_now(&mut carded, &conflict);
@@ -4789,8 +4802,12 @@ impl Store {
                         if let Some(doc) = creation {
                             creation_results.insert(doc, crate::renumber::CreationOutcome::Refused);
                         }
-                        let mut conflict =
-                            build_sync_conflict(&entry, &message, host_frame.as_deref());
+                        let mut conflict = build_sync_conflict(
+                            &entry,
+                            &message,
+                            host_frame.as_deref(),
+                            Named::Here(&self.conn),
+                        );
                         conflict.unresolved = true;
                         conflict.identity = identity;
                         carded_now(&mut carded, &conflict);
@@ -4802,7 +4819,13 @@ impl Store {
                         if let Some(doc) = creation {
                             creation_results.insert(doc, crate::renumber::CreationOutcome::Refused);
                         }
-                        let mut conflict = card_of(&entry, &sent, &message, host_frame.as_deref());
+                        let mut conflict = card_of(
+                            &entry,
+                            &sent,
+                            &message,
+                            host_frame.as_deref(),
+                            Named::InCopy,
+                        );
                         conflict.identity = identity;
                         carded_now(&mut carded, &conflict);
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
@@ -5007,7 +5030,8 @@ impl Store {
                         // What kind of copy this library really holds.
                         record_cache_schema(tx, original_schema)?;
                         for entry in &replaced_queue {
-                            let mut conflict = build_sync_conflict(entry, &reason, Some(&snapshot));
+                            let mut conflict =
+                                build_sync_conflict(entry, &reason, Some(&snapshot), Named::Gone);
                             conflict.unresolved = true;
                             insert_conflict(tx, &conflict)?;
                         }
@@ -6314,6 +6338,7 @@ impl Store {
                         &format!("{AFTER_A_CARD} (alteração vinda de {from})"),
                         base_snapshot,
                         unresolved,
+                        Named::InOther(&source.payload.snapshot),
                     );
                     conflict.identity = identity;
                     conflicts.push(conflict);
@@ -6439,6 +6464,11 @@ impl Store {
                         // frame: as resolved here (the proofs' rows
                         // rewritten to these numbers), or, when it did not
                         // resolve, as the journal holds them.
+                        let named = if unresolved {
+                            Named::InOther(&source.payload.snapshot)
+                        } else {
+                            Named::InCopy
+                        };
                         let (mutation, base, refs) = match remapped {
                             Ok(mutation) => (mutation, base, refs),
                             Err(_) => (
@@ -6465,6 +6495,7 @@ impl Store {
                             &format!("{error} (alteração vinda de {from})"),
                             base_snapshot,
                             unresolved,
+                            named,
                         );
                         conflict.identity = identity;
                         conflicts.push(conflict);
@@ -6585,6 +6616,7 @@ impl Store {
                         "Alteração feita antes de este computador entrar na pasta; o acervo daqui foi substituído pelo da pasta.",
                         base_snapshot,
                         true,
+                        Named::Gone,
                     ));
                     applied.insert(entry.uid.clone());
                     report.conflicts += 1;
@@ -6604,7 +6636,13 @@ impl Store {
                 if let Some(unresolved) = item.as_ref().and_then(|i| carded_items.get(i)).copied() {
                     ids.learn(&entry.created, None);
                     cards_here.kept_in_card(&entry.mutation, &entry.created);
-                    let mut conflict = conflict_for(entry, AFTER_A_CARD, base_snapshot, unresolved);
+                    let mut conflict = conflict_for(
+                        entry,
+                        AFTER_A_CARD,
+                        base_snapshot,
+                        unresolved,
+                        Named::Here(&self.conn),
+                    );
                     conflict.identity = identity;
                     conflicts.push(conflict);
                     applied.insert(entry.uid.clone());
@@ -6732,7 +6770,13 @@ impl Store {
                             }),
                             ..entry.clone()
                         };
-                        let mut conflict = card_of(entry, &sent, &error, base_snapshot);
+                        // `sent` is in the copy's numbers when it resolved.
+                        let named = if unresolved {
+                            Named::Here(&self.conn)
+                        } else {
+                            Named::InCopy
+                        };
+                        let mut conflict = card_of(entry, &sent, &error, base_snapshot, named);
                         conflict.unresolved = unresolved;
                         conflict.identity = identity;
                         conflicts.push(conflict);
@@ -7640,7 +7684,7 @@ impl Store {
                             entry.label
                         ));
                     }
-                    conflicts.push(conflict_for(&as_entry, &reason, None, true));
+                    conflicts.push(conflict_for(&as_entry, &reason, None, true, Named::Gone));
                     report.conflicts += 1;
                 }
             }
@@ -7939,7 +7983,7 @@ impl Store {
                     idents: Vec::new(),
                     refs,
                 };
-                let mut conflict = build_sync_conflict(&made, &message, None);
+                let mut conflict = build_sync_conflict(&made, &message, None, Named::InCopy);
                 conflict.unresolved = true;
                 insert_conflict(&self.conn, &conflict)?;
                 bail!("{message} Ela ficou guardada em Conflitos de edição.")
@@ -12008,23 +12052,26 @@ fn conflict_for(
     reason: &str,
     snapshot: Option<&CabinetSnapshot>,
     unresolved: bool,
+    named: Named<'_>,
 ) -> SyncConflict {
-    let mut conflict = build_sync_conflict(entry, reason, snapshot);
+    let mut conflict = build_sync_conflict(entry, reason, snapshot, named);
     conflict.unresolved = unresolved;
     conflict
 }
 
-/// The card of `sent` (the change in the receiver's numbers, which the
-/// summaries compare with its state) that keeps the envelope of `original`
-/// when it carries proofs (v2 §2.7, frozen rule 8): the change as it was
-/// made, its base and its proofs, never the numbers it was resolved to.
+/// The card of `sent` (the change in the receiver's numbers when it
+/// resolved, which the summaries compare with its state; `named` says
+/// which) that keeps the envelope of `original` when it carries proofs
+/// (v2 §2.7, frozen rule 8): the change as it was made, its base and its
+/// proofs, never the numbers it was resolved to.
 fn card_of(
     original: &OutboxEntry,
     sent: &OutboxEntry,
     reason: &str,
     snapshot: Option<&CabinetSnapshot>,
+    named: Named<'_>,
 ) -> SyncConflict {
-    let mut conflict = build_sync_conflict(sent, reason, snapshot);
+    let mut conflict = build_sync_conflict(sent, reason, snapshot, named);
     if original.refs.is_some() {
         conflict.mutation = original.mutation.clone();
         conflict.base = original.base.clone();
@@ -12033,17 +12080,78 @@ fn card_of(
     conflict
 }
 
-fn build_sync_conflict(
+/// Whose numbers the change shown on a card is in, to find its item in the
+/// copy the card compares it with (revisao-f3-1a-ii #3). A kind the mapper
+/// does not map has the same numbers everywhere it did before: it is
+/// looked up by number, as always.
+#[derive(Clone, Copy)]
+pub(crate) enum Named<'a> {
+    /// The copy's own numbers (the change resolved into it).
+    InCopy,
+    /// This library's numbers (its own queue): once it is mapped, an item
+    /// of a mapped kind is found by the identity it has here.
+    Here(&'a rusqlite::Connection),
+    /// The numbers of another copy (a change of its journal that did not
+    /// resolve): by the identity the item has there, when both carry them.
+    InOther(&'a CabinetSnapshot),
+    /// The numbers of a library this one no longer is (replaced by the
+    /// copy): they name nothing the card can be compared with.
+    Gone,
+}
+
+impl Named<'_> {
+    /// The number in `copy` of item `id` of ident kind `kind` of the
+    /// change; `None` when it cannot be told (never another item's).
+    fn find(self, copy: &CabinetSnapshot, kind: &str, id: i64) -> Option<i64> {
+        if !crate::mapper::addressed(kind) {
+            return Some(id);
+        }
+        let ident = match self {
+            Named::InCopy => return Some(id),
+            Named::Gone => return None,
+            Named::Here(conn) => {
+                if !crate::idents::is_mapped(conn).ok()? {
+                    return Some(id);
+                }
+                crate::idents::ident_of(conn, kind, id).ok()??
+            }
+            Named::InOther(other) => {
+                if other.idents.is_empty() || copy.idents.is_empty() {
+                    return Some(id);
+                }
+                other
+                    .idents
+                    .iter()
+                    .find(|r| r.0 == kind && r.1 == id)?
+                    .2
+                    .clone()
+            }
+        };
+        copy.idents
+            .iter()
+            .find(|r| r.0 == kind && r.2 == ident)
+            .map(|r| r.1)
+    }
+}
+
+pub(crate) const NOT_FOUND_THERE: &str = "(registro não localizado no computador principal)";
+
+pub(crate) fn build_sync_conflict(
     entry: &OutboxEntry,
     reason: &str,
     host_snapshot: Option<&CabinetSnapshot>,
+    named: Named<'_>,
 ) -> SyncConflict {
+    // The document of the change in the copy compared with: `Err` when it
+    // cannot be told there.
+    let document_there = |s: &CabinetSnapshot, id: i64| named.find(s, "document", id).ok_or(());
     let (local_summary, host_summary) = match &entry.mutation {
         IntranetMutation::SaveNote {
             document_id, note, ..
         } => {
             let host_note = host_snapshot
-                .and_then(|s| {
+                .map(|s| {
+                    let document_id = document_there(s, *document_id)?;
                     // The current note there, by the order of versions.
                     let ident = |id: i64| {
                         s.idents
@@ -12051,18 +12159,22 @@ fn build_sync_conflict(
                             .find(|r| r.0 == "note" && r.1 == id)
                             .map(|r| r.2.clone())
                     };
-                    s.notes
+                    Ok(s.notes
                         .iter()
-                        .filter(|n| n.document_id == *document_id)
+                        .filter(|n| n.document_id == document_id)
                         .max_by_key(|n| {
                             (
                                 crate::idents::analysis_micros(&n.created_at),
                                 ident(n.id),
                                 n.id,
                             )
-                        })
+                        }))
                 })
-                .map(|n| n.note.clone())
+                .map(|found| match found {
+                    Ok(Some(n)) => n.note.clone(),
+                    Ok(None) => "(vazia no computador principal)".into(),
+                    Err(()) => NOT_FOUND_THERE.into(),
+                })
                 .unwrap_or_else(|| "(vazia no computador principal)".into());
             (
                 format!("Nota deste computador: {}", note.trim()),
@@ -12071,7 +12183,10 @@ fn build_sync_conflict(
         }
         IntranetMutation::SaveTask { task, .. } => {
             let host_desc = host_snapshot
-                .and_then(|s| s.tasks.iter().find(|t| t.id == task.id))
+                .and_then(|s| {
+                    let id = named.find(s, "task", task.id)?;
+                    s.tasks.iter().find(|t| t.id == id)
+                })
                 .map(|t| {
                     format!(
                         "Título: '{}' | Responsável: '{}' | Situação: {} | Notas: '{}'",
@@ -12095,7 +12210,10 @@ fn build_sync_conflict(
             document_id, value, ..
         } => {
             let host_desc = host_snapshot
-                .and_then(|s| s.work_contexts.iter().find(|(id, _)| id == document_id))
+                .and_then(|s| {
+                    let document_id = named.find(s, "document", *document_id)?;
+                    s.work_contexts.iter().find(|(id, _)| *id == document_id)
+                })
                 .map(|(_, c)| {
                     format!(
                         "Finalidade: '{}' | Assuntos: '{}' | Notas: '{}'",
@@ -12112,9 +12230,8 @@ fn build_sync_conflict(
         IntranetMutation::SaveSaiopAttendance { attendance, .. } => {
             let host_desc = host_snapshot
                 .and_then(|s| {
-                    s.saiop_attendances
-                        .iter()
-                        .find(|r| r.attendance.id == attendance.id)
+                    let id = named.find(s, "saiop", attendance.id)?;
+                    s.saiop_attendances.iter().find(|r| r.attendance.id == id)
                 })
                 .map(|r| {
                     format!(

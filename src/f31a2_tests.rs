@@ -382,6 +382,91 @@ fn f3_1a_a_card_never_shows_another_record_of_the_copy() {
     assert_eq!(note(&b, Y), "Nota de A em Y", "Y keeps A's note");
 }
 
+/// revisao-f3-1a-ii #3, every frame a card may hold its change in. On the
+/// crossed pair (42 is X on A and Y on B), a note of B on X compared with
+/// A's copy: in B's numbers it is found by its identity here, in another
+/// copy's numbers by its identity there, in the copy's numbers by number;
+/// the numbers of a library that was replaced name nothing. A kind the
+/// mapper does not map is found by its number, as before (F3.2–F3.4 add
+/// their kinds).
+///
+/// New API with the fix: its red is the test above.
+#[test]
+fn f3_1a_a_card_finds_the_record_by_its_identity_in_every_frame() {
+    use crate::intranet::{build_sync_conflict, IntranetMutation, Named, OutboxEntry};
+    let (_dir, mut a, mut b, held) = crossed();
+    let (x_on_b, y_on_a) = (doc(&b, X).unwrap(), doc(&a, Y).unwrap());
+    assert_eq!(x_on_b, y_on_a, "B's number of X is Y's on A");
+    a.save_note(held, "Nota de A em X").unwrap();
+    a.save_note(y_on_a, "Nota de A em Y").unwrap();
+    // A record only on B, at the number A gives to a record only on A.
+    let only_on_b = b
+        .import_capture(&capture("SEFAZ-PRO-2026/07009", "Só em B."))
+        .unwrap()
+        .document_id;
+    let only_on_a = a
+        .import_capture(&capture("SEFAZ-PRO-2026/07008", "Só em A."))
+        .unwrap()
+        .document_id;
+    assert_eq!(only_on_a, only_on_b);
+    a.save_note(only_on_a, "Nota de A no registro só de A")
+        .unwrap();
+    let copy = a.export_with_idents(&fresh_ident()).unwrap();
+    let of_b = b.export_with_idents(&fresh_ident()).unwrap();
+    let card = |document_id, named| {
+        let entry = OutboxEntry {
+            id: 0,
+            created_at: String::new(),
+            actor: "B".into(),
+            label: "Nota".into(),
+            mutation: IntranetMutation::SaveNote {
+                document_id,
+                note: "Nota de B".into(),
+                expected_version: None,
+            },
+            base: None,
+            uid: String::new(),
+            created: Vec::new(),
+            attempted: false,
+            idents: Vec::new(),
+            refs: None,
+        };
+        build_sync_conflict(&entry, "motivo", Some(&copy), named).host_summary
+    };
+    let there = |note: &str| format!("Nota no computador principal: {note}");
+    let x = there("Nota de A em X");
+    let nothing = there(crate::intranet::NOT_FOUND_THERE);
+    assert_eq!(
+        card(x_on_b, Named::Here(&b.conn)),
+        x,
+        "by its identity here"
+    );
+    assert_eq!(
+        card(x_on_b, Named::InOther(&of_b)),
+        x,
+        "by its identity there"
+    );
+    assert_eq!(card(held, Named::InCopy), x, "the copy's number");
+    assert_eq!(
+        card(x_on_b, Named::Gone),
+        nothing,
+        "a replaced library's number names nothing"
+    );
+    assert_eq!(
+        card(only_on_b, Named::Here(&b.conn)),
+        nothing,
+        "nothing proves a record only here, whatever holds its number there"
+    );
+    assert_eq!(card(only_on_b, Named::InOther(&of_b)), nothing);
+    // Not mapped (the families after F3.1a): by number, as before.
+    let _kinds = kinds(&["capture"]);
+    assert_eq!(
+        card(x_on_b, Named::Here(&b.conn)),
+        there("Nota de A em Y"),
+        "an unmapped kind is looked up by number"
+    );
+}
+
 // ---------------------------------------------- a link by its two ends --
 
 /// The links of the record `number` here, as (active, reason).
