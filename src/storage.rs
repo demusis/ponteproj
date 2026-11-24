@@ -762,10 +762,19 @@ impl Store {
         }
         (|| -> Result<()> {
             tx.execute_batch(crate::idents::TABLES_SQL)?;
-            tx.execute_batch(&crate::idents::backfill_sql())?;
+            // Every guard goes first and is written again last: what 0.51
+            // showed is kept (review F3.1a-i, finding 4) in documents in the
+            // Lixeira too, whose guards would refuse the change, and the
+            // identities and pointers are written before any trigger exists.
             let tables = library_tables(&tx)?;
-            for (name, sql) in Self::expected_guards(&tables) {
-                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {sql}"))?;
+            let guards = Self::expected_guards(&tables);
+            for (name, _) in &guards {
+                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))?;
+            }
+            crate::idents::keep_shown_in_library(&tx)?;
+            tx.execute_batch(&crate::idents::backfill_sql())?;
+            for (_, sql) in &guards {
+                tx.execute_batch(sql)?;
             }
             tx.pragma_update(None, "user_version", LIBRARY_SCHEMA)?;
             #[cfg(any(test, feature = "test-support"))]

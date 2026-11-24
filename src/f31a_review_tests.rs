@@ -502,8 +502,9 @@ fn shown_051(store: &mut Store) -> Shown051 {
     store
         .import_capture(&version("D novo", "2026-11-02T10:00:00Z"))
         .unwrap();
+    // The same content seen again later: the version already there.
     let again = store
-        .import_capture(&version("D antigo", "2026-11-01T10:00:00Z"))
+        .import_capture(&version("D antigo", "2026-11-03T10:00:00Z"))
         .unwrap();
     assert_eq!(again.capture_id, old.capture_id, "the same version");
     Shown051 {
@@ -671,7 +672,7 @@ fn f3_1a_r4_a_copy_without_identities_keeps_what_0_51_shows() {
         crate::f3b2_tests::adopt(&mut store, &copy);
         assert_eq!(store.load_document(doc).unwrap().note, "v2");
         assert_eq!(pointer(&store, doc).0, Some(901));
-        adopted.push(dump(&store, "notes"));
+        adopted.push(serde_json::to_value(store.export_snapshot().unwrap().notes).unwrap());
     }
     assert_eq!(adopted[0], adopted[1]);
 
@@ -719,4 +720,86 @@ fn f3_1a_r4_a_library_left_at_21_shows_what_0_51_showed() {
     let store = Store::open(&path).unwrap();
     assert_eq!(test_support::user_version(&path).unwrap(), 22);
     assert_eq!(store.load_document(case.skewed).unwrap().note, "A v3");
+}
+
+/// The rule of finding 4, alone. The version 0.51 chose moves only when
+/// another is not strictly before it, to one millisecond after the latest
+/// of the group (past a moment kept with more precision too); one already
+/// first by time stays; an unreadable moment counts as the oldest, and a
+/// group with none readable gets the start of 1970. Of the analyses, only
+/// those of the current version compete when it has any.
+#[test]
+fn f3_1a_r4_the_rule_kept_from_0_51() {
+    use crate::idents::{keep_shown, shown_moves, Shown051};
+    let note = Shown051::HighestNumber;
+    let analysis = Shown051::LatestThenNumber;
+    assert_eq!(
+        keep_shown(
+            &[
+                (1, "2026-11-20T10:05:00.000Z"),
+                (2, "2026-11-20T10:02:00.000Z")
+            ],
+            note
+        ),
+        Some((2, "2026-11-20T10:05:00.001Z".into()))
+    );
+    assert_eq!(
+        keep_shown(
+            &[
+                (1, "2026-11-20T10:00:00.000900Z"),
+                (2, "2026-11-20T10:00:00.000Z")
+            ],
+            note
+        ),
+        Some((2, "2026-11-20T10:00:00.001Z".into()))
+    );
+    assert_eq!(
+        keep_shown(
+            &[
+                (1, "2026-11-20T10:00:00.000Z"),
+                (2, "2026-11-20T10:00:00.001Z")
+            ],
+            note
+        ),
+        None
+    );
+    assert_eq!(keep_shown(&[(7, "ontem")], note), None);
+    assert_eq!(
+        keep_shown(&[(1, "2026-11-20T10:00:00.000Z"), (2, "ontem")], note),
+        Some((2, "2026-11-20T10:00:00.001Z".into()))
+    );
+    assert_eq!(
+        keep_shown(&[(1, "ontem"), (2, "anteontem")], note),
+        Some((2, "1970-01-01T00:00:00.000Z".into()))
+    );
+    assert_eq!(
+        keep_shown(
+            &[
+                (1, "2026-11-20T09:00:00.000Z"),
+                (2, "2026-11-20T09:00:00.000Z")
+            ],
+            analysis
+        ),
+        Some((2, "2026-11-20T09:00:00.001Z".into()))
+    );
+    assert_eq!(
+        keep_shown(
+            &[
+                (1, "2026-11-20T10:00:00.000Z"),
+                (2, "2026-11-20T09:00:00.000Z")
+            ],
+            analysis
+        ),
+        None
+    );
+    let current = std::collections::HashMap::from([(5, 50)]);
+    let analyses = [
+        (1, 5, 49, "2026-11-20T11:00:00.000Z".to_string()),
+        (2, 5, 50, "2026-11-20T09:00:00.000Z".to_string()),
+        (3, 5, 50, "2026-11-20T09:00:00.000Z".to_string()),
+    ];
+    assert_eq!(
+        shown_moves(&[], &analyses, &current),
+        (vec![], vec![(3, "2026-11-20T09:00:00.001Z".into())])
+    );
 }

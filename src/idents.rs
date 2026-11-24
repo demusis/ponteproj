@@ -580,7 +580,16 @@ pub(crate) fn ident_sql(kind: &str, row: &str, idents: bool) -> String {
 /// as the oldest), then by identity, then by number. The identity travels
 /// with the row, so every device that holds the same rows chooses the
 /// same one, whatever their numbers here.
+///
+/// The notes of a library left at schema 21 for this opening (its update
+/// could not be done) are the exception: without identities, they go by
+/// number, as Ponte 0.51 showed them, so the update done at a later
+/// opening, which keeps that note current ([`keep_shown_in_library`]),
+/// never shows another one in between (review F3.1a-i, finding 4).
 pub(crate) fn version_order(kind: &str, alias: &str, at: &str, idents: bool) -> String {
+    if kind == "note" && !idents {
+        return format!("{alias}.id DESC");
+    }
     let at = analysis_time(&format!("{alias}.{at}"));
     let ident = ident_sql(kind, &format!("{alias}.id"), idents);
     format!("{at} IS NULL, {at} DESC, {ident} DESC, {alias}.id DESC")
@@ -617,6 +626,176 @@ pub(crate) fn refresh_pointers(conn: &Connection) -> Result<()> {
         current_analysis_sql("current_pointer.document_id")
     ))?;
     Ok(())
+}
+
+/// Which version Ponte 0.51 showed as current among versions of one
+/// document that compete (the order of versions of adendo §8 replaced
+/// that rule; review F3.1a-i, finding 4).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Shown051 {
+    /// A note: the highest number (the one saved last here).
+    HighestNumber,
+    /// An analysis: the latest moment it was made, then the highest
+    /// number.
+    LatestThenNumber,
+}
+
+/// What Ponte 0.51 showed stays shown under the one order of versions
+/// (review F3.1a-i, finding 4, the owner's decision): of `group` (the
+/// versions that compete, as number and moment stored), the one 0.51
+/// chose by `shown`, when another is not strictly before it in time (a
+/// clock that went back between two versions, or the same moment, which
+/// identities drawn at random would decide), gets a new moment: one
+/// millisecond after the latest of the group (the start of 1970 when none
+/// is readable), the only change. A function of the rows alone, so every
+/// computer that holds the same rows moves the same one to the same
+/// moment. `None`: it already comes first by time (nothing moves), or no
+/// later moment can be written that the order reads.
+pub(crate) fn keep_shown(group: &[(i64, &str)], shown: Shown051) -> Option<(i64, String)> {
+    let at = |text: &str| analysis_micros(text);
+    let &(pick, moment) = match shown {
+        Shown051::HighestNumber => group.iter().max_by_key(|(id, _)| *id),
+        Shown051::LatestThenNumber => group.iter().max_by_key(|(id, t)| (at(t), *id)),
+    }?;
+    let mine = at(moment);
+    if group.iter().all(|&(id, t)| id == pick || at(t) < mine) {
+        return None;
+    }
+    let latest = group.iter().filter_map(|(_, t)| at(t)).max();
+    let millis = latest.map_or(0, |micros| micros.div_euclid(1000) + 1);
+    let moved = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis)?
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    at(&moved)
+        .is_some_and(|m| latest.is_none_or(|l| m > l))
+        .then_some((pick, moved))
+}
+
+/// The moments to move so that what Ponte 0.51 showed stays shown
+/// ([`keep_shown`]), for the rows `notes` (number, document, moment) and
+/// `analyses` (number, document, version, moment) and the current version
+/// of each document (`current`): every note of a document competes; of
+/// its analyses, those of its current version, or all when that version
+/// has none (the read of the current analysis). Answers the moves of the
+/// notes and those of the analyses, each by number.
+#[allow(clippy::type_complexity)]
+pub(crate) fn shown_moves(
+    notes: &[(i64, i64, String)],
+    analyses: &[(i64, i64, i64, String)],
+    current: &std::collections::HashMap<i64, i64>,
+) -> (Vec<(i64, String)>, Vec<(i64, String)>) {
+    use std::collections::BTreeMap;
+    let mut by_document: BTreeMap<i64, Vec<(i64, &str)>> = BTreeMap::new();
+    for (id, document, at) in notes {
+        by_document.entry(*document).or_default().push((*id, at));
+    }
+    let note_moves = by_document
+        .values()
+        .filter_map(|group| keep_shown(group, Shown051::HighestNumber))
+        .collect();
+    let mut by_document: BTreeMap<i64, Vec<(i64, i64, &str)>> = BTreeMap::new();
+    for (id, document, version, at) in analyses {
+        by_document
+            .entry(*document)
+            .or_default()
+            .push((*id, *version, at));
+    }
+    let analysis_moves = by_document
+        .iter()
+        .filter_map(|(document, rows)| {
+            let version = current.get(document);
+            let of_current = rows.iter().any(|(_, v, _)| Some(v) == version);
+            let group: Vec<(i64, &str)> = rows
+                .iter()
+                .filter(|(_, v, _)| !of_current || Some(v) == version)
+                .map(|&(id, _, at)| (id, at))
+                .collect();
+            keep_shown(&group, Shown051::LatestThenNumber)
+        })
+        .collect();
+    (note_moves, analysis_moves)
+}
+
+/// [`shown_moves`] applied to the library at schema 21 being updated (in
+/// the transaction of the update, before the identities are drawn and with
+/// no trigger of the library in place): the moments of the notes and
+/// analyses Ponte 0.51 showed, where the order of versions would choose
+/// another, and nothing else.
+pub(crate) fn keep_shown_in_library(conn: &Connection) -> Result<()> {
+    // A moment that is not text is unreadable to the order (its SQL
+    // converter reads text only): the same here.
+    let text = "CASE WHEN typeof(created_at)='text' THEN created_at ELSE '' END";
+    let notes: Vec<(i64, i64, String)> = conn
+        .prepare(&format!("SELECT id,document_id,{text} FROM notes"))?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let analyses: Vec<(i64, i64, i64, String)> = conn
+        .prepare(&format!(
+            "SELECT id,document_id,capture_id,{text} FROM analyses"
+        ))?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let current: std::collections::HashMap<i64, i64> = conn
+        .prepare("SELECT id,latest_capture_id FROM documents WHERE latest_capture_id IS NOT NULL")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let (note_moves, analysis_moves) = shown_moves(&notes, &analyses, &current);
+    for (table, moves) in [("notes", note_moves), ("analyses", analysis_moves)] {
+        for (id, at) in moves {
+            conn.execute(
+                &format!("UPDATE {table} SET created_at=?1 WHERE id=?2"),
+                params![at, id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// [`shown_moves`] applied to a copy without identities (a folder file of
+/// format 8, a portable copy of Ponte 0.51): what 0.51 shows of it, the
+/// library that adopts it shows too, the same on every library that adopts
+/// it. A copy with identities (format 9, team V2, even an empty one, known
+/// by its epoch) is taken as it is: there the order of versions decides.
+/// `None`: nothing to move (the copy is adopted as it is).
+pub(crate) fn keep_shown_in_copy(
+    snapshot: &crate::intranet::CabinetSnapshot,
+) -> Option<crate::intranet::CabinetSnapshot> {
+    if !snapshot.idents.is_empty() || !snapshot.ident_epoch.is_empty() {
+        return None;
+    }
+    let notes: Vec<(i64, i64, String)> = snapshot
+        .notes
+        .iter()
+        .map(|n| (n.id, n.document_id, n.created_at.clone()))
+        .collect();
+    let analyses: Vec<(i64, i64, i64, String)> = snapshot
+        .analyses
+        .iter()
+        .map(|a| (a.id, a.document_id, a.capture_id, a.created_at.clone()))
+        .collect();
+    let current: std::collections::HashMap<i64, i64> = snapshot
+        .documents
+        .iter()
+        .filter_map(|d| Some((d.id, d.latest_capture_id?)))
+        .collect();
+    let (note_moves, analysis_moves) = shown_moves(&notes, &analyses, &current);
+    if note_moves.is_empty() && analysis_moves.is_empty() {
+        return None;
+    }
+    let note_moves: std::collections::HashMap<i64, String> = note_moves.into_iter().collect();
+    let analysis_moves: std::collections::HashMap<i64, String> =
+        analysis_moves.into_iter().collect();
+    let mut copy = snapshot.clone();
+    for row in &mut copy.notes {
+        if let Some(at) = note_moves.get(&row.id) {
+            row.created_at = at.clone();
+        }
+    }
+    for row in &mut copy.analyses {
+        if let Some(at) = analysis_moves.get(&row.id) {
+            row.created_at = at.clone();
+        }
+    }
+    Some(copy)
 }
 
 /// Every row of the twelve kinds gets an identity, and every document its

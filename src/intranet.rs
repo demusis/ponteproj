@@ -3371,6 +3371,16 @@ impl Store {
         S: FnOnce(&Store) -> Result<()>,
         H: FnOnce(&rusqlite::Transaction) -> Result<()>,
     {
+        // A copy without identities is what Ponte 0.51 shows: what it shows
+        // as current stays current here (review F3.1a-i, finding 4).
+        let kept;
+        let snapshot = match crate::idents::keep_shown_in_copy(snapshot) {
+            Some(copy) => {
+                kept = copy;
+                &kept
+            }
+            None => snapshot,
+        };
         // Attachments already here with the same content are kept; the rest
         // are transferred from the main computer and checked by hash.
         let existing_attachments = self
