@@ -628,11 +628,23 @@ Um **projeto** reúne as tarefas de um mesmo objetivo (a organização de uma re
 
 ### 6.11 Atualizar entre versões: formato do acervo
 
-Algumas versões mudam o formato do acervo (o arquivo do Ponte no computador) e o do arquivo da pasta compartilhada. Desde a 0.48.0 o acervo está no formato **21** e o arquivo da pasta, no **8** (a 0.48.0 trouxe os projetos; as versões 0.48.1 a 0.51.0 não mudaram o formato). O que fazer:
+Algumas versões mudam o formato do acervo (o arquivo do Ponte no computador) e o do arquivo da pasta compartilhada. Desde a **0.52.0** o acervo está no formato **22** e o arquivo da pasta, no **9**, que leva a identidade de cada item ([8.9](#89-identidade-dos-itens-e-cartões-0520)); antes, de 0.48.0 a 0.51.0, eram **21** e **8**. O que fazer:
 
 1. **Atualize primeiro o computador principal**, depois os outros computadores e o celular. Com a pasta compartilhada, atualize todos os aparelhos que usam a pasta.
 2. Uma versão mais antiga **recusa o acervo e o arquivo novos e não muda nada neles**: o Ponte 0.47.x e o Ponte de bolso 0.20.x dizem para atualizar (*Este acervo foi criado por uma versão mais nova do Ponte; atualize o Ponte antes de abri-lo.*, ou *O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte.*). Nada se perde: instale a versão nova e abra de novo.
 3. Um computador já atualizado, ligado a um principal ainda antigo, não grava o que o principal não entende e avisa: *O computador principal está numa versão anterior do Ponte, que ainda não guarda projetos. Atualize o Ponte no computador principal e tente de novo.* (para os feriados do acervo, as categorias, as propostas da IA ou os recursos, a mesma frase com *os feriados do acervo*, *categorias*, *as propostas da IA* ou *recursos*; para o planejamento, *Atualize o Ponte no computador principal para sincronizar tarefas.*).
+
+**Da 0.51 para a 0.52: todos precisam atualizar.** A 0.52.0 muda o formato do acervo e o do arquivo da pasta, e uma versão anterior não sincroniza mais com quem já atualizou.
+
+- **Antes de instalar**, sincronize cada aparelho uma última vez.
+- **No computador**, ao abrir a 0.52 pela primeira vez, o Ponte passa o acervo para o formato 22 depois de guardar uma cópia conferida em `backups\antes-do-acervo-22-<data>.sqlite3`. Se não conseguir naquele momento (falta de espaço, por exemplo), abre o acervo como estava, avisa o motivo e tenta de novo na próxima abertura.
+- **Pasta compartilhada.** O primeiro computador atualizado, sem nada pendente, grava o acervo num arquivo novo na mesma pasta, com `-formato9` no nome (`ponte-sync-formato9.ponte`, ao lado de `ponte-sync.ponte`). O arquivo antigo vira só um aviso pequeno para as versões anteriores. **Não apague nenhum dos dois.**
+  - Nos computadores, nada precisa ser reconfigurado.
+  - No celular, o Ponte de bolso 0.28 pede uma vez para escolher o arquivo novo em **Ajustes ▸ Trocar arquivo**.
+  - Com algo pendente, o Ponte segue no formato anterior e diz *Sincronize antes de atualizar o arquivo da pasta: …*.
+  - Uma versão anterior que ainda abra a pasta recusa o arquivo **antes de gravar qualquer coisa** (*O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte.*) e guarda as alterações dela.
+  - Se ela ainda conseguir gravar a pasta no formato antigo bem no momento da troca, o próximo aparelho atualizado guarda essa cópia à parte (`-divergente-`), aproveita só o que é seguro e transforma o resto em cartões, com o conteúdo: nada se perde.
+- **Equipe.** Atualize primeiro o computador principal. Um principal na 0.52 recusa os computadores da versão anterior (*O computador principal foi atualizado para uma versão nova do Ponte, que exige a mesma versão nos outros computadores. Atualize o Ponte neste computador para voltar a sincronizar; as alterações continuam guardadas aqui.*). Um computador na 0.52 ligado a um principal antigo espera (*O computador principal está numa versão anterior do Ponte, que ainda não guarda a identidade dos itens. Atualize o Ponte no computador principal; as alterações continuam guardadas aqui.*). Nos dois casos, a fila fica guardada.
 
 | Acervo / pasta | Ponte | O que entrou |
 |---|---|---|
@@ -641,6 +653,7 @@ Algumas versões mudam o formato do acervo (o arquivo do Ponte no computador) e 
 | 19 / 6 | 0.39.0 | Planejamento das tarefas: início, fim, estimativa, tarefa pai, avisos |
 | 20 / 7 | 0.47.0 | Feriados do acervo (Ponte de bolso 0.20.0) |
 | 21 / 8 | 0.48.0 | Projetos (Ponte de bolso 0.21.0) |
+| 22 / 9 | 0.52.0 | Identidade de cada item, a mesma em todos os aparelhos; arquivo da pasta com nome novo (`-formato9`) (Ponte de bolso 0.28.0) |
 
 A conferência da minuta (0.35.0) e as demais versões intermediárias não mudam o formato.
 
@@ -777,7 +790,7 @@ Pronto: importações, notas, minutas, tarefas e atendimentos de todos vão para
 
 ### 8.2 Uma pessoa, dois computadores: pasta compartilhada
 
-Os computadores trocam o acervo por um arquivo chamado `ponte-sync.ponte`, cifrado com uma senha sua, guardado nas pastas que você indicar.
+Os computadores trocam o acervo por um arquivo chamado `ponte-sync.ponte`, cifrado com uma senha sua, guardado nas pastas que você indicar. Desde a 0.52.0, o acervo fica num arquivo ao lado dele, com `-formato9` no nome (`ponte-sync-formato9.ponte`), e `ponte-sync.ponte` guarda só o aviso para as versões anteriores. Você continua apontando para `ponte-sync.ponte` nos computadores, e o Ponte encontra o outro sozinho ([6.11](#611-atualizar-entre-versões-formato-do-acervo)). Não apague nenhum dos dois.
 
 Cada computador guarda também, ao lado do próprio acervo, a última cópia que gravou (`acervo.sqlite3-guarda.ponte`, cifrada com a mesma senha). Se outro participante gravar o arquivo da pasta a partir de uma versão antiga (um celular cujo app do Drive ainda não recebeu a versão nova, dois computadores gravando ao mesmo tempo), o que este computador tinha gravado volta na sincronização seguinte. Quando a pasta só está atrasada (a nuvem ainda não entregou a última gravação), o Ponte continua esperando, como antes.
 
@@ -810,6 +823,8 @@ Um conflito acontece só quando o **mesmo item** foi alterado nos dois lados enq
 Todas pedem confirmação.
 
 **Alteração sua recusada ao juntar as cópias da pasta.** Se, ao juntar as cópias das pastas, uma alteração sua for recusada (o item mudou em outro computador depois da versão sobre a qual você a fez), ela chega a você como um **cartão de conflito** na sincronização seguinte, e não some. Um cartão que você já resolveu não volta de uma cópia antiga da pasta.
+
+**O cartão guarda a alteração como ela foi feita (0.52.0).** **Usar só a minha versão…** e **Combinar as duas versões…** reaplicam essa alteração original no item em que ela foi feita, reconhecido pela identidade, e nunca pelo número ([8.9](#89-identidade-dos-itens-e-cartões-0520)). Se o item não existe mais, essas opções não aparecem: restam **Copiar o texto** e **Dispensar o aviso**.
 
 Um caso especial: se o computador principal recusou a criação de um item feito sem conexão (por exemplo, a tarefa de um documento que um colega mandou para a lixeira), as alterações seguintes desse item não têm onde cair. Elas aparecem como aviso (no cartão *Alterações a enviar*, da mesma seção), sem as opções acima, só com **Dispensar o aviso**: refaça a alteração à mão, se ainda for necessária.
 
@@ -864,7 +879,9 @@ Um registro manual criado sem acesso à cópia compartilhada (sem o computador p
 - **As edições acompanham o registro.** O que foi alterado nesse intervalo vai para o número novo. Se o Ponte não consegue confirmar a qual registro uma edição pertence, ele não a aplica: ela vira um aviso em **Edições em conflito**, que guarda o texto, com o botão **Copiar o texto**.
 - **Com o formulário do registro aberto**, se a sincronização mudar o registro por baixo, **Salvar** grava no registro certo e avisa quando o número mudou. Se o Ponte não consegue confirmar que é o mesmo registro, não grava e mantém o texto na janela: copie-o, reabra o registro e cole.
 
-**Limites conhecidos.** Se um registro manual é apagado de vez (da Lixeira) e o número dele é dado a um registro novo enquanto uma edição do registro antigo ainda está a caminho, essa edição pode ser gravada no registro novo: a edição leva só o número do registro, não a identidade dele, e corrigir isso exigiria mudar o formato, o que fica para uma versão futura. Registros que ainda estão na Lixeira mantêm o número e não são afetados. O mesmo vale quando a criação de um registro foi renumerada por outro computador, já saiu do diário da pasta e a única versão que os dois computadores ainda tinham em comum foi apagada. Um aviso antigo pode perder o botão **Abrir o registro** se todas as versões que identificavam o registro forem apagadas de vez.
+**Número reaproveitado (resolvido na 0.52.0).** Desde a 0.52.0, a edição de um registro manual leva a identidade do registro, e não só o número. Se o registro foi apagado de vez e o número dele foi dado a um registro novo enquanto a edição estava a caminho, ela não é gravada no registro novo. Ela vira um aviso: *O registro desta edição não está mais disponível (foi excluído, está na Lixeira ou não pôde ser reconhecido com certeza). A edição não foi gravada em nenhum registro.* ([8.9](#89-identidade-dos-itens-e-cartões-0520)).
+
+**Limite conhecido.** Um aviso antigo pode perder o botão **Abrir o registro** se todas as versões que identificavam o registro forem apagadas de vez.
 
 ### 8.7 Tamanho do arquivo, cópias criadas pela nuvem e o que não sincroniza
 
@@ -901,6 +918,16 @@ Nada some em silêncio. O que a pessoa vê:
 - **Descrição de anexo alterada sem conexão.** Se outro computador mudou a descrição depois, a sua alteração não sobrescreve a mudança mais nova: vira um cartão de conflito (*Este item foi alterado em outro computador depois da versão sobre a qual esta alteração foi feita; ela não foi aplicada para não desfazer a outra. Confira o item e refaça a alteração, se ainda for o caso.*). **Limite conhecido:** ligar e desligar o vínculo de um anexo continua como antes, sem esse cartão.
 - **No celular**, as cópias pendentes a mais são lidas de novo na sincronização seguinte, e cada uma só é apagada quando o conteúdo dela está seguro. O que foi guardado à parte aparece na mensagem da sincronização, sob *Atenção (nada foi apagado):* ([`mobile/README.md`](mobile/README.md)).
 - **`--import-plan` retomado.** Ao retomar um plano interrompido ([13](#13-para-desenvolvedores)), o Ponte confere o registro antes: se o identificador do pedido, o recibo guardado ou uma tarefa apontarem para outro documento, **nada é gravado** e a mensagem diz o que conferir.
+
+### 8.9 Identidade dos itens e cartões (0.52.0)
+
+Até a 0.51, cada aparelho reconhecia um item pelo número interno que ele mesmo dava, e esse número podia ser outro em outro aparelho. Desde a 0.52.0, **cada registro tem uma identidade própria, a mesma em todos os aparelhos**.
+
+- **A edição vai sempre para o próprio item.** Uma alteração em registro, versão, nota, minuta, análise ou vínculo leva a identidade do item em que foi feita. Ela é aplicada nele em qualquer aparelho, mesmo que lá o número interno seja outro. A versão, a nota e a análise atuais de um documento são as mesmas em todos os aparelhos.
+- **Item não confirmado vira cartão, nunca gravação no item errado.** Se o Ponte não consegue confirmar a que item uma alteração pertence, ela não é aplicada. Vai para **Edições em conflito**, com o texto: *A alteração se refere a um item que não pôde ser reconhecido aqui com certeza (ele foi apagado, ou a alteração foi feita sobre um estado que mudou depois). Ela não foi aplicada; confira o item e refaça a alteração, se ainda for o caso.* Uma alteração cujas informações não conferem também vira cartão (*A alteração chegou danificada…*).
+- **Cópias com histórias separadas.** Pode acontecer de a pasta ser atualizada por dois computadores que não se viam, ou de o computador principal ser restaurado de uma cópia antiga. Nesses casos, o aparelho que fica com a outra história **renova os códigos dos seus itens**. As edições que ele ainda tinha a enviar, sobre itens que já existiam, viram cartões com o texto. O Ponte nunca casa dois itens só porque têm o mesmo número.
+- **`--import-plan` retomado pela identidade.** Uma importação de plano interrompida é retomada pela identidade do registro, e nunca pelo identificador do pedido nem pelo número, que dois aparelhos podem ter iguais. Se os códigos foram renovados depois da interrupção e o registro não pode ser reconhecido com certeza, nada é gravado ([13](#13-para-desenvolvedores)).
+- **No celular**, uma foto para um registro apagado em outro aparelho fica guardada no aparelho, com **Criar registro com esta foto**, **Anexar a outro registro…** e **Descartar** ([`mobile/README.md`](mobile/README.md)).
 
 ---
 

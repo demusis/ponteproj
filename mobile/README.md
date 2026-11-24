@@ -1,10 +1,23 @@
 # Ponte de bolso (protótipo)
 
-Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
+Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo da pasta guardado no Google Drive (desde a 0.28.0, `ponte-sync-formato9.ponte`; antes, `ponte-sync.ponte`).
 
-## O que faz (versão 0.27.0)
+## O que faz (versão 0.28.0)
 
 Cada item abaixo traz a versão em que entrou; vale o que está aqui, e a versão instalada aparece no aplicativo.
+
+- **Arquivo novo da pasta (0.28.0):** o Ponte 0.52.0 do computador passa o acervo para um arquivo novo na mesma pasta do Drive, `ponte-sync-formato9.ponte`, ao lado de `ponte-sync.ponte`. Uma vez só, o celular pede: *O arquivo da pasta foi atualizado. Escolha em Ajustes o arquivo ponte-sync-formato9.ponte, na mesma pasta do Drive.* Em **Ajustes**, toque em **Trocar arquivo** e escolha esse arquivo; nada muda no celular. O celular não passa sozinho para o arquivo novo, porque só tem permissão para o arquivo escolhido. Todos os aparelhos precisam estar na versão nova: o Ponte de bolso 0.27 ou anterior recusa o arquivo novo, sem gravar nada, com *… Atualize o Ponte de bolso.*
+
+- **Cada registro com a sua identidade (0.28.0):** uma edição feita no celular num registro ou na nota dele leva a identidade do registro e vai para ele no computador, mesmo que lá o número interno seja outro. Quando a alteração não pode ser ligada a um item com certeza, ela não é gravada em lugar nenhum. Vira um cartão, e o texto dele aparece na mensagem da sincronização.
+
+- **Foto de um registro apagado em outro aparelho (0.28.0):** se o registro a que você ia anexar uma foto (ou um arquivo) foi apagado em outro aparelho, ou não está mais disponível neste, a foto **não é perdida**. Ela fica guardada no celular, e **Hoje** mostra o cartão *N arquivos do celular não foram anexados*, com três opções:
+  - **Criar registro com esta foto**: cria um registro novo com ela;
+  - **Anexar a outro registro…**: abre a escolha do registro;
+  - **Descartar**: pede confirmação.
+
+  O cartão diz *O registro foi apagado em outro aparelho.* só quando isso está comprovado; nos outros casos, *O registro não está mais disponível neste aparelho.* Cada opção vale uma vez: se o aplicativo fechar no meio, repetir não cria dois registros nem anexa duas vezes. Se você trocou o arquivo do Drive ou recomeçou o acervo entre tirar a foto e enviá-la, ela não é anexada a um registro de outro acervo com o mesmo número; fica guardada, com as mesmas opções.
+
+- **Arquivo à espera nunca é apagado por erro (0.28.0):** uma foto ou um arquivo que não pôde ser enviado continua no aparelho (*O arquivo continua guardado no aparelho e pode ser enviado de novo em Hoje.*). Ele só é apagado depois de anexado com certeza, ou quando você toca em **Descartar**.
 
 - **Tamanho do arquivo e aviso (0.27.0):** em **Ajustes ▸ Sincronização**, abaixo do nome do arquivo, o celular mostra o tamanho do arquivo no Drive e quanto cabe até o limite de 512 MB (*Tamanho do arquivo: 120 MB de 512 MB (23%). Cabem mais 392 MB.*). A partir de 70% aparece um aviso (*O arquivo do Drive está com … Perto do limite, o que for acrescentado pode não caber.*). Um acervo que passa de 512 MB não é gravado, e o celular diz *O acervo passa de 512 MB e não cabe no arquivo de sincronização… Nada foi gravado.* O conselho é esvaziar a Lixeira e remover anexos grandes, no Ponte do computador: o celular não tem Lixeira nem tela de anexos.
 
