@@ -1130,9 +1130,30 @@ fn c3_a_local_creation_gets_a_new_id_when_another_device_published_first() {
     assert_eq!(locate(&p.a, &made_b), locate(&p.b, &made_b));
 }
 
+/// Whether a slot of `locate` is an item of a kind this build maps (the
+/// records, F3.1a): a mapped client keeps its own numbers of those.
+fn record_slot(slot: &str) -> bool {
+    let kind = slot.split('(').next().unwrap_or(slot);
+    let kind = if kind == "work_context" {
+        "document"
+    } else {
+        kind
+    };
+    crate::mapper::ADDRESSED.contains(&kind)
+}
+
+/// The slots of `ids` that are (`records`) or are not record kinds.
+fn slots(ids: &BTreeMap<&'static str, i64>, records: bool) -> BTreeMap<&'static str, i64> {
+    ids.iter()
+        .filter(|(k, _)| record_slot(k) == records)
+        .map(|(k, v)| (*k, *v))
+        .collect()
+}
+
 /// C3, team client offline: items created without connection have local
-/// ids; when the queue is sent, the principal numbers them and the client
-/// adopts the principal's ids.
+/// ids; when the queue is sent, the principal numbers them. Since F3.1a
+/// the client (mapped) keeps its own numbers of the records, found by
+/// identity, and adopts the principal's numbers of the other kinds.
 #[test]
 fn c3_a_team_client_s_offline_creation_takes_the_principal_s_ids() {
     let mut t = Team::new();
@@ -1150,10 +1171,14 @@ fn c3_a_team_client_s_offline_creation_takes_the_principal_s_ids() {
         t.client.list_sync_conflicts().unwrap()
     );
     let after = locate(&t.client, &made);
-    assert_eq!(after, locate(&t.host, &made));
-    assert_eq!(locate(&t.client, &made_host), locate(&t.host, &made_host));
+    assert_eq!(slots(&after, false), slots(&locate(&t.host, &made), false));
+    assert_eq!(slots(&after, true), slots(&before, true), "records keep");
+    assert_eq!(
+        slots(&locate(&t.client, &made_host), false),
+        slots(&locate(&t.host, &made_host), false)
+    );
     eprintln!("C3 team changed: {:#?}", diff(&before, &after));
-    assert!(!diff(&before, &after).is_empty());
+    assert!(!diff(&slots(&before, false), &after).is_empty());
 }
 
 // --------------------------------------------------------------------- C4 --

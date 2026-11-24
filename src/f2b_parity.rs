@@ -237,8 +237,44 @@ fn f2b_a_library_migrated_through_f2b_exchanges_every_variant_with_another() {
         crate::f2a_parity::enum_variant_count(),
         "{journaled:?}"
     );
-    let ids = |s: &Store| crate::idents::test_support::all_idents(s);
+    // Each library numbers the records on its own (F3.1a): the same items
+    // (identities) on both, and B's content in A's numbers (B's copy
+    // mapped into A, as an adoption would) is A's.
+    let ids = |s: &Store| -> std::collections::BTreeSet<(String, String)> {
+        crate::idents::test_support::all_idents(s)
+            .into_iter()
+            .map(|((kind, _), ident)| (kind, ident))
+            .collect()
+    };
     assert_eq!(ids(&a), ids(&b), "the same identities on both");
-    let snap = |s: &Store| serde_json::to_value(s.export_snapshot().unwrap()).unwrap();
-    assert_eq!(snap(&a), snap(&b), "the same content on both");
+    let epoch = crate::idents::origin(&a.conn).unwrap().2.unwrap();
+    let theirs = b.export_with_idents(&epoch).unwrap();
+    let tx = a.conn.unchecked_transaction().unwrap();
+    let floor = crate::idents::id_floor(&tx).unwrap();
+    let mapping = crate::mapper::plan(&tx, &theirs, &floor).unwrap();
+    let in_a = crate::mapper::apply(&theirs, &mapping);
+    drop(tx);
+    let mine = a.export_with_idents(&epoch).unwrap();
+    assert_eq!(
+        canonical(&serde_json::to_value(&mine).unwrap()),
+        canonical(&serde_json::to_value(&in_a).unwrap()),
+        "the same content on both"
+    );
+}
+
+/// `value` with every list in one order (its items' text): the content of
+/// two libraries that list their rows by their own numbers.
+fn canonical(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Array(items) => {
+            let mut items: Vec<Value> = items.iter().map(canonical).collect();
+            items.sort_by_key(|v| v.to_string());
+            Value::Array(items)
+        }
+        Value::Object(map) => {
+            Value::Object(map.iter().map(|(k, v)| (k.clone(), canonical(v))).collect())
+        }
+        other => other.clone(),
+    }
 }

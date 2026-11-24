@@ -3,9 +3,9 @@
 //!
 //! A kind is mapped on this device when it is in [`ADDRESSED`]: the wire is
 //! the same for every F3 build (copy numbers plus proofs), and only the
-//! mapper reads the list (v2 §2.4). It stays empty until the families map
-//! their kinds, each with the references to it (F3.1a onwards), so every
-//! adoption is still verbatim.
+//! mapper reads the list (v2 §2.4). A family enters it once every place
+//! that names its items is rewritten ([`visit_references`]): the records
+//! (F3.1a); the kinds of the later families are still adopted verbatim.
 
 use crate::idents::{IdentRow, KINDS};
 use crate::intranet::CabinetSnapshot;
@@ -13,9 +13,8 @@ use anyhow::Result;
 use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap};
 
-/// The ident kinds the mapper maps on this device (none yet: F3.1a adds
-/// the first ones).
-pub(crate) const ADDRESSED: &[&str] = &[];
+/// The ident kinds the mapper maps on this device: the records (F3.1a).
+pub(crate) const ADDRESSED: &[&str] = &["document", "capture", "note", "draft", "analysis", "link"];
 
 /// Whether `kind` (an ident kind) is mapped on this device.
 pub(crate) fn addressed(kind: &str) -> bool {
