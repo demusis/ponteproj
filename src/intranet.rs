@@ -4850,6 +4850,10 @@ impl Store {
                 {
                     return self.take_identities_from(&snapshot);
                 }
+                #[cfg(any(test, feature = "test-support"))]
+                if crate::idents::hooks::FAIL_TEAM_ADOPTION.with(|c| c.replace(false)) {
+                    bail!("falha injetada antes da adoção (teste)");
+                }
                 let cfg_clone = cfg.clone();
                 let epoch = snapshot.ident_epoch.clone();
                 if !replacing {
@@ -12642,6 +12646,19 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((db_path.to_path_buf(), name));
+        // A request of the whole snapshot is counted apart too.
+        if matches!(
+            &**request,
+            RpcRequest::Sync {
+                since_revision: None,
+                ..
+            }
+        ) {
+            crate::idents::hooks::RPC_SEEN
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((db_path.to_path_buf(), "SyncFull".into()));
+        }
     }
     let mut store = match Store::open_service(db_path) {
         Ok(s) => s,
@@ -12913,6 +12930,14 @@ fn process_rpc_at(
                 // Without the receipt a repeated send would only be applied
                 // again, as before: the change itself is already done.
                 Err(_) => (Vec::new(), Vec::new()),
+            };
+            #[cfg(any(test, feature = "test-support"))]
+            let proof = if crate::idents::hooks::DROP_PROOF
+                .take(store.conn.path().map(std::path::Path::new))
+            {
+                Vec::new()
+            } else {
+                proof
             };
             let mut snapshot = served_snapshot(store, v2, &epoch).map_err(not_a_refusal)?;
             snapshot.generation = generation;

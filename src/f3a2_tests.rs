@@ -18,17 +18,17 @@ const KEY: &str = "senha-de-teste-123";
 // ---------------------------------------------------------------- helpers --
 
 /// A main computer and one client, in the protocol V2 at this build's level.
-struct Team {
-    _dir: tempfile::TempDir,
-    host: Store,
-    client: Store,
-    db: PathBuf,
+pub(crate) struct Team {
+    pub(crate) _dir: tempfile::TempDir,
+    pub(crate) host: Store,
+    pub(crate) client: Store,
+    pub(crate) db: PathBuf,
     token: String,
     server: Option<crate::intranet::HostServer>,
 }
 
 impl Team {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("host.sqlite3");
         let token = crate::intranet::generate_token();
@@ -69,7 +69,7 @@ impl Team {
 
     /// Starts (again) the main computer's server: a new process, as after
     /// a crash.
-    fn online(&mut self) {
+    pub(crate) fn online(&mut self) {
         self.offline();
         let server = crate::intranet::HostServer::start(self.db.clone(), "127.0.0.1:0").unwrap();
         let mut cfg = self.client.load_intranet_config().unwrap();
@@ -79,7 +79,7 @@ impl Team {
         self.server = Some(server);
     }
 
-    fn offline(&mut self) {
+    pub(crate) fn offline(&mut self) {
         if let Some(mut server) = self.server.take() {
             server.stop();
         }
@@ -88,7 +88,7 @@ impl Team {
         self.client.save_intranet_config(&cfg).unwrap();
     }
 
-    fn cards(&self) -> usize {
+    pub(crate) fn cards(&self) -> usize {
         self.client.list_sync_conflicts().unwrap().len()
     }
 }
@@ -101,7 +101,7 @@ impl Drop for Team {
     }
 }
 
-fn capture(number: &str, text: &str) -> crate::model::Capture {
+pub(crate) fn capture(number: &str, text: &str) -> crate::model::Capture {
     let mut c = crate::model::sample_capture();
     c.document_number = number.into();
     c.title = format!("Documento {number}");
@@ -113,7 +113,7 @@ fn capture(number: &str, text: &str) -> crate::model::Capture {
     c
 }
 
-fn ident(store: &Store, kind: &str, row: i64) -> String {
+pub(crate) fn ident(store: &Store, kind: &str, row: i64) -> String {
     store
         .conn
         .query_row(
@@ -124,13 +124,13 @@ fn ident(store: &Store, kind: &str, row: i64) -> String {
         .unwrap()
 }
 
-fn count(store: &Store, sql: &str) -> i64 {
+pub(crate) fn count(store: &Store, sql: &str) -> i64 {
     store.conn.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
 /// Rewrites the last queued change of `store` with `edit` (as a damaged
 /// change, or an older Ponte's, would have been queued).
-fn edit_last_queued(store: &Store, edit: impl FnOnce(&mut OutboxEntry)) {
+pub(crate) fn edit_last_queued(store: &Store, edit: impl FnOnce(&mut OutboxEntry)) {
     let mut entry = store.list_offline_outbox().unwrap().pop().unwrap();
     edit(&mut entry);
     store
@@ -288,7 +288,7 @@ fn f3_0a2_frame_and_base_never_fall_back_to_number() {
 }
 
 /// One shared file, A and B, promoted by A (level of this build).
-fn two() -> (tempfile::TempDir, PathBuf, Store, Store) {
+pub(crate) fn two() -> (tempfile::TempDir, PathBuf, Store, Store) {
     hooks::PROMOTION.with(|c| c.set(true));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Drive").join("ponte-sync.ponte");
@@ -313,7 +313,7 @@ fn two() -> (tempfile::TempDir, PathBuf, Store, Store) {
     (dir, path, a, b)
 }
 
-fn fsync(store: &mut Store) -> crate::intranet::FolderSyncReport {
+pub(crate) fn fsync(store: &mut Store) -> crate::intranet::FolderSyncReport {
     let cfg = store.load_intranet_config().unwrap();
     store
         .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
@@ -535,7 +535,7 @@ fn f3_0a2_lost_reply_target_deleted_retry_acknowledged() {
 
 impl Team {
     /// Another client of the same main computer, synchronized once.
-    fn join(&mut self, member: &str) -> Store {
+    pub(crate) fn join(&mut self, member: &str) -> Store {
         let mut other = Store::open(&self._dir.path().join(format!("{member}.sqlite3"))).unwrap();
         other
             .save_intranet_config(&IntranetConfig {
@@ -573,7 +573,7 @@ fn host_task_titled(store: &Store, title: &str) -> crate::tasks::Task {
         .unwrap()
 }
 
-fn note_of(store: &Store, doc: i64) -> String {
+pub(crate) fn note_of(store: &Store, doc: i64) -> String {
     store.load_document(doc).unwrap().note.trim().to_owned()
 }
 

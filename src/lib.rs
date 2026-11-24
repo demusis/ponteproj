@@ -105,6 +105,11 @@ mod f3_tests;
 /// host's durable insertion log and the receipt asked first (tests only).
 #[cfg(test)]
 mod f3a2_tests;
+/// F3.0b-i of Frente F: acceptance tests of the activation of the mapping,
+/// the id floor kept by the copy and the translation of the answers (tests
+/// only).
+#[cfg(test)]
+mod f3b_tests;
 /// The minimum format of each shared folder this device has seen (F2b).
 pub mod formatfloor;
 /// Identities of the items (library schema 22).

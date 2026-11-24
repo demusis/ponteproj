@@ -1283,6 +1283,9 @@ pub mod hooks {
         pub static BEFORE_ADOPTION: RefCell<Option<Pause>> = RefCell::new(None);
         /// The next export of identities leaves one triple out.
         pub static DROP_TRIPLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// The next adoption of a team client's exchange (after its queue was
+        /// sent) fails before it begins.
+        pub static FAIL_TEAM_ADOPTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     /// Library files a fault is armed for, each once (tests run in
@@ -1358,6 +1361,11 @@ pub mod hooks {
     pub(crate) fn drop_reply(db: &std::path::Path) -> bool {
         DROP_REPLY.take(Some(db))
     }
+
+    /// The library file of a main computer whose next answer to a change
+    /// carries no proof (as a receipt of an older Ponte, or one whose
+    /// recording failed).
+    pub static DROP_PROOF: Armed = Armed::new();
 
     /// Every request a main computer answered, as (library file, name of
     /// the request inside the protocol V2).
