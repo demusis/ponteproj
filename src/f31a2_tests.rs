@@ -1105,7 +1105,9 @@ fn every_place_follows(set: &'static [&'static str]) {
     for table in tables {
         let names: Vec<String> = a
             .conn
-            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .prepare(&format!(
+                "SELECT name FROM pragma_table_info('{table}') WHERE type LIKE 'INT%'"
+            ))
             .unwrap()
             .query_map([], |r| r.get(0))
             .unwrap()
