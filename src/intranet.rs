@@ -14606,8 +14606,10 @@ impl IntranetPanel {
             widgets::section(ui, "Senha de sincronização");
             ui.add_space(theme::S2);
             widgets::field_label(ui, "Senha");
+            // Both fields share one width, whatever the window: the repeat
+            // lines up under the password it repeats.
+            let width = (ui.available_width() - 100.0).max(160.0);
             ui.horizontal(|ui| {
-                let width = (ui.available_width() - 100.0).max(160.0);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.draft.folder_key)
                         .password(!self.show_folder_key)
@@ -14621,7 +14623,7 @@ impl IntranetPanel {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.folder_key_confirm)
                         .password(!self.show_folder_key)
-                        .desired_width(ui.available_width().min(360.0)),
+                        .desired_width(width),
                 );
                 widgets::small_muted(ui, "Mínimo de 8 caracteres. A mesma senha vai ser pedida no outro computador. Anote-a em lugar seguro: sem ela, o arquivo é irrecuperável.");
             }
