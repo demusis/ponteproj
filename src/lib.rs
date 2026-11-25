@@ -17,6 +17,9 @@ pub mod auto_backup;
 pub mod chatgpt;
 /// Deterministic checks of a draft (Conferência da minuta).
 pub mod draft_check;
+/// What a form read and what is saved now: a version number alone never
+/// proves that nobody else changed a record.
+pub mod edit_check;
 pub mod export;
 pub mod files;
 /// Size of the shared file and the room left, copies the cloud made beside it, and what never syncs.

@@ -3393,7 +3393,27 @@ impl PonteApp {
             return;
         };
         let note = editor.note.clone();
-        let expected_version = editor.note_version;
+        let read = editor.saved_note.clone();
+        let mut expected_version = editor.note_version;
+        // The version alone never proves that nobody else changed the note
+        // (two computers that saved it the same number of times reach the
+        // same number with different texts): the note saved now is compared
+        // with what the editor read before anything is written.
+        if let Ok(current) = self.store.load_document(id).map(|detail| detail.note) {
+            let meta = self.store.item_version("note", id).unwrap_or_default();
+            if current != read {
+                let text = crate::edit_check::changed_since_read(
+                    "esta nota foi alterada",
+                    &meta,
+                    &self.store.active_actor(),
+                    "Use “Desfazer alterações” para ver a nota como está salva agora e escreva de novo o que mudou.",
+                );
+                self.error(format!("Não foi possível salvar as notas: {text}"));
+                return;
+            }
+            // Unchanged: only the version moved, saved on the one it has now.
+            expected_version = Some(meta.version);
+        }
         match self.store.save_note_checked(id, &note, expected_version) {
             Ok(()) => {
                 let new_version = self

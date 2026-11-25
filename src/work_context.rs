@@ -169,6 +169,36 @@ impl Store {
         Ok(())
     }
 }
+/// Saves `draft` over the context the panel read (`read`). The version
+/// alone never proves that nobody else changed it (two computers that saved
+/// it the same number of times reach the same number with different
+/// contents): the context saved now is compared with `read` first. The same
+/// (only the version moved): saved on the current version. Another
+/// content: nothing is written and the refusal says so; the draft stays.
+#[cfg(feature = "desktop")]
+fn save_over_read(
+    store: &mut Store,
+    id: i64,
+    draft: &WorkContext,
+    read: &WorkContext,
+    expected: Option<i64>,
+) -> Result<()> {
+    let mut expected = expected;
+    if let Ok(current) = store.load_work_context(id) {
+        let meta = store.item_version("work_context", id).unwrap_or_default();
+        if &current != read {
+            anyhow::bail!(crate::edit_check::changed_since_read(
+                "o contexto deste documento foi alterado",
+                &meta,
+                &store.active_actor(),
+                "Use “Cancelar edição do contexto” para ver o contexto como está salvo agora e digite de novo o que mudou.",
+            ));
+        }
+        expected = Some(meta.version);
+    }
+    store.save_work_context_checked(id, draft, expected)
+}
+
 #[cfg(feature = "desktop")]
 #[derive(Default)]
 pub struct ContextPanel {
@@ -216,7 +246,7 @@ impl ContextPanel {
             return Ok(false);
         }
         let expected = self.versions.get(&id).copied();
-        store.save_work_context_checked(id, draft, expected)?;
+        save_over_read(store, id, draft, saved, expected)?;
         *saved = draft.clone();
         if let Ok(v) = store.item_version("work_context", id) {
             self.versions.insert(id, v.version);
@@ -287,7 +317,7 @@ impl ContextPanel {
             ui.add(egui::TextEdit::multiline(&mut draft.notes).desired_rows(2).desired_width(f32::INFINITY));
             ui.horizontal(|ui| {
                 if ui.add(crate::widgets::primary("Salvar contexto")).clicked() {
-                    match store.save_work_context_checked(id,draft,expected_ver) { Ok(())=>{*saved=draft.clone();new_ver=store.item_version("work_context",id).ok().map(|v|v.version);self.message="Contexto salvo. A próxima análise considerará estas informações.".into();changed=true;},Err(e)=>self.message=format!("Contexto não salvo: {e}") }
+                    match save_over_read(store,id,draft,saved,expected_ver) { Ok(())=>{*saved=draft.clone();new_ver=store.item_version("work_context",id).ok().map(|v|v.version);self.message="Contexto salvo. A próxima análise considerará estas informações.".into();changed=true;},Err(e)=>self.message=format!("Contexto não salvo: {e}") }
                 }
                 if ui.add(crate::widgets::secondary("Cancelar edição do contexto")).clicked() { *draft=saved.clone();self.message.clear(); }
                 if draft!=saved {ui.label("Alterações não salvas");}

@@ -2881,10 +2881,27 @@ impl ResourcesPanel {
         match action {
             UseAction::Close => self.close_ficha(),
             UseAction::Revert => {
-                if let Some(saved) = self.use_saved.clone() {
-                    self.form = UseForm::from_use(&saved);
-                    self.refresh_link_names(store, &saved);
-                    self.use_editor = Some(saved);
+                // What is saved NOW (another device may have changed it
+                // since the ficha read it), on its current version.
+                let current = self.use_saved.as_ref().and_then(|saved| {
+                    store
+                        .list_resource_uses()
+                        .ok()
+                        .and_then(|list| list.into_iter().find(|u| u.uid == saved.uid))
+                        .filter(|_| !saved.uid.is_empty())
+                });
+                match current {
+                    Some(current) => {
+                        self.load_use(store, current);
+                        self.focus_first = false;
+                    }
+                    None => {
+                        if let Some(saved) = self.use_saved.clone() {
+                            self.form = UseForm::from_use(&saved);
+                            self.refresh_link_names(store, &saved);
+                            self.use_editor = Some(saved);
+                        }
+                    }
                 }
                 self.returning = false;
                 self.use_error.clear();
@@ -2971,7 +2988,14 @@ impl ResourcesPanel {
         }
         let was_new = item.uid.is_empty();
         let status = item.status;
-        match store.save_resource_use(&item, self.use_version) {
+        let version = match self.use_version_now(store, &item) {
+            Ok(version) => version,
+            Err(text) => {
+                self.use_error = text;
+                return false;
+            }
+        };
+        match store.save_resource_use(&item, version) {
             Ok(uid) => {
                 self.changed = true;
                 let text = match (was_new, status) {
@@ -3289,7 +3313,21 @@ impl ResourcesPanel {
         match action {
             ResourceAction::Close => self.close_ficha(),
             ResourceAction::Revert => {
-                self.res_editor = self.res_saved.clone();
+                // What is saved NOW, on its current version.
+                let current = self.res_saved.as_ref().and_then(|saved| {
+                    store
+                        .list_resources()
+                        .ok()
+                        .and_then(|list| list.into_iter().find(|r| r.uid == saved.uid))
+                        .filter(|_| !saved.uid.is_empty())
+                });
+                match current {
+                    Some(current) => {
+                        self.load_resource(store, current);
+                        self.focus_first = false;
+                    }
+                    None => self.res_editor = self.res_saved.clone(),
+                }
                 self.res_error.clear();
             }
             ResourceAction::Save => self.save_resource(store, None),
@@ -3447,13 +3485,96 @@ impl ResourcesPanel {
         });
     }
 
+    /// The version a save of the ficha's use goes on. The version alone
+    /// never proves that nobody else changed it (two devices that saved it
+    /// the same number of times reach the same number with different
+    /// contents): the use saved now is compared with what the ficha read.
+    /// The same (only the version moved): its current version. Another
+    /// content: the refusal, and nothing is written.
+    fn use_version_now(&self, store: &Store, item: &ResourceUse) -> Result<Option<i64>, String> {
+        let Some(read) = self
+            .use_saved
+            .as_ref()
+            .filter(|read| !item.uid.is_empty() && read.uid == item.uid)
+        else {
+            return Ok(self.use_version);
+        };
+        let current = store
+            .list_resource_uses()
+            .map_err(|e| error_sentence(&e.to_string(), "salvar o uso"))?
+            .into_iter()
+            .find(|u| u.uid == item.uid);
+        let Some(current) = current else {
+            return Ok(self.use_version);
+        };
+        let meta = store
+            .item_version(
+                "resource_use",
+                crate::work_templates::version_key(&item.uid),
+            )
+            .unwrap_or_default();
+        if !current.same_content(read) {
+            return Err(error_sentence(
+                &crate::edit_check::changed_since_read(
+                    "este uso foi alterado",
+                    &meta,
+                    &store.active_actor(),
+                    "Use “Descartar alterações” para ver o uso como está salvo agora e digite de novo o que mudou.",
+                ),
+                "salvar o uso",
+            ));
+        }
+        Ok(Some(meta.version))
+    }
+
+    /// The same for the ficha's resource (see [`Self::use_version_now`]).
+    fn resource_version_now(&self, store: &Store, item: &Resource) -> Result<Option<i64>, String> {
+        let Some(read) = self
+            .res_saved
+            .as_ref()
+            .filter(|read| !item.uid.is_empty() && read.uid == item.uid)
+        else {
+            return Ok(self.res_version);
+        };
+        let current = store
+            .list_resources()
+            .map_err(|e| error_sentence(&e.to_string(), "salvar o recurso"))?
+            .into_iter()
+            .find(|r| r.uid == item.uid);
+        let Some(current) = current else {
+            return Ok(self.res_version);
+        };
+        let meta = store
+            .item_version("resource", crate::work_templates::version_key(&item.uid))
+            .unwrap_or_default();
+        if !current.same_content(read) {
+            return Err(error_sentence(
+                &crate::edit_check::changed_since_read(
+                    "este recurso foi alterado",
+                    &meta,
+                    &store.active_actor(),
+                    "Use “Descartar alterações” para ver o recurso como está salvo agora e digite de novo o que mudou.",
+                ),
+                "salvar o recurso",
+            ));
+        }
+        Ok(Some(meta.version))
+    }
+
     /// Writes `replace` (or the ficha's resource) and reloads it as saved.
     fn save_resource(&mut self, store: &mut Store, replace: Option<Resource>) {
         let Some(item) = replace.or_else(|| self.res_editor.clone()) else {
             return;
         };
         let was_new = item.uid.is_empty();
-        match store.save_resource(&item, self.res_version) {
+        let version = match self.resource_version_now(store, &item) {
+            Ok(version) => version,
+            Err(text) => {
+                self.res_error = text;
+                return;
+            }
+        };
+        match store.save_resource(&item, version) {
             Ok(uid) => {
                 self.changed = true;
                 let reloaded = store

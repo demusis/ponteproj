@@ -3378,6 +3378,14 @@ pub struct SaiopPanel {
     shots_scroll: f32,
 }
 
+/// Whether two readings of an atendimento say the same thing: every field
+/// (the ones the ficha does not show too), the stamps the store sets on
+/// every save aside.
+#[cfg(feature = "desktop")]
+fn same_attendance(a: &SaiopAttendance, b: &SaiopAttendance) -> bool {
+    crate::edit_check::same_record(a, b, crate::edit_check::STAMPS)
+}
+
 #[cfg(feature = "desktop")]
 impl Default for SaiopPanel {
     fn default() -> Self {
@@ -5591,29 +5599,36 @@ impl SaiopPanel {
         }
     }
 
-    /// Writes `ed` on the version the ficha read. Refused as a simultaneous
-    /// edit while the atendimento saved now is exactly what the ficha read,
-    /// only its version moved (nothing of anyone would be lost): it is then
-    /// written on the current version. A real change elsewhere stays a
-    /// refusal, and the typing stays in the ficha.
+    /// Writes `ed` over the atendimento the ficha read. The version alone
+    /// never proves that nobody else changed it (two devices that saved it
+    /// the same number of times reach the same number with different
+    /// contents): before anything is written, the atendimento saved now is
+    /// compared with what the ficha read. The same (only its version moved):
+    /// written on the current version. Another content: nothing is written,
+    /// the typing stays in the ficha, and the refusal says so ("Descartar"
+    /// then shows what is saved now).
     fn save_editor(&mut self, store: &mut Store, ed: &SaiopAttendance) -> Result<i64> {
-        let first = store.save_saiop_attendance(ed, self.base_version);
-        let Err(error) = &first else {
-            return first;
-        };
-        if ed.id <= 0 || !format!("{error:#}").contains("Conflito de edição simultânea") {
-            return first;
+        if ed.id > 0 {
+            if let Some(read) = self.saved_snapshot.clone().filter(|r| r.id == ed.id) {
+                let current = store
+                    .list_saiop_attendances()?
+                    .into_iter()
+                    .find(|a| a.id == ed.id);
+                if let Some(current) = current {
+                    let meta = store.item_version("saiop", ed.id)?;
+                    if !same_attendance(&current, &read) {
+                        anyhow::bail!(crate::edit_check::changed_since_read(
+                            "este atendimento foi alterado",
+                            &meta,
+                            &store.active_actor(),
+                            "Use “Descartar” para ver o atendimento como está salvo agora e digite de novo o que mudou.",
+                        ));
+                    }
+                    self.base_version = Some(meta.version);
+                }
+            }
         }
-        let current = store
-            .list_saiop_attendances()
-            .ok()
-            .and_then(|list| list.into_iter().find(|a| a.id == ed.id));
-        if current.is_none() || current != self.saved_snapshot {
-            return first;
-        }
-        let version = store.item_version("saiop", ed.id)?.version;
-        self.base_version = Some(version);
-        store.save_saiop_attendance(ed, Some(version))
+        store.save_saiop_attendance(ed, self.base_version)
     }
 
     /// "Descartar": the ficha shows the atendimento as it is saved NOW (and

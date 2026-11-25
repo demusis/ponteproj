@@ -302,9 +302,30 @@ struct ProjectForm {
     project: Project,
     /// The version the edit started from (`None` for a new project).
     base_version: Option<i64>,
+    /// The project as the form read it (`None` for a new project): what a
+    /// save compares with the project saved now.
+    read: Option<Project>,
+    /// The project changed elsewhere after the form read it: the version
+    /// saved now and its number, until the person chooses what to keep.
+    theirs: Option<(Project, i64)>,
     error: Option<String>,
+    /// A line that is no error (what "Juntar as duas versões" did).
+    notice: Option<String>,
     conflict: bool,
     focus: bool,
+}
+
+/// The name of a field of the project, as the form calls it.
+fn project_field_label(key: &str) -> &'static str {
+    match key {
+        "name" => "Nome",
+        "objective" => "Objetivo",
+        "assignee" => "Responsável",
+        "status" => "Situação",
+        "start_date" => "Início",
+        "target_date" => "Data-alvo",
+        _ => "outros dados",
+    }
 }
 
 impl ProjectForm {
@@ -312,7 +333,10 @@ impl ProjectForm {
         Self {
             project: Project::new(""),
             base_version: None,
+            read: None,
+            theirs: None,
             error: None,
+            notice: None,
             conflict: false,
             focus: true,
         }
@@ -322,9 +346,166 @@ impl ProjectForm {
         Self {
             project: project.clone(),
             base_version: Some(version),
+            read: Some(project.clone()),
+            theirs: None,
             error: None,
+            notice: None,
             conflict: false,
             focus: true,
+        }
+    }
+
+    /// The version a write over `read` (the project as a screen read it)
+    /// goes on: `Ok(Some(now))` when the project saved now says the same
+    /// (only its version moved), `Ok(None)` when it can no longer be read
+    /// (the write then says why), and the refusal when it changed
+    /// elsewhere, whatever its version number.
+    fn version_over(store: &Store, read: &Project) -> Result<Option<i64>, String> {
+        match Self::changed_since(store, read) {
+            Ok(None) => Ok(store.project_version(&read.uid).ok()),
+            Ok(Some((_, text, _))) => Err(text),
+            Err(()) => Ok(None),
+        }
+    }
+
+    /// `Ok(None)` when the project saved now says the same as `read`;
+    /// `Ok(Some((current, refusal, version)))` when it changed elsewhere;
+    /// `Err` when it can no longer be read.
+    fn changed_since(store: &Store, read: &Project) -> Result<Option<(Project, String, i64)>, ()> {
+        let current = match store.get_project(&read.uid) {
+            Ok(Some(current)) => current,
+            _ => return Err(()),
+        };
+        if crate::edit_check::same_record(&current, read, crate::edit_check::STAMPS) {
+            return Ok(None);
+        }
+        let meta = store
+            .item_version("project", crate::work_templates::version_key(&read.uid))
+            .unwrap_or_default();
+        let changed: Vec<&str> =
+            crate::edit_check::changed_keys(read, &current, crate::edit_check::STAMPS)
+                .iter()
+                .map(|key| project_field_label(key))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+        let what = if changed.is_empty() {
+            String::new()
+        } else {
+            format!(" Mudou lá: {}.", changed.join(", "))
+        };
+        let text = crate::edit_check::changed_since_read(
+            "este projeto foi alterado",
+            &meta,
+            &store.active_actor(),
+            &format!("{what} Use “Juntar as duas versões” para trazer o que mudou lá e revisar antes de salvar, ou “Ficar com a versão de lá” para descartar as suas alterações.").trim_start().to_owned(),
+        );
+        Ok(Some((current, text, meta.version)))
+    }
+
+    /// "Salvar": the version alone never proves that nobody else changed
+    /// the project (two computers that saved it the same number of times
+    /// reach the same number with different contents), so the project saved
+    /// now is compared with what the form read first. The same (only the
+    /// version moved): saved on its current version. Another content:
+    /// nothing is written, the typing stays, and the form offers "Juntar
+    /// as duas versões" and "Ficar com a versão de lá".
+    fn save(&mut self, store: &mut Store) -> Result<Project, String> {
+        if self.theirs.is_some() {
+            return Err(self.error.clone().unwrap_or_default());
+        }
+        let mut expected = self.base_version;
+        if let (Some(read), Some(_)) = (self.read.clone(), self.base_version) {
+            match Self::changed_since(store, &read) {
+                Ok(None) => expected = store.project_version(&read.uid).ok().or(expected),
+                Ok(Some((current, text, version))) => {
+                    self.theirs = Some((current, version));
+                    self.conflict = true;
+                    self.notice = None;
+                    self.error = Some(text.clone());
+                    return Err(text);
+                }
+                Err(()) => {}
+            }
+        }
+        match store.save_project_checked(&self.project, expected) {
+            Ok(saved) => Ok(saved),
+            Err(error) => {
+                let text = error.to_string();
+                self.conflict = text.contains("Conflito de edição");
+                self.notice = None;
+                self.error = Some(text.clone());
+                Err(text)
+            }
+        }
+    }
+
+    /// "Juntar as duas versões": the form takes what changed there in the
+    /// fields the person did not touch and keeps the person's value in the
+    /// others; it now stands on the current version and stays unsaved, so
+    /// the person reviews it before saving. A field both sides changed is
+    /// named, with the value it had there.
+    fn merge_conflict(&mut self) -> bool {
+        let (Some((theirs, version)), Some(read)) = (self.theirs.clone(), self.read.clone()) else {
+            return false;
+        };
+        let Some((merged, both)) = crate::edit_check::merge_three(
+            &read,
+            &theirs,
+            &self.project,
+            crate::edit_check::STAMPS,
+        ) else {
+            self.error = Some(
+                "Não foi possível juntar as duas versões. Use “Ficar com a versão de lá” e digite de novo o que mudou.".to_owned(),
+            );
+            return false;
+        };
+        self.project = merged;
+        self.read = Some(theirs.clone());
+        self.base_version = Some(version);
+        self.theirs = None;
+        self.conflict = false;
+        self.error = None;
+        let mut text =
+            "As alterações de lá foram trazidas para o formulário, junto com as suas. Revise e salve."
+                .to_owned();
+        if !both.is_empty() {
+            let there = crate::edit_check::fields_of(&theirs, &[]);
+            let shown: Vec<String> = both
+                .iter()
+                .map(|key| {
+                    let value = match there.get(key) {
+                        Some(serde_json::Value::String(text)) => text.clone(),
+                        Some(other) => other.to_string(),
+                        None => String::new(),
+                    };
+                    format!("{} (lá estava “{value}”)", project_field_label(key))
+                })
+                .collect();
+            text.push_str(&format!(
+                " Mudou nos dois lados e ficou o seu: {}.",
+                shown.join("; ")
+            ));
+        }
+        self.notice = Some(text);
+        true
+    }
+
+    /// "Ficar com a versão de lá": the typing goes and the form shows the
+    /// project as it is saved now, on its current version.
+    fn take_theirs(&mut self, store: &Store) {
+        let uid = self.project.uid.clone();
+        match store.get_project(&uid) {
+            Ok(Some(current)) => {
+                let version = store.project_version(&uid).unwrap_or(0);
+                *self = ProjectForm::edit(&current, version);
+                self.focus = false;
+            }
+            _ => {
+                self.error = Some("O projeto não está mais disponível.".to_owned());
+                self.conflict = false;
+                self.theirs = None;
+            }
         }
     }
 }
@@ -912,6 +1093,17 @@ impl ProjectsPanel {
     ) {
         let mut changed = project.clone();
         changed.status = status;
+        // The version alone never proves the project is the one shown here:
+        // a project changed elsewhere (even on the same version number) is
+        // never written over with what this screen read.
+        let version = match ProjectForm::version_over(store, project) {
+            Ok(Some(now)) => now,
+            Ok(None) => version,
+            Err(text) => {
+                self.refused(text);
+                return;
+            }
+        };
         match store.save_project_checked(&changed, Some(version)) {
             Ok(saved) => {
                 self.data.stale = true;
@@ -1027,6 +1219,8 @@ impl ProjectsPanel {
         let mut save = false;
         let mut cancel = false;
         let mut reload = false;
+        let mut merge = false;
+        let waiting = form.theirs.is_some();
         egui::Window::new(if editing {
             "Editar projeto"
         } else {
@@ -1105,22 +1299,40 @@ impl ProjectsPanel {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.add(egui::Label::new(RichText::new(error).color(fg)).wrap());
-                        if form.conflict
-                            && ui
-                                .add(widgets::quiet("Recarregar o projeto"))
-                                .on_hover_text(
-                                    "Traz a versão mais recente e descarta o que você digitou.",
-                                )
-                                .clicked()
-                        {
-                            reload = true;
+                        if form.conflict {
+                            ui.horizontal(|ui| {
+                                if form.theirs.is_some()
+                                    && ui
+                                        .add(widgets::secondary("Juntar as duas versões"))
+                                        .on_hover_text("Traz o que mudou lá nos campos que você não mexeu e mantém o que você digitou nos outros. O projeto fica para você revisar e salvar.")
+                                        .clicked()
+                                {
+                                    merge = true;
+                                }
+                                if ui
+                                    .add(widgets::quiet("Ficar com a versão de lá"))
+                                    .on_hover_text(
+                                        "Traz a versão salva agora e descarta o que você digitou.",
+                                    )
+                                    .clicked()
+                                {
+                                    reload = true;
+                                }
+                            });
                         }
                     });
+            }
+            if let Some(notice) = &form.notice {
+                widgets::small_muted(ui, notice);
             }
             ui.add_space(S1);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = S2;
-                if ui.add(widgets::primary("Salvar")).clicked() {
+                if ui
+                    .add_enabled(!waiting, widgets::primary("Salvar"))
+                    .on_disabled_hover_text("Escolha antes o que fazer com a versão de lá.")
+                    .clicked()
+                {
                     save = true;
                 }
                 if ui.add(widgets::quiet("Cancelar")).clicked() {
@@ -1133,37 +1345,23 @@ impl ProjectsPanel {
             return;
         }
         if reload {
-            let uid = form.project.uid.clone();
-            match store.get_project(&uid) {
-                Ok(Some(current)) => {
-                    let version = store.project_version(&uid).unwrap_or(0);
-                    *form = ProjectForm::edit(&current, version);
-                    form.focus = false;
-                }
-                _ => {
-                    form.error = Some("O projeto não está mais disponível.".to_owned());
-                    form.conflict = false;
-                }
-            }
+            form.take_theirs(store);
+            return;
+        }
+        if merge {
+            form.merge_conflict();
             return;
         }
         if save {
-            match store.save_project_checked(&form.project, form.base_version) {
-                Ok(saved) => {
-                    let was_new = form.base_version.is_none();
-                    let name = saved.name.clone();
-                    self.form = None;
-                    self.data.stale = true;
-                    if was_new {
-                        self.open_project(&saved.uid);
-                    }
-                    *asked = Some(Asked::Changed(Some(format!("Projeto “{name}” salvo."))));
+            let was_new = form.base_version.is_none();
+            if let Ok(saved) = form.save(store) {
+                let name = saved.name.clone();
+                self.form = None;
+                self.data.stale = true;
+                if was_new {
+                    self.open_project(&saved.uid);
                 }
-                Err(error) => {
-                    let text = error.to_string();
-                    form.conflict = text.contains("Conflito de edição");
-                    form.error = Some(text);
-                }
+                *asked = Some(Asked::Changed(Some(format!("Projeto “{name}” salvo."))));
             }
         }
     }
@@ -2111,5 +2309,112 @@ mod tests {
         assert!(panel.key_escape(), "closes the form");
         assert!(panel.key_escape(), "leaves the project");
         assert!(!panel.key_escape());
+    }
+
+    fn project_store() -> (tempfile::TempDir, Store, Project) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let project = store.save_project(&Project::new("Projeto X")).unwrap();
+        (dir, store, project)
+    }
+
+    fn set_version(store: &Store, uid: &str, version: i64) {
+        store
+            .conn
+            .execute(
+                "UPDATE item_versions SET version=?1 WHERE kind='project' AND item_id=?2",
+                rusqlite::params![version, crate::work_templates::version_key(uid)],
+            )
+            .unwrap();
+    }
+
+    /// Review 3, finding 2: only the version moved (an exchange rewrote
+    /// the project with the same content, or brought its number back): the
+    /// form saves on the current version, on the first try.
+    #[test]
+    fn rev3_the_project_form_saves_when_only_the_version_moved() {
+        let (_dir, mut store, project) = project_store();
+        let held = store.project_version(&project.uid).unwrap();
+        let mut form = ProjectForm::edit(&project, held);
+        form.project.objective = "digitado".into();
+        // Rewritten with the same content (new stamps), and the number moved.
+        store.save_project(&project).unwrap();
+        set_version(&store, &project.uid, held + 5);
+        let saved = form.save(&mut store).expect("only the version moved");
+        assert_eq!(saved.objective, "digitado");
+        // And when the number went back below the one the form holds.
+        let held = store.project_version(&project.uid).unwrap();
+        let read = store.get_project(&project.uid).unwrap().unwrap();
+        let mut form = ProjectForm::edit(&read, held);
+        set_version(&store, &project.uid, 1);
+        form.project.objective = "de novo".into();
+        form.save(&mut store).expect("never a dead end");
+        assert_eq!(
+            store.get_project(&project.uid).unwrap().unwrap().objective,
+            "de novo"
+        );
+    }
+
+    /// Review 3, finding 1: the project changed elsewhere and the exchange
+    /// left it on the number the form holds. Nothing is written, the typing
+    /// stays, and "Juntar as duas versões" keeps both.
+    #[test]
+    fn rev3_the_project_form_never_overwrites_an_edit_on_the_same_version() {
+        let (_dir, mut store, project) = project_store();
+        let held = store.project_version(&project.uid).unwrap();
+        let mut form = ProjectForm::edit(&project, held);
+        form.project.objective = "digitado".into();
+        let mut there = project.clone();
+        there.assignee = "Ana".into();
+        store.save_project_checked(&there, Some(held)).unwrap();
+        set_version(&store, &project.uid, held);
+        let error = form.save(&mut store).unwrap_err();
+        assert!(error.contains("Conflito de edição simultânea"), "{error}");
+        assert!(error.contains("Responsável"), "{error}");
+        assert!(form.conflict && form.theirs.is_some());
+        let now = store.get_project(&project.uid).unwrap().unwrap();
+        assert_eq!((now.assignee.as_str(), now.objective.as_str()), ("Ana", ""));
+        assert_eq!(form.project.objective, "digitado", "the typing stays");
+        assert!(form.save(&mut store).is_err(), "waits for the choice");
+        assert!(form.merge_conflict());
+        assert_eq!(
+            (
+                form.project.assignee.as_str(),
+                form.project.objective.as_str()
+            ),
+            ("Ana", "digitado")
+        );
+        form.save(&mut store)
+            .expect("joined, on the current version");
+        let now = store.get_project(&project.uid).unwrap().unwrap();
+        assert_eq!(
+            (now.assignee.as_str(), now.objective.as_str()),
+            ("Ana", "digitado")
+        );
+    }
+
+    /// "Ficar com a versão de lá" shows the project as saved now, and the
+    /// next save goes through.
+    #[test]
+    fn rev3_the_project_form_can_keep_the_other_version() {
+        let (_dir, mut store, project) = project_store();
+        let held = store.project_version(&project.uid).unwrap();
+        let mut form = ProjectForm::edit(&project, held);
+        form.project.objective = "digitado".into();
+        let mut there = project.clone();
+        there.objective = "de lá".into();
+        store.save_project_checked(&there, Some(held)).unwrap();
+        set_version(&store, &project.uid, held);
+        assert!(form.save(&mut store).is_err());
+        form.take_theirs(&store);
+        assert_eq!(form.project.objective, "de lá");
+        assert!(!form.conflict && form.theirs.is_none());
+        form.project.name = "Projeto Y".into();
+        form.save(&mut store).unwrap();
+        let now = store.get_project(&project.uid).unwrap().unwrap();
+        assert_eq!(
+            (now.name.as_str(), now.objective.as_str()),
+            ("Projeto Y", "de lá")
+        );
     }
 }

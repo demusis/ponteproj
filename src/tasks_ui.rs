@@ -1993,25 +1993,7 @@ fn merge_three(base: &Task, theirs: &Task, mine: &Task) -> Option<(Task, Vec<&'s
     Some((task, both))
 }
 
-/// Who saved the version found and when, said so that it makes sense when
-/// it is the person's own name (the same on every computer and on the
-/// phone): then it was another computer, the phone or another screen.
-fn saved_by(meta: &crate::intranet::VersionMeta, me: &str) -> String {
-    let when = crate::labels::datetime(&meta.updated_at);
-    let name = meta.updated_by.trim();
-    let who = if name.is_empty() {
-        "por outra pessoa".to_owned()
-    } else if name.eq_ignore_ascii_case(me.trim()) {
-        format!("com o seu nome ({name}) em outro computador, no celular ou em outra tela")
-    } else {
-        format!("por {name}")
-    };
-    if when.trim().is_empty() {
-        who
-    } else {
-        format!("{who}, em {when}")
-    }
-}
+use crate::edit_check::saved_by;
 
 impl TaskPanel {
     /// The person asked to manage the categories (Ajustes, Categorias).
@@ -2056,11 +2038,13 @@ impl TaskPanel {
     /// Saves the task being edited. On failure the reason is returned and
     /// also shown in the panel; the edit stays as it was.
     ///
-    /// A save refused because the task has another version now ("Conflito
-    /// de edição simultânea") is looked at: when the task saved now is
-    /// exactly what the form read, only its version moved (nothing of anyone
-    /// would be lost) and the save goes through on the current version.
-    /// Otherwise the task really changed elsewhere: nothing is written, the
+    /// Before anything is written, the task saved now is compared with
+    /// what the form read (a refusal as "Conflito de edição simultânea" is
+    /// looked at the same way): when it is exactly what the form read, only
+    /// its version moved (nothing of anyone would be lost) and the save goes
+    /// through on the current version, whatever the number the form holds.
+    /// Otherwise the task really changed elsewhere, even when the version
+    /// number is the one the form holds: nothing is written, the
     /// person's typing stays in the form, and the version found is kept in
     /// [`Self::edit_conflict`] for the person to join it with theirs
     /// ([`Self::merge_conflict`]) or to keep it ([`Self::take_theirs`]).
@@ -2075,7 +2059,25 @@ impl TaskPanel {
             self.notice(text.clone(), true);
             return Err(text);
         }
-        let mut saved = self.save_on(store, &task, self.base_version);
+        // The version alone never proves that nobody else changed the task
+        // (two computers that saved it the same number of times reach the
+        // same number with different contents): what is saved now is
+        // compared with what the form read before anything is written.
+        let mut expected = self.base_version;
+        if task.id > 0 && self.original.is_some() {
+            match self.look_at_conflict(store, task.id) {
+                // Unchanged: saved on the version it has now.
+                Some(Ok(version)) => expected = Some(version),
+                Some(Err(conflict)) => {
+                    self.conflict = Some(conflict);
+                    let text = self.conflict_text();
+                    self.notice(text.clone(), true);
+                    return Err(text);
+                }
+                None => {}
+            }
+        }
+        let mut saved = self.save_on(store, &task, expected);
         if let Err(error) = &saved {
             if is_edit_conflict(error) && task.id > 0 {
                 match self.look_at_conflict(store, task.id) {
@@ -5073,8 +5075,14 @@ impl TaskPanel {
                     self.concluded = before;
                 }
                 if self.draft.as_ref().is_some_and(|t| t.id == id) {
-                    self.draft = Some(updated.clone());
-                    self.original = Some(updated.clone());
+                    // As the list reads it: what a later save compares with.
+                    let stored = store
+                        .list_tasks()
+                        .ok()
+                        .and_then(|tasks| tasks.into_iter().find(|t| t.id == id))
+                        .unwrap_or_else(|| updated.clone());
+                    self.draft = Some(stored.clone());
+                    self.original = Some(stored);
                     self.base_version = store.item_version("task", id).ok().map(|v| v.version);
                 }
                 let mut text = if complete {
