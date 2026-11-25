@@ -1333,7 +1333,45 @@ impl Store {
                 .optional()?
                 .context("Atendimento não encontrado no acervo.")?;
             let prev: SaiopAttendance = serde_json::from_slice(&unseal(&existing_blob)?)?;
-            if prev.status != next.status {
+            // A change that already carries the event of this very change
+            // (a later save of the same atendimento merged into it in the
+            // queue, replayed where the earlier situation is still saved)
+            // is not written twice, and keeps the day it carries.
+            let carried = |kind: &str, detail: &str| {
+                next.events
+                    .iter()
+                    .any(|e| e.kind == kind && e.detail == detail && !prev.events.contains(e))
+            };
+            let status_detail = format!(
+                "Situação alterada de '{}' para '{}'",
+                status_label(&prev.status),
+                status_label(&next.status)
+            );
+            let assignee_detail = format!(
+                "Responsável alterado de '{}' para '{}'",
+                if prev.assignee.is_empty() {
+                    "sem responsável"
+                } else {
+                    &prev.assignee
+                },
+                if next.assignee.is_empty() {
+                    "sem responsável"
+                } else {
+                    &next.assignee
+                }
+            );
+            let status_carried = carried("situacao", &status_detail);
+            let assignee_carried = carried("distribuicao", &assignee_detail);
+            if prev.status != next.status && status_carried {
+                if next.stage_changed_at.trim().is_empty() {
+                    next.stage_changed_at = today.clone();
+                }
+                if next.status == "encerrado" && next.closed_at.trim().is_empty() {
+                    next.closed_at = today.clone();
+                } else if next.is_open() {
+                    next.closed_at.clear();
+                }
+            } else if prev.status != next.status {
                 next.stage_changed_at = today.clone();
                 if next.status == "encerrado" && next.closed_at.trim().is_empty() {
                     next.closed_at = today.clone();
@@ -1344,31 +1382,15 @@ impl Store {
                     when: now.clone(),
                     actor: actor.clone(),
                     kind: "situacao".into(),
-                    detail: format!(
-                        "Situação alterada de '{}' para '{}'",
-                        status_label(&prev.status),
-                        status_label(&next.status)
-                    ),
+                    detail: status_detail,
                 });
             }
-            if prev.assignee != next.assignee {
+            if prev.assignee != next.assignee && !assignee_carried {
                 next.events.push(SaiopEvent {
                     when: now.clone(),
                     actor: actor.clone(),
                     kind: "distribuicao".into(),
-                    detail: format!(
-                        "Responsável alterado de '{}' para '{}'",
-                        if prev.assignee.is_empty() {
-                            "sem responsável"
-                        } else {
-                            &prev.assignee
-                        },
-                        if next.assignee.is_empty() {
-                            "sem responsável"
-                        } else {
-                            &next.assignee
-                        }
-                    ),
+                    detail: assignee_detail,
                 });
             }
             let encoded = seal(&serde_json::to_vec(&next)?)?;
@@ -1408,12 +1430,21 @@ impl Store {
             if next.stage_changed_at.trim().is_empty() {
                 next.stage_changed_at = today;
             }
-            next.events.push(SaiopEvent {
-                when: now.clone(),
-                actor: actor.clone(),
-                kind: "entrada".into(),
-                detail: "Atendimento registrado no controle do gabinete".into(),
-            });
+            // A creation replayed with the entry it already carries (a later
+            // save merged into it in the queue) does not get a second one.
+            let entry = "Atendimento registrado no controle do gabinete";
+            if !next
+                .events
+                .iter()
+                .any(|e| e.kind == "entrada" && e.detail == entry)
+            {
+                next.events.push(SaiopEvent {
+                    when: now.clone(),
+                    actor: actor.clone(),
+                    kind: "entrada".into(),
+                    detail: entry.into(),
+                });
+            }
             let placeholder = seal(b"{}")?;
             tx.execute(
                 "INSERT INTO saiop_attendances (batch_id, source_row, document_id, reference_norm, payload, raw_import, updated_at)
@@ -3379,11 +3410,65 @@ pub struct SaiopPanel {
 }
 
 /// Whether two readings of an atendimento say the same thing: every field
-/// (the ones the ficha does not show too), the stamps the store sets on
-/// every save aside.
+/// (the ones the ficha does not show too), aside the stamps the store sets
+/// on every save and what it writes by itself from the situation and the
+/// assignee (see [`without_store_writes`]): the situation and the assignee
+/// are compared, so two different edits never look the same because of it.
 #[cfg(feature = "desktop")]
 fn same_attendance(a: &SaiopAttendance, b: &SaiopAttendance) -> bool {
-    crate::edit_check::same_record(a, b, crate::edit_check::STAMPS)
+    crate::edit_check::same_record(
+        &without_store_writes(a),
+        &without_store_writes(b),
+        crate::edit_check::STAMPS,
+    )
+}
+
+/// The kinds of event the store writes by itself: the entry, when the
+/// atendimento is made, and a change of situation or of assignee. Each
+/// replay of the change on another device writes them again, with its own
+/// moment.
+#[cfg(feature = "desktop")]
+const STORE_EVENT_KINDS: &[&str] = &["entrada", "situacao", "distribuicao"];
+
+/// The atendimento without what the store writes by itself on a save: its
+/// events of [`STORE_EVENT_KINDS`], the day of the stage and the day it
+/// closed (both follow the situation).
+#[cfg(feature = "desktop")]
+fn without_store_writes(a: &SaiopAttendance) -> SaiopAttendance {
+    let mut a = a.clone();
+    a.events
+        .retain(|e| !STORE_EVENT_KINDS.contains(&e.kind.as_str()));
+    a.stage_changed_at.clear();
+    a.closed_at.clear();
+    a
+}
+
+/// The ficha's atendimento (`ed`) on top of the one saved now (`current`),
+/// when what the ficha read (`read`) is the same as it: what the store
+/// wrote by itself is taken from `current` where the person did not change
+/// it, and the events the person added in the ficha go after the ones
+/// saved now.
+#[cfg(feature = "desktop")]
+fn onto_saved(
+    ed: &SaiopAttendance,
+    read: &SaiopAttendance,
+    current: &SaiopAttendance,
+) -> SaiopAttendance {
+    let mut out = ed.clone();
+    if ed.stage_changed_at == read.stage_changed_at {
+        out.stage_changed_at = current.stage_changed_at.clone();
+    }
+    if ed.closed_at == read.closed_at {
+        out.closed_at = current.closed_at.clone();
+    }
+    out.events = current.events.clone();
+    out.events.extend(
+        ed.events
+            .iter()
+            .filter(|e| !read.events.contains(e))
+            .cloned(),
+    );
+    out
 }
 
 #[cfg(feature = "desktop")]
@@ -5625,6 +5710,8 @@ impl SaiopPanel {
                         ));
                     }
                     self.base_version = Some(meta.version);
+                    let ed = onto_saved(ed, &read, &current);
+                    return store.save_saiop_attendance(&ed, self.base_version);
                 }
             }
         }
@@ -8003,5 +8090,39 @@ mod rev5_tests {
             now.events.iter().filter(|e| e.kind == "situacao").count(),
             1
         );
+    }
+
+    /// A new atendimento saved again before the first exchange: the queue
+    /// may merge the second save into the creation, which then carries the
+    /// entry the store wrote; its replay writes no second entry, and a
+    /// ficha opened after it saves without conflict.
+    #[test]
+    fn rev5_a_new_atendimento_saved_again_before_the_exchange() {
+        let mut p = pair();
+        let id = saved(&mut p.a);
+        let mut again = find(&p.a, id);
+        again.subject = "Assunto revisto".into();
+        let held = p.a.item_version("saiop", id).ok().map(|v| v.version);
+        p.a.save_saiop_attendance(&again, held).unwrap();
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&p.a, find(&p.a, id));
+        later();
+        sync(&mut p.a);
+        let entries = |store: &Store| {
+            store
+                .list_saiop_attendances()
+                .unwrap()
+                .into_iter()
+                .filter(|a| a.subject == "Assunto revisto")
+                .map(|a| a.events.iter().filter(|e| e.kind == "entrada").count())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(entries(&p.a), [1], "{:?}", find(&p.a, id).events);
+        panel.editor.as_mut().unwrap().observation = "Depois".into();
+        panel.save_current(&mut p.a);
+        assert!(!panel.error, "{}", panel.message);
+        sync(&mut p.a);
+        sync(&mut p.b);
+        assert_eq!(entries(&p.b), [1]);
     }
 }
