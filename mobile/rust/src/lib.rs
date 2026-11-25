@@ -3641,6 +3641,58 @@ mod tests {
     }
 
     #[test]
+    /// Review 3: two saves of the same task on the phone between exchanges
+    /// are one change in its queue; the exchange leaves the task at the
+    /// version the phone's screen holds (never back below it), the next save
+    /// on that version goes through, and the computer gets the same number.
+    fn two_saves_on_the_phone_then_an_exchange_keep_the_version() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        let mut task = ponteproj::tasks::Task::blank(None);
+        task.title = "Duas gravações no celular".into();
+        computer.save_task(&task).unwrap();
+        let cfg = computer.load_intranet_config().unwrap();
+        let reporter = ponteproj::ai::Reporter::silent();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        let id = phone
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Duas gravações no celular")
+            .unwrap()
+            .id;
+        let mut version = phone.item_version("task", id).unwrap().version;
+        for notes in ["primeira", "segunda"] {
+            let saved = save_task(&mut phone, &json!({"id": id, "version": version, "notes": notes})).unwrap();
+            version = saved["version"].as_i64().unwrap();
+        }
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(phone.item_version("task", id).unwrap().version, version, "never back");
+        save_task(&mut phone, &json!({"id": id, "version": version, "notes": "terceira"}))
+            .expect("no other edit happened");
+        let version = phone.item_version("task", id).unwrap().version;
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        std::fs::copy(&work, &drive).unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        let on_computer = computer
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Duas gravações no celular")
+            .unwrap();
+        assert_eq!(on_computer.notes, "terceira");
+        assert_eq!(computer.item_version("task", on_computer.id).unwrap().version, version);
+    }
+
+    #[test]
     fn a_task_deleted_on_the_phone_reaches_the_computer_and_comes_back_with_the_undo() {
         let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _reset = ResetHolidays;

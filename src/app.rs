@@ -5032,6 +5032,31 @@ mod refresh_tests {
             .map(|meta| meta.version)
     }
 
+    /// Review 3, finding 1: the note was saved elsewhere and the exchange
+    /// left it on the version this editor holds (both sides saved the same
+    /// number of times). "Salvar" writes nothing over it; the typing stays.
+    #[test]
+    fn rev3_a_note_changed_elsewhere_on_the_same_version_is_never_overwritten() {
+        let _guard = ConfigGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, document) = note_edited_here_and_saved_elsewhere(&dir);
+        let held = app.editors[&document].note_version.unwrap();
+        app.store
+            .conn
+            .execute(
+                "UPDATE item_versions SET version=?1 WHERE kind='note' AND item_id=?2",
+                rusqlite::params![held, document],
+            )
+            .unwrap();
+        app.save_note(document);
+        assert_eq!(
+            app.store.load_document(document).unwrap().note,
+            "versão externa"
+        );
+        assert_eq!(app.editors[&document].note, "minha edição");
+        assert!(app.editors[&document].note_dirty());
+    }
+
     #[test]
     fn a_failed_read_is_retried_at_the_next_poll() {
         let _guard = ConfigGuard::new();

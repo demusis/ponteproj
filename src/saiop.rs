@@ -7760,4 +7760,42 @@ mod follow_up_panel_tests {
     fn the_queue_is_named_for_the_person() {
         assert_eq!(SaiopQueue::FollowUps.label(), "Cobranças de hoje");
     }
+
+    /// Review 3, finding 1: another device saved the atendimento as many
+    /// times as this ficha did, so the number it holds is the number found,
+    /// with another content. "Salvar" writes nothing over it and the typing
+    /// stays; "Descartar" then shows it and the next save goes through.
+    #[test]
+    fn rev3_the_same_version_with_another_content_is_refused() {
+        let (_dir, mut store, id) = setup();
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&store, find(&store, id));
+        let held = panel.base_version.unwrap();
+        let mut there = find(&store, id);
+        there.assignee = "Ana".into();
+        store.save_saiop_attendance(&there, Some(held)).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE item_versions SET version=?1 WHERE kind='saiop' AND item_id=?2",
+                rusqlite::params![held, id],
+            )
+            .unwrap();
+        panel.editor.as_mut().unwrap().subject = "Digitado".into();
+        panel.save_current(&mut store);
+        let now = find(&store, id);
+        assert_eq!(now.assignee, "Ana", "nothing written over it");
+        assert_ne!(now.subject, "Digitado");
+        assert!(panel.dirty(), "the typing stays");
+        assert!(panel.error, "{}", panel.message);
+        assert!(panel.message.contains("Conflito"), "{}", panel.message);
+        panel.revert(&store);
+        panel.editor.as_mut().unwrap().subject = "Depois".into();
+        panel.save_current(&mut store);
+        let now = find(&store, id);
+        assert_eq!(
+            (now.subject.as_str(), now.assignee.as_str()),
+            ("Depois", "Ana")
+        );
+    }
 }

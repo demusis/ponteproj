@@ -598,4 +598,63 @@ mod tests {
             .windows(b"CONTEXTO_PRIVADO_TESTE".len())
             .any(|w| w == b"CONTEXTO_PRIVADO_TESTE"));
     }
+
+    /// Review 3, finding 1: the context was saved elsewhere and the
+    /// exchange left it on the version this panel holds. Saving the panel's
+    /// draft writes nothing over it; the draft stays. Only the version
+    /// moving still saves.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn rev3_a_context_changed_elsewhere_on_the_same_version_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ctx.sqlite3")).unwrap();
+        let id = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let read = store.load_work_context(id).unwrap();
+        let held = store
+            .item_version("work_context", id)
+            .map(|v| v.version)
+            .unwrap();
+        let mut panel = ContextPanel::default();
+        let mut draft = read.clone();
+        draft.notes = "digitado aqui".into();
+        panel.drafts.insert(id, (draft, read.clone()));
+        panel.versions.insert(id, held);
+        let mut there = read.clone();
+        there.sender = "Servidor de lá".into();
+        store
+            .save_work_context_checked(id, &there, Some(held))
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE item_versions SET version=?1 WHERE kind='work_context' AND item_id=?2",
+                rusqlite::params![held, id],
+            )
+            .unwrap();
+        assert!(panel.save_pending(&mut store, id).is_err());
+        let now = store.load_work_context(id).unwrap();
+        assert_eq!(now.sender, "Servidor de lá", "nothing written over it");
+        assert_ne!(now.notes, "digitado aqui");
+        assert!(panel.document_dirty(id), "the draft stays");
+
+        // Only the version moved: saved.
+        let read = store.load_work_context(id).unwrap();
+        let held = store
+            .item_version("work_context", id)
+            .map(|v| v.version)
+            .unwrap();
+        let tx = store.conn.transaction().unwrap();
+        crate::intranet::record_mutation(&tx, "CARLO", "work_context", id, None, "teste", None, "")
+            .unwrap();
+        tx.commit().unwrap();
+        let mut draft = read.clone();
+        draft.notes = "agora sim".into();
+        panel.drafts.insert(id, (draft, read));
+        panel.versions.insert(id, held);
+        assert!(panel.save_pending(&mut store, id).unwrap());
+        assert_eq!(store.load_work_context(id).unwrap().notes, "agora sim");
+    }
 }

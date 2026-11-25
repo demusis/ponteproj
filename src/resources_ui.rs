@@ -4380,6 +4380,96 @@ mod tests {
         (panel, data)
     }
 
+    /// Review 3, finding 1: the use and the resource were saved elsewhere
+    /// and the exchange left them on the version the ficha holds. "Salvar"
+    /// writes nothing over them; the typing stays. Only the version moving
+    /// still saves.
+    #[test]
+    fn rev3_a_use_or_resource_changed_elsewhere_on_the_same_version_is_never_overwritten() {
+        let (_dir, mut store) = seeded_store();
+        let (mut panel, _data) = panel_with_a_saved_use(&mut store);
+        let uid = panel.use_editor.as_ref().unwrap().uid.clone();
+        let held = panel.use_version.unwrap();
+        let mut there = panel.use_saved.clone().unwrap();
+        there.sector = "Setor de lá".into();
+        store.save_resource_use(&there, Some(held)).unwrap();
+        let reset = |store: &Store, kind: &str, uid: &str, version: i64| {
+            store
+                .conn
+                .execute(
+                    "UPDATE item_versions SET version=?1 WHERE kind=?2 AND item_id=?3",
+                    rusqlite::params![version, kind, crate::work_templates::version_key(uid)],
+                )
+                .unwrap();
+        };
+        reset(&store, "resource_use", &uid, held);
+        panel.use_editor.as_mut().unwrap().notes = "digitado".into();
+        let now = now_moment();
+        assert!(!panel.save_use_as(&mut store, &now, None));
+        assert!(!panel.use_error.is_empty());
+        let stored = store
+            .list_resource_uses()
+            .unwrap()
+            .into_iter()
+            .find(|u| u.uid == uid)
+            .unwrap();
+        assert_eq!(stored.sector, "Setor de lá", "nothing written over it");
+        assert_ne!(stored.notes, "digitado");
+        assert_eq!(panel.use_editor.as_ref().unwrap().notes, "digitado");
+
+        let room = store
+            .list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.name == "Auditório")
+            .unwrap();
+        panel.load_resource(&store, room.clone());
+        let held = panel.res_version.unwrap();
+        let mut there = room.clone();
+        there.location = "Bloco de lá".into();
+        store.save_resource(&there, Some(held)).unwrap();
+        reset(&store, "resource", &room.uid, held);
+        panel.res_editor.as_mut().unwrap().notes = "digitado".into();
+        panel.save_resource(&mut store, None);
+        assert!(!panel.res_error.is_empty());
+        let stored = store
+            .list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.uid == room.uid)
+            .unwrap();
+        assert_eq!(stored.location, "Bloco de lá", "nothing written over it");
+        assert_ne!(stored.notes, "digitado");
+
+        // Only the version moved: saved.
+        panel.load_resource(&store, stored.clone());
+        let tx = store.conn.transaction().unwrap();
+        crate::intranet::record_mutation(
+            &tx,
+            "CARLO",
+            "resource",
+            crate::work_templates::version_key(&room.uid),
+            None,
+            "teste",
+            None,
+            "",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        panel.res_editor.as_mut().unwrap().notes = "agora sim".into();
+        panel.res_error.clear();
+        panel.save_resource(&mut store, None);
+        assert!(panel.res_error.is_empty(), "{}", panel.res_error);
+        let stored = store
+            .list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.uid == room.uid)
+            .unwrap();
+        assert_eq!(stored.notes, "agora sim");
+        assert_eq!(stored.location, "Bloco de lá");
+    }
+
     #[test]
     fn a_return_task_that_cannot_be_linked_is_taken_back_and_never_duplicated() {
         let (_dir, mut store) = seeded_store();

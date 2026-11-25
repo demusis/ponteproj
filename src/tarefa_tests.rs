@@ -47,6 +47,7 @@ fn get(store: &Store, id: i64) -> Task {
 /// with the same task and a document.
 struct Pair {
     _dir: tempfile::TempDir,
+    drive: std::path::PathBuf,
     a: Store,
     b: Store,
     task: i64,
@@ -81,6 +82,7 @@ fn pair() -> Pair {
     assert_eq!(task_version(&a, task), task_version(&b, task));
     Pair {
         _dir: dir,
+        drive,
         a,
         b,
         task,
@@ -498,4 +500,438 @@ fn the_main_computer_leaves_merged_saves_at_the_senders_version() {
         .save_task_checked(&t, Some(base))
         .expect("no other edit happened");
     server.stop();
+}
+
+// ------------------------------------------ review 3 of the fixes --
+
+/// A form open on A saves `n` times; B saves the same task `n` times (a
+/// deadline, then notes) and exchanges; A exchanges (its change becomes a
+/// card and A takes B's task, on the same version number the form holds).
+fn same_count_collision(n: usize) -> (Pair, TaskPanel, i64) {
+    let mut p = pair();
+    let id = p.task;
+    let mut panel = TaskPanel::default();
+    assert!(panel.open_task(&get(&p.a, id), &p.a));
+    for i in 0..n {
+        panel.set_draft_title(&format!("titulo de A {i}"));
+        panel.save_draft(&mut p.a).unwrap();
+    }
+    let mut base = task_version(&p.b, id);
+    for i in 0..n {
+        let mut t = get(&p.b, id);
+        if i == 0 {
+            t.due_date = "2026-12-01".into();
+        } else {
+            t.notes = format!("nota de B {i}");
+        }
+        p.b.save_task_checked(&t, Some(base)).unwrap();
+        base = task_version(&p.b, id);
+    }
+    sync(&mut p.b);
+    sync(&mut p.a);
+    assert_eq!(get(&p.a, id).due_date, "2026-12-01", "A took B's task");
+    (p, panel, id)
+}
+
+fn assert_collision_refused(n: usize) {
+    let (mut p, mut panel, id) = same_count_collision(n);
+    panel.set_draft_title("titulo de A final");
+    let saved = panel.save_draft(&mut p.a);
+    assert!(
+        saved.is_err(),
+        "{n}x{n}: the other computer's edit must not be overwritten: {saved:?}"
+    );
+    assert!(panel.edit_conflict().is_some(), "the conflict path");
+    assert!(panel.dirty(), "the typing stays");
+    let now = get(&p.a, id);
+    assert_eq!(now.due_date, "2026-12-01", "nothing written");
+    if n > 1 {
+        assert_eq!(now.notes, format!("nota de B {}", n - 1));
+    }
+    // "Juntar as duas versões" keeps both, and the save goes through.
+    assert!(panel.merge_conflict());
+    panel
+        .save_draft(&mut p.a)
+        .expect("joined, on the current version");
+    let now = get(&p.a, id);
+    assert_eq!(now.title, "titulo de A final");
+    assert_eq!(now.due_date, "2026-12-01");
+}
+
+/// Review 3, finding 1: one save on each computer, the same version
+/// number with different contents. The form takes the conflict path.
+#[test]
+fn rev3_one_save_on_each_side_takes_the_conflict_path() {
+    assert_collision_refused(1);
+}
+
+/// Review 3, finding 1: two saves on each computer (the case the `leaves`
+/// fix opened). The form takes the conflict path.
+#[test]
+fn rev3_two_saves_on_each_side_take_the_conflict_path() {
+    assert_collision_refused(2);
+}
+
+/// Review 3, finding 1, guard: only the version moved (twice), nothing of
+/// the task changed: the form saves on the first try.
+#[test]
+fn rev3_only_the_version_moved_still_saves_at_once() {
+    let mut p = pair();
+    let id = p.task;
+    let mut panel = TaskPanel::default();
+    assert!(panel.open_task(&get(&p.a, id), &p.a));
+    panel.set_draft_title("revisado");
+    bump_without_change(&mut p.a, id);
+    bump_without_change(&mut p.a, id);
+    panel
+        .save_draft(&mut p.a)
+        .expect("nothing changed but the version");
+    assert_eq!(get(&p.a, id).title, "revisado");
+    assert!(!panel.dirty());
+}
+
+/// Review 3, finding 2: a project created and edited twice before the
+/// first exchange keeps the version its form holds, and saves again.
+#[test]
+fn rev3_a_project_created_and_edited_before_the_first_exchange() {
+    let mut p = pair();
+    let project =
+        p.a.save_project(&crate::projects::Project::new("Projeto X"))
+            .unwrap();
+    let mut held = p.a.project_version(&project.uid).unwrap();
+    let mut edited = p.a.get_project(&project.uid).unwrap().unwrap();
+    for objective in ["um", "dois"] {
+        edited.objective = objective.into();
+        edited = p.a.save_project_checked(&edited, Some(held)).unwrap();
+        held = p.a.project_version(&project.uid).unwrap();
+    }
+    assert_eq!(p.a.list_offline_outbox().unwrap().len(), 1, "merged");
+    sync(&mut p.a);
+    assert_eq!(p.a.project_version(&project.uid).unwrap(), held);
+    edited.objective = "três".into();
+    p.a.save_project_checked(&edited, Some(held))
+        .expect("no other edit of the project happened");
+    sync(&mut p.a);
+    sync(&mut p.b);
+    assert_eq!(
+        p.b.project_version(&project.uid).unwrap(),
+        p.a.project_version(&project.uid).unwrap()
+    );
+}
+
+/// Review 3, finding 2: the same for a category.
+#[test]
+fn rev3_a_category_created_and_edited_before_the_first_exchange() {
+    let mut p = pair();
+    let made =
+        p.a.save_category(&crate::categories::Category::new("Urgente", 1))
+            .unwrap();
+    let mut held = p.a.category_version(&made.uid).unwrap();
+    let mut edited = made.clone();
+    for color in [2u8, 3] {
+        edited.color = color;
+        edited = p.a.save_category_checked(&edited, Some(held)).unwrap();
+        held = p.a.category_version(&made.uid).unwrap();
+    }
+    sync(&mut p.a);
+    assert_eq!(p.a.category_version(&made.uid).unwrap(), held);
+    edited.color = 4;
+    p.a.save_category_checked(&edited, Some(held))
+        .expect("no other edit of the category happened");
+}
+
+fn resource(name: &str) -> crate::resources::Resource {
+    crate::resources::Resource {
+        name: name.into(),
+        ..Default::default()
+    }
+}
+
+/// Review 3, finding 2: the same for a resource and for a use of it.
+#[test]
+fn rev3_resources_created_and_edited_before_the_first_exchange() {
+    let mut p = pair();
+    let uid = p.a.save_resource(&resource("Sala 1"), None).unwrap();
+    let mut held = p.a.resource_version(&uid).unwrap();
+    let get_res = |s: &Store| {
+        s.list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.uid == uid)
+            .unwrap()
+    };
+    for notes in ["um", "dois"] {
+        let mut r = get_res(&p.a);
+        r.notes = notes.into();
+        p.a.save_resource(&r, Some(held)).unwrap();
+        held = p.a.resource_version(&uid).unwrap();
+    }
+    let mut item = crate::resources::ResourceUse {
+        resource_uid: uid.clone(),
+        who: "Servidor C".into(),
+        start: "2031-02-10T09:00".into(),
+        end: "2031-02-10T11:00".into(),
+        ..Default::default()
+    };
+    let use_uid = p.a.save_resource_use(&item, None).unwrap();
+    let mut use_held = p.a.resource_use_version(&use_uid).unwrap();
+    item.uid = use_uid.clone();
+    for purpose in ["um", "dois"] {
+        item.purpose = purpose.into();
+        p.a.save_resource_use(&item, Some(use_held)).unwrap();
+        use_held = p.a.resource_use_version(&use_uid).unwrap();
+    }
+    sync(&mut p.a);
+    assert_eq!(p.a.resource_version(&uid).unwrap(), held);
+    assert_eq!(p.a.resource_use_version(&use_uid).unwrap(), use_held);
+    let mut r = get_res(&p.a);
+    r.notes = "três".into();
+    p.a.save_resource(&r, Some(held))
+        .expect("no other edit of the resource happened");
+    item.purpose = "três".into();
+    p.a.save_resource_use(&item, Some(use_held))
+        .expect("no other edit of the use happened");
+}
+
+/// Review 3, missing tests: `leaves` for the context of a document and
+/// for an atendimento (two saves, an exchange, a third save).
+#[test]
+fn rev3_context_and_atendimento_keep_their_version() {
+    let mut p = pair();
+    let doc = p.document;
+    let mut base = p.a.item_version("work_context", doc).unwrap().version;
+    for notes in ["um", "dois"] {
+        let mut ctx = p.a.load_work_context(doc).unwrap();
+        ctx.notes = notes.into();
+        p.a.save_work_context_checked(doc, &ctx, Some(base))
+            .unwrap();
+        base = p.a.item_version("work_context", doc).unwrap().version;
+    }
+    let mut att = crate::saiop::SaiopAttendance::new_manual();
+    att.reference_raw = "ORG-OFI-2026/00042".into();
+    att.due_kind = "oficial".into();
+    att.due_date = "2026-12-01".into();
+    let att_id = p.a.save_saiop_attendance(&att, None).unwrap();
+    sync(&mut p.a);
+    let mut abase = p.a.item_version("saiop", att_id).unwrap().version;
+    let find = |s: &Store| {
+        s.list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == att_id)
+            .unwrap()
+    };
+    for subject in ["um", "dois"] {
+        let mut a = find(&p.a);
+        a.subject = subject.into();
+        p.a.save_saiop_attendance(&a, Some(abase)).unwrap();
+        abase = p.a.item_version("saiop", att_id).unwrap().version;
+    }
+    sync(&mut p.a);
+    assert_eq!(p.a.item_version("work_context", doc).unwrap().version, base);
+    assert_eq!(p.a.item_version("saiop", att_id).unwrap().version, abase);
+    let mut ctx = p.a.load_work_context(doc).unwrap();
+    ctx.notes = "três".into();
+    p.a.save_work_context_checked(doc, &ctx, Some(base))
+        .expect("no other edit of the context happened");
+    let mut a = find(&p.a);
+    a.subject = "três".into();
+    p.a.save_saiop_attendance(&a, Some(abase))
+        .expect("no other edit of the atendimento happened");
+}
+
+/// Review 3, missing tests: `leaves` through another copy's journal. B
+/// saves the task twice through a pen drive only; A exchanges through both
+/// files and replays B's change from the pen drive's journal into the
+/// Drive. Every copy leaves the task at B's version, and B saves again.
+#[test]
+fn rev3_leaves_through_another_copys_journal() {
+    let mut p = pair();
+    let id = p.task;
+    let pen = p
+        .drive
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("Pendrive")
+        .join("ponte-sync.ponte");
+    std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
+    let only = |store: &mut Store, files: &[&std::path::Path]| {
+        let mut cfg = store.load_intranet_config().unwrap();
+        cfg.folder_files = files.iter().map(|f| f.display().to_string()).collect();
+        store.save_intranet_config(&cfg).unwrap();
+        sync(store)
+    };
+    let drive = p.drive.clone();
+    only(&mut p.b, &[&drive, &pen]);
+    only(&mut p.a, &[&drive, &pen]);
+    let held = save_twice(&mut p.b, id);
+    only(&mut p.b, &[&pen]);
+    assert_eq!(task_version(&p.b, id), held);
+    only(&mut p.a, &[&drive, &pen]);
+    assert_eq!(get(&p.a, id).notes, "segunda");
+    assert_eq!(task_version(&p.a, id), held, "A has B's version");
+    only(&mut p.b, &[&drive, &pen]);
+    assert_eq!(task_version(&p.b, id), held, "B's version never goes back");
+    let mut t = get(&p.b, id);
+    t.notes = "terceira".into();
+    p.b.save_task_checked(&t, Some(held))
+        .expect("no other edit happened");
+}
+
+/// Review 3, missing tests: `leaves` through the replay of an old copy
+/// (format 8): a task it created and then edited twice (one change that
+/// leaves it at version 3) is left at version 3 here too.
+#[test]
+fn rev3_leaves_through_the_old_copy_replay() {
+    use crate::intranet::IntranetMutation;
+    use crate::sharedfolder;
+    let mut p = pair();
+    let nine = sharedfolder::nine_path(&p.drive);
+    let copy = match sharedfolder::read_any(&nine, KEY).unwrap() {
+        Some(sharedfolder::Found::Copy(copy)) => copy,
+        _ => panic!("no 9"),
+    };
+    let mut payload = copy.payload;
+    payload.snapshot.idents.clear();
+    payload.snapshot.ident_epoch.clear();
+    for e in payload.journal.iter_mut() {
+        e.idents.clear();
+    }
+    let entry = |uid: &str,
+                 mutation: IntranetMutation,
+                 created: Vec<crate::idmap::CreatedId>,
+                 leaves: Option<i64>| sharedfolder::JournalEntry {
+        uid: uid.into(),
+        created_at: "2026-11-20T12:00:00Z".into(),
+        actor: OWNER.into(),
+        writer: "aparelho-antigo".into(),
+        label: "Tarefa".into(),
+        mutation,
+        base: None,
+        revision: 1000,
+        created,
+        idents: Vec::new(),
+        refs: None,
+        legacy: false,
+        leaves,
+    };
+    let mut task = Task::blank(None);
+    task.title = "Tarefa da cópia antiga".into();
+    let mut edited = task.clone();
+    edited.id = 4501;
+    edited.notes = "editada duas vezes".into();
+    let made = entry(
+        "antiga-cria",
+        IntranetMutation::SaveTask {
+            task,
+            expected_version: None,
+            no_project: false,
+        },
+        vec![crate::idmap::CreatedId::new(
+            crate::idmap::IdKind::Task,
+            "",
+            4501,
+        )],
+        None,
+    );
+    let edit = entry(
+        "antiga-edita",
+        IntranetMutation::SaveTask {
+            task: edited,
+            expected_version: Some(1),
+            no_project: false,
+        },
+        Vec::new(),
+        Some(3),
+    );
+    for e in [&made, &edit] {
+        payload.applied.push(e.uid.clone());
+    }
+    payload.journal.extend([made, edit]);
+    sharedfolder::write(
+        &p.drive,
+        KEY,
+        &sharedfolder::WriteRequest {
+            lineage: &copy.header.lineage,
+            revision: copy.header.revision + 1,
+            writer: "aparelho-antigo",
+            writer_name: "Aparelho antigo",
+            schema_version: 21,
+        },
+        &payload,
+        &copy.blobs,
+    )
+    .unwrap();
+    sync(&mut p.a);
+    let replayed =
+        p.a.list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Tarefa da cópia antiga")
+            .expect("replayed");
+    assert_eq!(replayed.notes, "editada duas vezes");
+    assert_eq!(task_version(&p.a, replayed.id), 3);
+}
+
+/// Review 3, finding 3: a `leaves` that is not sound (not past the step,
+/// negative, too far ahead, at the edge of the number) is ignored: the
+/// replay takes its own step. A sound one is kept.
+#[test]
+fn rev3_an_unsound_leaves_is_ignored() {
+    use crate::intranet::{replaying_to, IntranetMutation};
+    let mut p = pair();
+    let id = p.task;
+    // (leaves as an offset from the version, or an absolute value; the
+    // version the save must leave, as an offset)
+    let cases: [(Result<i64, i64>, i64); 7] = [
+        (Err(i64::MAX), 1),
+        (Err(i64::MIN), 1),
+        (Err(-3), 1),
+        (Err(0), 1),
+        (Ok(1), 1),
+        (Ok(2_000_000), 1),
+        (Ok(3), 3),
+    ];
+    for (leaves, ahead) in cases {
+        let v = task_version(&p.a, id);
+        let leaves = match leaves {
+            Ok(offset) => v + offset,
+            Err(absolute) => absolute,
+        };
+        let mut t = get(&p.a, id);
+        t.notes = format!("{leaves}");
+        let mutation = IntranetMutation::SaveTask {
+            task: t.clone(),
+            expected_version: Some(v),
+            no_project: false,
+        };
+        replaying_to(&mutation, Some(leaves), || {
+            p.a.save_task_checked(&t, Some(v)).unwrap();
+        });
+        assert_eq!(task_version(&p.a, id), v + ahead, "leaves {leaves}");
+    }
+}
+
+/// Review 3, finding 3: a version at the edge of the number is refused
+/// with a sentence, never an overflow.
+#[test]
+fn rev3_the_next_save_never_overflows() {
+    let mut p = pair();
+    let id = p.task;
+    p.a.conn
+        .execute(
+            "UPDATE item_versions SET version=?1 WHERE kind='task' AND item_id=?2",
+            rusqlite::params![i64::MAX, id],
+        )
+        .unwrap();
+    let t = get(&p.a, id);
+    let saved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        p.a.save_task_checked(&t, Some(i64::MAX))
+    }));
+    match saved {
+        Ok(result) => assert!(result.is_err(), "refused"),
+        Err(_) => panic!("the next save overflowed"),
+    }
 }

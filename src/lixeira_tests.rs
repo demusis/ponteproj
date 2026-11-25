@@ -685,3 +685,43 @@ fn lixeira_a_purge_of_an_item_out_of_the_lixeira_is_refused_and_not_queued() {
     );
     assert!(doc(&b, Y).is_some(), "Y untouched");
 }
+
+/// Review 3, finding 4: on a team client out of reach of the main
+/// computer, "Apagar de vez" of an item already gone from this Lixeira (a
+/// second click on a screen not refreshed yet, or an item that was never
+/// in it) is refused here: nothing is queued and no card is left.
+#[test]
+fn lixeira_team_client_purge_of_an_item_gone_here_is_refused_and_not_queued() {
+    let mut t = crate::f3a2_tests::Team::new();
+    t.client.sync_from_host(false).unwrap();
+    let x_host = t.host.list_documents("").unwrap()[0].id;
+    t.host.trash_item(target(x_host)).unwrap();
+    t.client.sync_from_host(false).unwrap();
+    let x_client = t.client.trash_entries().unwrap()[0].target.id;
+    t.offline();
+    t.client.purge_trash_item(target(x_client)).unwrap();
+    assert_eq!(t.client.list_offline_outbox().unwrap().len(), 1, "queued");
+    let again = t.client.purge_trash_item(target(x_client));
+    assert_eq!(
+        again.map_err(|e| e.to_string()).unwrap_err(),
+        "O item não está na lixeira."
+    );
+    let never = t.client.purge_trash_item(target(987_654));
+    assert!(never.is_err(), "an item never in the Lixeira");
+    assert_eq!(
+        t.client.list_offline_outbox().unwrap().len(),
+        1,
+        "nothing more queued"
+    );
+    t.online();
+    t.client.sync_from_host(false).unwrap();
+    assert!(
+        cards(&t.client).is_empty(),
+        "no card: {:?}",
+        cards(&t.client)
+            .iter()
+            .map(|c| &c.reason)
+            .collect::<Vec<_>>()
+    );
+    assert!(t.host.trash_entries().unwrap().is_empty(), "purged once");
+}
