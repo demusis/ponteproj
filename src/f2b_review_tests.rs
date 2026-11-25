@@ -112,6 +112,7 @@ fn entry(
         idents: Vec::new(),
         refs: None,
         legacy: false,
+        leaves: None,
     }
 }
 
@@ -574,6 +575,7 @@ fn f2b_r08_a_main_computer_still_at_21_changes_nothing() {
             mutation_uid: "uid-de-teste-123456".into(),
             idents: Vec::new(),
             refs: None,
+            leaves: None,
         }),
     };
     let answer = crate::intranet::process_rpc(&mut host, &cfg, mutate);

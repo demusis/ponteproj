@@ -479,7 +479,7 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 
 - **Concluir** e reabrir ficam na própria lista, no círculo à esquerda da tarefa. Concluir uma tarefa não registra nada no SIGADOC. Logo após concluir, o aviso do canto inferior direito traz **Desfazer**, por alguns segundos, que reabre a tarefa.
 - **Sem sair da tarefa:** na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só para leitura. **Ir para o documento** abre a ficha completa, com **Voltar à tarefa** no alto.
-- **Alterações não salvas:** com uma tarefa em edição e alterações não salvas, ao clicar em outro lugar o Ponte pergunta: **Salvar e continuar**, **Descartar alterações** ou **Voltar à tarefa**.
+- **Alterações não salvas:** com uma tarefa em edição e alterações não salvas, ao clicar em outro lugar o Ponte pergunta: **Salvar e continuar**, **Descartar alterações** ou **Voltar à tarefa**. Se a tarefa foi alterada em outro lugar depois que você a abriu (outro computador, o celular ou outra tela, mesmo com o seu nome), nada é gravado por cima: a pergunta diz o que mudou lá e oferece **Juntar e revisar** (a ficha traz o que mudou lá nos campos que você não mexeu e mantém o que você digitou; o que mudou nos dois lados é nomeado) ou **Descartar as minhas** (fica a versão de lá). A ficha oferece o mesmo: **Juntar as duas versões** ou **Ficar com a versão de lá**.
 - **Juntados seguem o principal:** concluir a última tarefa aberta de um documento principal conclui também as tarefas abertas dos documentos juntados a ele, cada uma com a anotação *"Concluída automaticamente: o documento principal X foi concluído"*. A mensagem lista o que foi concluído. Reabrir o principal não reabre as peças.
 
 ### 6.4 Dependências entre tarefas
@@ -1246,7 +1246,7 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | Sintoma | O que fazer |
 |---|---|
 | Colega não consegue conectar ao principal | O principal precisa estar com o Ponte aberto e *disponível*; os dois na mesma rede; porta 7878 liberada no firewall do principal; código de conexão atual (gerar nova chave invalida os códigos antigos). |
-| *"Conflito de edição simultânea"* ao salvar | Outra pessoa salvou o mesmo item antes de você. Copie o que escreveu, descarte, abra o item de novo e aplique sua alteração. |
+| *"Conflito de edição simultânea"* ao salvar | O item foi salvo em outro lugar depois que você o abriu: por outra pessoa ou, quando a mensagem diz "com o seu nome", por você mesmo em outro computador, no celular ou em outra tela. Na tarefa, use **Juntar as duas versões** ou **Ficar com a versão de lá**; nos outros itens, copie o que escreveu, descarte, abra o item de novo e aplique sua alteração. |
 | *"Senha de sincronização incorreta"* | A senha não é a usada para criar o arquivo da pasta. Sem ela o arquivo não abre. |
 | *"A pasta ainda não recebeu a versão mais recente"* | Espere o Google Drive ou o OneDrive terminar de sincronizar e tente de novo. |
 | `● pasta fora de alcance` | A pasta não está acessível (nuvem parada, pendrive ausente). O Ponte segue com o acervo local e envia depois. |

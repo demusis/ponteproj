@@ -604,6 +604,10 @@ impl PonteApp {
             let mut save = false;
             let mut discard = false;
             let mut stay = false;
+            let mut merge = false;
+            // The task changed elsewhere after the form read it: saving waits
+            // for the person's choice (nothing of either side is lost).
+            let conflict = self.tasks.edit_conflict().is_some();
             egui::Window::new("Tarefa com alterações não salvas")
                 .collapsible(false)
                 .resizable(false)
@@ -612,19 +616,33 @@ impl PonteApp {
                 .show(ctx, |ui| {
                     ui.label(format!("A tarefa “{title}” tem alterações não salvas."));
                     ui.small("Salvar e continuar grava a tarefa e vai para onde você clicou. Descartar alterações volta ao que estava salvo (tarefa nova é apagada). Voltar à tarefa deixa tudo como está.");
-                    if let Some(error) = &self.leave_error {
+                    if conflict {
+                        ui.add_space(4.0);
+                        ui.colored_label(crate::theme::error(), self.tasks.conflict_text());
+                        ui.small("Juntar e revisar leva à ficha com as duas versões juntas, para você conferir e salvar. Descartar as minhas fica com a versão de lá e vai para onde você clicou.");
+                    } else if let Some(error) = &self.leave_error {
                         ui.add_space(4.0);
                         ui.colored_label(crate::theme::error(), error);
                         ui.small("Corrija na ficha da tarefa (Voltar à tarefa) ou descarte as alterações.");
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        save = ui.button("Salvar e continuar").clicked();
-                        discard = ui.button("Descartar alterações").clicked();
+                        if conflict {
+                            merge = ui.button("Juntar e revisar").clicked();
+                            discard = ui.button("Descartar as minhas").clicked();
+                        } else {
+                            save = ui.button("Salvar e continuar").clicked();
+                            discard = ui.button("Descartar alterações").clicked();
+                        }
                         stay = ui.button("Voltar à tarefa").clicked();
                     });
                 });
             if stay {
+                self.cancel_pending_leave();
+            }
+            if merge {
+                // Back to the form, with both versions in it, to review.
+                self.tasks.merge_conflict();
                 self.cancel_pending_leave();
             }
             if save {

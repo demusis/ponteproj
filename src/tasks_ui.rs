@@ -1806,6 +1806,9 @@ pub struct TaskPanel {
     /// position, step), for "Desfazer remoção".
     removed_step: Option<(i64, usize, (bool, String))>,
     base_version: Option<i64>,
+    /// The open task was changed elsewhere after the form read it: the
+    /// version there now, until the person chooses what to keep.
+    conflict: Option<EditConflict>,
     show_done: bool,
     query: String,
     message: String,
@@ -1890,6 +1893,126 @@ fn is_untouched_blank(task: &Task) -> bool {
         }
 }
 
+/// The task as it is saved now, when it changed after the form read it.
+#[derive(Clone, Debug)]
+pub struct EditConflict {
+    /// The task as saved now.
+    pub current: Task,
+    /// Its version now (the one a save must expect).
+    pub version: i64,
+    /// What was changed there (names of the fields of the form).
+    pub changed_there: Vec<&'static str>,
+    /// Who saved it and when, as the conflict sentence says it.
+    pub by: String,
+}
+
+/// A save refused because the record has another version now.
+fn is_edit_conflict(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains("Conflito de edição simultânea")
+}
+
+/// The name of a field of the task, as the form calls it.
+fn field_label(key: &str) -> &'static str {
+    match key {
+        "title" => "Título",
+        "action" => "Ação",
+        "status" => "Situação",
+        "priority" => "Prioridade",
+        "due_date" => "Prazo",
+        "due_source" => "Origem do prazo",
+        "scheduled_start" | "scheduled_end" => "Planejamento",
+        "estimate_minutes" => "Estimativa",
+        "reminder_offsets_minutes" => "Avisos",
+        "reminder_date" => "Lembrete",
+        "parent_task_id" => "Tarefa pai",
+        "notes" => "Observações",
+        "completed_at" => "Conclusão",
+        "dependencies" => "Dependências",
+        "checklist" => "Checklist",
+        "outcome" => "Resultado",
+        "assignee" => "Responsável",
+        "categories" => "Categorias",
+        "project_uid" => "Projeto",
+        "document_id" => "Documento",
+        _ => "outros dados",
+    }
+}
+
+fn fields_of(task: &Task) -> serde_json::Map<String, serde_json::Value> {
+    match serde_json::to_value(task) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// Adds `label` to `list` once.
+fn push_label(list: &mut Vec<&'static str>, label: &'static str) {
+    if !list.contains(&label) {
+        list.push(label);
+    }
+}
+
+/// The fields in which `b` differs from `a`.
+fn changed_fields(a: &Task, b: &Task) -> Vec<&'static str> {
+    let (a, b) = (fields_of(a), fields_of(b));
+    let mut out = Vec::new();
+    for key in a.keys().chain(b.keys()) {
+        if a.get(key) != b.get(key) {
+            push_label(&mut out, field_label(key));
+        }
+    }
+    out
+}
+
+/// The three-way merge of the form: from `base` (what the form read),
+/// every field the person did not change takes the value saved there now;
+/// a field the person changed keeps the person's value. Gives the merged
+/// task and the fields both sides changed to different values (there the
+/// person's value was kept and the other one must be shown). `None` when
+/// the merged task cannot be read back (it is then not offered).
+fn merge_three(base: &Task, theirs: &Task, mine: &Task) -> Option<(Task, Vec<&'static str>)> {
+    let (b, t, m) = (fields_of(base), fields_of(theirs), fields_of(mine));
+    let mut merged = serde_json::Map::new();
+    let mut both = Vec::new();
+    let keys: BTreeSet<&String> = b.keys().chain(t.keys()).chain(m.keys()).collect();
+    for key in keys {
+        let (bv, tv, mv) = (b.get(key), t.get(key), m.get(key));
+        let chosen = if mv == bv {
+            tv
+        } else {
+            if tv != bv && tv != mv {
+                push_label(&mut both, field_label(key));
+            }
+            mv
+        };
+        if let Some(value) = chosen {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    let task: Task = serde_json::from_value(serde_json::Value::Object(merged)).ok()?;
+    Some((task, both))
+}
+
+/// Who saved the version found and when, said so that it makes sense when
+/// it is the person's own name (the same on every computer and on the
+/// phone): then it was another computer, the phone or another screen.
+fn saved_by(meta: &crate::intranet::VersionMeta, me: &str) -> String {
+    let when = crate::labels::datetime(&meta.updated_at);
+    let name = meta.updated_by.trim();
+    let who = if name.is_empty() {
+        "por outra pessoa".to_owned()
+    } else if name.eq_ignore_ascii_case(me.trim()) {
+        format!("com o seu nome ({name}) em outro computador, no celular ou em outra tela")
+    } else {
+        format!("por {name}")
+    };
+    if when.trim().is_empty() {
+        who
+    } else {
+        format!("{who}, em {when}")
+    }
+}
+
 impl TaskPanel {
     /// The person asked to manage the categories (Ajustes, Categorias).
     pub fn take_open_categories(&mut self) -> bool {
@@ -1932,24 +2055,45 @@ impl TaskPanel {
     }
     /// Saves the task being edited. On failure the reason is returned and
     /// also shown in the panel; the edit stays as it was.
+    ///
+    /// A save refused because the task has another version now ("Conflito
+    /// de edição simultânea") is looked at: when the task saved now is
+    /// exactly what the form read, only its version moved (nothing of anyone
+    /// would be lost) and the save goes through on the current version.
+    /// Otherwise the task really changed elsewhere: nothing is written, the
+    /// person's typing stays in the form, and the version found is kept in
+    /// [`Self::edit_conflict`] for the person to join it with theirs
+    /// ([`Self::merge_conflict`]) or to keep it ([`Self::take_theirs`]).
     pub fn save_draft(&mut self, store: &mut Store) -> Result<(), String> {
-        let Some(task) = &self.draft else {
+        let Some(task) = self.draft.clone() else {
             return Ok(());
         };
-        // Taking the task off its project in the form is a removal made on
-        // purpose: it must travel even if the stored copy meanwhile lost the link.
-        let took_project_off = task.project_uid.is_empty()
-            && self
-                .original
-                .as_ref()
-                .is_some_and(|o| !o.project_uid.is_empty());
-        let saved = if took_project_off {
-            store.save_task_clearing_project(task, self.base_version)
-        } else {
-            store.save_task_checked(task, self.base_version)
-        };
+        if self.conflict.is_some() {
+            // The base is not what is saved now: saving on it again could
+            // only fail, or win over the other version unseen.
+            let text = self.conflict_text();
+            self.notice(text.clone(), true);
+            return Err(text);
+        }
+        let mut saved = self.save_on(store, &task, self.base_version);
+        if let Err(error) = &saved {
+            if is_edit_conflict(error) && task.id > 0 {
+                match self.look_at_conflict(store, task.id) {
+                    // Only the version moved: saved on the current one.
+                    Some(Ok(version)) => saved = self.save_on(store, &task, Some(version)),
+                    Some(Err(conflict)) => {
+                        self.conflict = Some(conflict);
+                        let text = self.conflict_text();
+                        self.notice(text.clone(), true);
+                        return Err(text);
+                    }
+                    None => {}
+                }
+            }
+        }
         match saved {
             Ok(id) => {
+                self.conflict = None;
                 self.removed_step = None;
                 self.draft = store
                     .list_tasks()
@@ -1974,14 +2118,153 @@ impl TaskPanel {
             }
         }
     }
+
+    fn save_on(
+        &self,
+        store: &mut Store,
+        task: &Task,
+        expected: Option<i64>,
+    ) -> anyhow::Result<i64> {
+        // Taking the task off its project in the form is a removal made on
+        // purpose: it must travel even if the stored copy meanwhile lost the link.
+        let took_project_off = task.project_uid.is_empty()
+            && self
+                .original
+                .as_ref()
+                .is_some_and(|o| !o.project_uid.is_empty());
+        if took_project_off {
+            store.save_task_clearing_project(task, expected)
+        } else {
+            store.save_task_checked(task, expected)
+        }
+    }
+
+    /// After a save refused as a simultaneous edit: `Ok(version)` when the
+    /// task saved now is the one the form read (only the version moved),
+    /// `Err` with what changed there otherwise; `None` when the task can no
+    /// longer be read (deleted, say): the refusal is then said as it came.
+    fn look_at_conflict(&self, store: &Store, id: i64) -> Option<Result<i64, EditConflict>> {
+        let current = store.list_tasks().ok()?.into_iter().find(|t| t.id == id)?;
+        let meta = store.item_version("task", id).ok()?;
+        if self.original.as_ref() == Some(&current) {
+            return Some(Ok(meta.version));
+        }
+        let changed_there = self
+            .original
+            .as_ref()
+            .map(|o| changed_fields(o, &current))
+            .unwrap_or_default();
+        Some(Err(EditConflict {
+            current,
+            version: meta.version,
+            changed_there,
+            by: saved_by(&meta, &store.active_actor()),
+        }))
+    }
+
+    /// The line the panel shows (tests only).
+    #[cfg(test)]
+    pub(crate) fn message_for_test(&self) -> &str {
+        &self.message
+    }
+
+    /// The task changed elsewhere while the form had it open.
+    pub fn edit_conflict(&self) -> Option<&EditConflict> {
+        self.conflict.as_ref()
+    }
+
+    /// The sentence that says the conflict and the ways out.
+    pub fn conflict_text(&self) -> String {
+        let Some(conflict) = &self.conflict else {
+            return String::new();
+        };
+        let what = if conflict.changed_there.is_empty() {
+            String::new()
+        } else {
+            format!(" Mudou lá: {}.", conflict.changed_there.join(", "))
+        };
+        format!(
+            "Esta tarefa foi alterada {} depois que você a abriu (versão #{}).{what} Nada foi gravado e o que você digitou continua na ficha. Use “Juntar as duas versões” para trazer o que mudou lá e revisar antes de salvar, ou “Ficar com a versão de lá” para descartar as suas alterações.",
+            conflict.by, conflict.version
+        )
+    }
+
+    /// "Juntar as duas versões": the form takes what changed there in the
+    /// fields the person did not touch and keeps the person's value in the
+    /// others; it now stands on the current version and stays unsaved, so
+    /// the person reviews it before saving. A field both sides changed is
+    /// named, with the value it had there.
+    pub fn merge_conflict(&mut self) -> bool {
+        let Some(conflict) = self.conflict.clone() else {
+            return false;
+        };
+        let (Some(base), Some(mine)) = (self.original.clone(), self.draft.clone()) else {
+            return false;
+        };
+        let Some((merged, both)) = merge_three(&base, &conflict.current, &mine) else {
+            self.notice(
+                "Não foi possível juntar as duas versões. Use “Ficar com a versão de lá” e digite de novo o que mudou.",
+                true,
+            );
+            return false;
+        };
+        self.draft = Some(merged);
+        self.original = Some(conflict.current.clone());
+        self.base_version = Some(conflict.version);
+        self.conflict = None;
+        let mut text =
+            "As alterações de lá foram trazidas para a ficha, junto com as suas. Revise e salve."
+                .to_owned();
+        if !both.is_empty() {
+            let theirs = fields_of(&conflict.current);
+            let mut shown = Vec::new();
+            for label in &both {
+                let values: Vec<String> = theirs
+                    .iter()
+                    .filter(|(key, _)| field_label(key) == *label)
+                    .map(|(_, value)| match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect();
+                shown.push(format!("{label} (lá estava “{}”)", values.join(" – ")));
+            }
+            text.push_str(&format!(
+                " Mudou nos dois lados e ficou o seu: {}.",
+                shown.join("; ")
+            ));
+        }
+        self.notice(text, false);
+        true
+    }
+
+    /// "Ficar com a versão de lá": the person's changes are dropped and the
+    /// form shows the task as it is saved now.
+    pub fn take_theirs(&mut self) -> bool {
+        let Some(conflict) = self.conflict.take() else {
+            return false;
+        };
+        self.removed_step = None;
+        self.draft = Some(conflict.current.clone());
+        self.original = Some(conflict.current);
+        self.base_version = Some(conflict.version);
+        self.notice("A ficha mostra a tarefa como está salva agora.", false);
+        true
+    }
+
     /// Drops the unsaved changes: an existing task goes back to what is
-    /// saved, a new one disappears.
+    /// saved, a new one disappears. After a conflict, what is saved is the
+    /// version found there, never the one the form read before it.
     pub fn discard_draft(&mut self) {
+        if self.take_theirs() {
+            return;
+        }
         self.removed_step = None;
         self.draft = self.original.clone();
         self.message.clear();
         if self.draft.is_none() {
             self.base_version = None;
+            self.conflict = None;
             self.attachments.forget();
         }
     }
@@ -2008,6 +2291,7 @@ impl TaskPanel {
             self.draft = None;
             self.original = None;
             self.base_version = None;
+            self.conflict = None;
             self.message.clear();
             self.attachments.forget();
         }
@@ -2100,6 +2384,7 @@ impl TaskPanel {
         self.draft = Some(task);
         self.original = None;
         self.base_version = None;
+        self.conflict = None;
         self.message.clear();
         self.focus_title = true;
         true
@@ -2143,6 +2428,7 @@ impl TaskPanel {
         self.draft = Some(task.clone());
         self.original = Some(task.clone());
         self.base_version = None;
+        self.conflict = None;
         self.focus_title = true;
         true
     }
@@ -2260,6 +2546,7 @@ impl TaskPanel {
         self.original = Some(task.clone());
         self.draft = Some(task.clone());
         self.base_version = store.item_version("task", task.id).ok().map(|v| v.version);
+        self.conflict = None;
         self.message.clear();
         self.focus_title = true;
         true
@@ -2277,6 +2564,7 @@ impl TaskPanel {
             self.draft = None;
             self.original = None;
             self.base_version = None;
+            self.conflict = None;
             self.message.clear();
         }
     }
@@ -2320,6 +2608,7 @@ impl TaskPanel {
         self.draft = Some(task);
         self.original = None;
         self.base_version = None;
+        self.conflict = None;
         self.focus_title = true;
         self.notice(
             "Revise e salve para criar a tarefa. Nada foi enviado ao SIGADOC.",
@@ -3821,6 +4110,7 @@ impl TaskPanel {
         self.draft = None;
         self.original = None;
         self.base_version = None;
+        self.conflict = None;
         self.message.clear();
         self.attachments.forget();
     }
@@ -3849,6 +4139,9 @@ impl TaskPanel {
         let mut conclude = false;
         let mut delete = false;
         let mut close = false;
+        let mut merge = false;
+        let mut theirs = false;
+        let conflict_text = self.conflict.is_some().then(|| self.conflict_text());
         let mut open_task: Option<Task> = None;
         // A new task: the document chosen for it (`Some(None)`: none). A saved
         // one: the document it was asked to move to.
@@ -4059,10 +4352,38 @@ impl TaskPanel {
                     top.top() - S3,
                     egui::Stroke::new(1.0, c().outline),
                 );
+                // Changed elsewhere after the form read it: the two ways out,
+                // above Salvar (which waits for the choice).
+                if let Some(text) = &conflict_text {
+                    let (fg, bg) = Tone::Warn.colors();
+                    egui::Frame::new()
+                        .fill(bg)
+                        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                        .inner_margin(egui::Margin::symmetric(S3 as i8, S2 as i8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                            ui.horizontal(|ui| {
+                                merge = ui
+                                    .add(widgets::secondary("Juntar as duas versões"))
+                                    .on_hover_text("Traz o que mudou lá nos campos que você não mexeu e mantém o que você digitou nos outros. A tarefa fica para você revisar e salvar.")
+                                    .clicked();
+                                theirs = ui
+                                    .add(widgets::quiet("Ficar com a versão de lá"))
+                                    .on_hover_text("Descarta as suas alterações e mostra a tarefa como está salva agora.")
+                                    .clicked();
+                            });
+                        });
+                    ui.add_space(S2);
+                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = S2;
                     save = ui
-                        .add_enabled(dirty || task_id == 0, widgets::primary("Salvar"))
+                        .add_enabled(
+                            (dirty || task_id == 0) && conflict_text.is_none(),
+                            widgets::primary("Salvar"),
+                        )
+                        .on_disabled_hover_text("Escolha antes o que fazer com a versão de lá.")
                         .clicked();
                     if task_id > 0 && task_status != "concluida" {
                         conclude = ui
@@ -4642,6 +4963,12 @@ impl TaskPanel {
                 kind: crate::trash::Kind::Task,
                 id: task_id,
             });
+        }
+        if merge {
+            self.merge_conflict();
+        }
+        if theirs {
+            self.take_theirs();
         }
         if save {
             // The panel already shows the reason when saving fails.
