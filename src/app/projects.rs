@@ -1159,25 +1159,32 @@ impl ProjectsPanel {
             self.confirm_delete = false;
         }
         if delete {
-            self.confirm_delete = false;
-            match store.delete_project_checked(&project.uid, Some(self.data.version)) {
-                Ok(()) => {
-                    self.open = None;
-                    self.data.stale = true;
-                    *asked = Some(Asked::Changed(Some(match tasks {
-                        0 => format!("Projeto “{}” excluído.", project.name),
-                        1 => format!(
-                            "Projeto “{}” excluído. A tarefa dele continua, sem projeto.",
-                            project.name
-                        ),
-                        n => format!(
-                            "Projeto “{}” excluído. As {n} tarefas dele continuam, sem projeto.",
-                            project.name
-                        ),
-                    })));
-                }
-                Err(error) => self.refused(error.to_string()),
+            self.delete_now(store, project, asked);
+        }
+    }
+
+    /// "Excluir o projeto", confirmed: `project` is the project as this
+    /// screen shows it.
+    fn delete_now(&mut self, store: &mut Store, project: &Project, asked: &mut Option<Asked>) {
+        self.confirm_delete = false;
+        let tasks = self.data.project_tasks.len();
+        match store.delete_project_checked(&project.uid, Some(self.data.version)) {
+            Ok(()) => {
+                self.open = None;
+                self.data.stale = true;
+                *asked = Some(Asked::Changed(Some(match tasks {
+                    0 => format!("Projeto “{}” excluído.", project.name),
+                    1 => format!(
+                        "Projeto “{}” excluído. A tarefa dele continua, sem projeto.",
+                        project.name
+                    ),
+                    n => format!(
+                        "Projeto “{}” excluído. As {n} tarefas dele continuam, sem projeto.",
+                        project.name
+                    ),
+                })));
             }
+            Err(error) => self.refused(error.to_string()),
         }
     }
 
@@ -2416,5 +2423,39 @@ mod tests {
             (now.name.as_str(), now.objective.as_str()),
             ("Projeto Y", "de lá")
         );
+    }
+
+    /// Review 4, finding 3: "Excluir o projeto" in the panel went by the
+    /// number alone. Changed elsewhere on the same number: refused, with a
+    /// sentence that says so; only the version moved: deleted.
+    #[test]
+    fn rev5_deleting_a_project_changed_elsewhere_is_refused() {
+        let (_dir, mut store, project) = project_store();
+        let today = chrono::Local::now().date_naive();
+        let mut panel = ProjectsPanel::default();
+        panel.open_project(&project.uid);
+        panel.reload(&store, today);
+        let held = panel.data.version;
+        let mut there = project.clone();
+        there.objective = "de lá".into();
+        store.save_project_checked(&there, Some(held)).unwrap();
+        set_version(&store, &project.uid, held);
+        let mut asked = None;
+        panel.delete_now(&mut store, &project, &mut asked);
+        assert!(asked.is_none());
+        assert!(store.get_project(&project.uid).unwrap().is_some(), "not deleted");
+        let text = panel.banner.as_ref().map(|b| b.text.clone()).unwrap_or_default();
+        assert!(text.contains("Nada foi apagado"), "{text}");
+
+        // Only the version moved.
+        let shown = store.get_project(&project.uid).unwrap().unwrap();
+        let mut panel = ProjectsPanel::default();
+        panel.open_project(&project.uid);
+        panel.reload(&store, today);
+        store.save_project(&shown).unwrap();
+        let mut asked = None;
+        panel.delete_now(&mut store, &shown, &mut asked);
+        assert!(asked.is_some(), "{:?}", panel.banner.as_ref().map(|b| &b.text));
+        assert!(store.get_project(&project.uid).unwrap().is_none(), "deleted");
     }
 }

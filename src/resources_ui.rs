@@ -3339,20 +3339,7 @@ impl ResourcesPanel {
                 };
                 self.save_resource(store, Some(item));
             }
-            ResourceAction::ConfirmDelete => {
-                self.confirm_delete_res = false;
-                match store.delete_resource(&ed.uid, self.res_version) {
-                    Ok(()) => {
-                        let name = ed.name.trim().to_owned();
-                        self.close_ficha();
-                        self.changed = true;
-                        self.set_notice(format!("Recurso “{name}” apagado."), false);
-                    }
-                    Err(e) => {
-                        self.res_error = error_sentence(&e.to_string(), "apagar o recurso");
-                    }
-                }
-            }
+            ResourceAction::ConfirmDelete => self.delete_resource_now(store, &ed),
             ResourceAction::Reserve => {
                 if let Err(why) = self.new_use(store, Some(&ed.uid), None, None) {
                     self.set_notice(why, true);
@@ -3559,6 +3546,22 @@ impl ResourcesPanel {
             ));
         }
         Ok(Some(meta.version))
+    }
+
+    /// "Apagar" in the ficha of a resource, confirmed.
+    fn delete_resource_now(&mut self, store: &mut Store, ed: &Resource) {
+        self.confirm_delete_res = false;
+        match store.delete_resource(&ed.uid, self.res_version) {
+            Ok(()) => {
+                let name = ed.name.trim().to_owned();
+                self.close_ficha();
+                self.changed = true;
+                self.set_notice(format!("Recurso “{name}” apagado."), false);
+            }
+            Err(e) => {
+                self.res_error = error_sentence(&e.to_string(), "apagar o recurso");
+            }
+        }
     }
 
     /// Writes `replace` (or the ficha's resource) and reloads it as saved.
@@ -4951,5 +4954,184 @@ mod proposal_tests {
         let mut third = ResourcesPanel::default();
         third.new_use_prefilled(&store, draft, check).unwrap();
         assert!(third.time_check.is_some(), "the end is flagged");
+    }
+}
+
+/// Review 4 of the fixes of the real test (0.52.0): "Criar tarefa de
+/// devolução" and the deletes of the fichas compare the record saved now
+/// with what the ficha read, as "Salvar" does. Red at c1320d3.
+#[cfg(test)]
+mod rev5_tests {
+    use super::*;
+
+    fn seeded_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        crate::shots_data::seed(&mut store).unwrap();
+        (dir, store)
+    }
+
+    fn panel_with_a_saved_use(store: &mut Store) -> (ResourcesPanel, Data) {
+        let mut panel = ResourcesPanel::default();
+        panel.new_use(store, None, None, None).unwrap();
+        let room = store
+            .list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.name == "Auditório")
+            .unwrap();
+        {
+            let editor = panel.use_editor.as_mut().unwrap();
+            editor.resource_uid = room.uid.clone();
+            editor.who = "Servidor C".into();
+            editor.start = "2031-02-10T09:00".into();
+            editor.end = "2031-02-10T11:00".into();
+        }
+        panel.form.start_date = "2031-02-10".into();
+        let now = now_moment();
+        assert!(panel.save_use_as(store, &now, None), "{}", panel.use_error);
+        let data = Data {
+            now,
+            today: chrono::Local::now().date_naive(),
+            resources: store.list_resources().unwrap(),
+            uses: store.list_resource_uses().unwrap(),
+        };
+        (panel, data)
+    }
+
+    fn set_version(store: &Store, kind: &str, uid: &str, version: i64) {
+        store
+            .conn
+            .execute(
+                "UPDATE item_versions SET version=?1 WHERE kind=?2 AND item_id=?3",
+                rusqlite::params![version, kind, crate::work_templates::version_key(uid)],
+            )
+            .unwrap();
+    }
+
+    fn stored_use(store: &Store, uid: &str) -> Option<ResourceUse> {
+        store
+            .list_resource_uses()
+            .unwrap()
+            .into_iter()
+            .find(|u| u.uid == uid)
+    }
+
+    /// The use saved elsewhere with another sector, on the number the
+    /// ficha holds.
+    fn use_changed_there(store: &mut Store, panel: &ResourcesPanel) -> String {
+        let held = panel.use_version.unwrap();
+        let mut there = panel.use_saved.clone().unwrap();
+        there.sector = "Setor de lá".into();
+        store.save_resource_use(&there, Some(held)).unwrap();
+        set_version(store, "resource_use", &there.uid, held);
+        there.uid
+    }
+
+    /// Finding 2: "Criar tarefa de devolução" on a clean ficha wrote the
+    /// use as the ficha read it over the one changed elsewhere.
+    #[test]
+    fn rev5_the_return_task_never_writes_over_a_use_changed_elsewhere() {
+        let (_dir, mut store) = seeded_store();
+        let (mut panel, data) = panel_with_a_saved_use(&mut store);
+        let tasks_before = store.list_tasks().unwrap().len();
+        let uid = use_changed_there(&mut store, &panel);
+        panel.create_return_task(&mut store, &data);
+        let now = stored_use(&store, &uid).unwrap();
+        assert_eq!(now.sector, "Setor de lá", "nothing written over it");
+        assert_eq!(now.task_id, None);
+        assert!(panel.use_error.contains("Conflito"), "{}", panel.use_error);
+        assert_eq!(
+            store.list_tasks().unwrap().len(),
+            tasks_before,
+            "no task left behind"
+        );
+        // "Descartar" shows the use as saved now; the button then works.
+        panel.run_use_action(&mut store, &data, panel.use_editor.clone().unwrap(), UseAction::Revert);
+        panel.create_return_task(&mut store, &data);
+        let now = stored_use(&store, &uid).unwrap();
+        assert_eq!(now.sector, "Setor de lá");
+        assert!(now.task_id.is_some(), "{}", panel.use_error);
+    }
+
+    /// Only the version moved: the return task is made at once.
+    #[test]
+    fn rev5_the_return_task_when_only_the_version_moved() {
+        let (_dir, mut store) = seeded_store();
+        let (mut panel, data) = panel_with_a_saved_use(&mut store);
+        let same = panel.use_saved.clone().unwrap();
+        store
+            .save_resource_use(&same, panel.use_version)
+            .unwrap();
+        panel.create_return_task(&mut store, &data);
+        assert!(panel.use_error.is_empty(), "{}", panel.use_error);
+        assert!(stored_use(&store, &same.uid).unwrap().task_id.is_some());
+    }
+
+    /// Finding 3: deleting a use changed elsewhere on the same number is
+    /// refused with a sentence that says so; only the version moved, the
+    /// delete goes through.
+    #[test]
+    fn rev5_deleting_a_use_changed_elsewhere_is_refused() {
+        let (_dir, mut store) = seeded_store();
+        let (mut panel, data) = panel_with_a_saved_use(&mut store);
+        let uid = use_changed_there(&mut store, &panel);
+        let ed = panel.use_editor.clone().unwrap();
+        panel.run_use_action(&mut store, &data, ed, UseAction::Delete);
+        assert!(stored_use(&store, &uid).is_some(), "not deleted");
+        assert!(panel.use_error.contains("Nada foi apagado"), "{}", panel.use_error);
+
+        let (_dir, mut store) = seeded_store();
+        let (mut panel, data) = panel_with_a_saved_use(&mut store);
+        let same = panel.use_saved.clone().unwrap();
+        store
+            .save_resource_use(&same, panel.use_version)
+            .unwrap();
+        let ed = panel.use_editor.clone().unwrap();
+        panel.run_use_action(&mut store, &data, ed, UseAction::Delete);
+        assert!(panel.use_error.is_empty(), "{}", panel.use_error);
+        assert!(stored_use(&store, &same.uid).is_none(), "deleted");
+    }
+
+    /// The same for a resource.
+    #[test]
+    fn rev5_deleting_a_resource_changed_elsewhere_is_refused() {
+        let (_dir, mut store) = seeded_store();
+        let uid = store
+            .save_resource(
+                &Resource {
+                    name: "Projetor".into(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let read = |store: &Store| {
+            store
+                .list_resources()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.uid == uid)
+        };
+        let mut panel = ResourcesPanel::default();
+        panel.load_resource(&store, read(&store).unwrap());
+        let held = panel.res_version.unwrap();
+        let mut there = read(&store).unwrap();
+        there.location = "Bloco de lá".into();
+        store.save_resource(&there, Some(held)).unwrap();
+        set_version(&store, "resource", &uid, held);
+        let ed = panel.res_editor.clone().unwrap();
+        panel.delete_resource_now(&mut store, &ed);
+        assert!(read(&store).is_some(), "not deleted");
+        assert!(panel.res_error.contains("Nada foi apagado"), "{}", panel.res_error);
+
+        // Only the version moved.
+        panel.load_resource(&store, read(&store).unwrap());
+        let same = read(&store).unwrap();
+        store.save_resource(&same, panel.res_version).unwrap();
+        let ed = panel.res_editor.clone().unwrap();
+        panel.delete_resource_now(&mut store, &ed);
+        assert!(panel.res_error.is_empty(), "{}", panel.res_error);
+        assert!(read(&store).is_none(), "deleted");
     }
 }

@@ -23,18 +23,18 @@ fn folder_config(member: &str, files: Vec<String>) -> IntranetConfig {
     }
 }
 
-fn sync(store: &mut Store) -> crate::intranet::FolderSyncReport {
+pub(crate) fn sync(store: &mut Store) -> crate::intranet::FolderSyncReport {
     let cfg = store.load_intranet_config().unwrap();
     store
         .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
         .unwrap()
 }
 
-fn task_version(store: &Store, id: i64) -> i64 {
+pub(crate) fn task_version(store: &Store, id: i64) -> i64 {
     store.item_version("task", id).unwrap().version
 }
 
-fn get(store: &Store, id: i64) -> Task {
+pub(crate) fn get(store: &Store, id: i64) -> Task {
     store
         .list_tasks()
         .unwrap()
@@ -45,18 +45,18 @@ fn get(store: &Store, id: i64) -> Task {
 
 /// Two computers of the same person (same member name) on one folder, both
 /// with the same task and a document.
-struct Pair {
+pub(crate) struct Pair {
     _dir: tempfile::TempDir,
-    drive: std::path::PathBuf,
-    a: Store,
-    b: Store,
-    task: i64,
-    document: i64,
+    pub(crate) drive: std::path::PathBuf,
+    pub(crate) a: Store,
+    pub(crate) b: Store,
+    pub(crate) task: i64,
+    pub(crate) document: i64,
 }
 
 const TITLE: &str = "BNBO: solicitar o cruzamento dos BOs recusados";
 
-fn pair() -> Pair {
+pub(crate) fn pair() -> Pair {
     crate::idents::hooks::PROMOTION.with(|c| c.set(true));
     let dir = tempfile::tempdir().unwrap();
     let drive = dir.path().join("Drive").join("ponte-sync.ponte");

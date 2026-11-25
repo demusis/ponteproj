@@ -6989,3 +6989,302 @@ mod view_cache_tests {
         assert_ne!(late.key, early.key);
     }
 }
+
+/// Review 4 of the fixes of the real test (0.52.0): what the store stamps
+/// when it saves a task, the undo of a batch and the change of document,
+/// against what the form or the batch read. Red at c1320d3.
+#[cfg(test)]
+mod rev5_tests {
+    use super::batch::*;
+    use super::*;
+    use crate::tarefa_tests::{get, pair, sync};
+
+    fn later() {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+
+    fn local() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("rev5.sqlite3")).unwrap();
+        (dir, store)
+    }
+
+    fn add(store: &mut Store, title: &str) -> i64 {
+        let mut task = Task::standalone();
+        task.title = title.into();
+        store.save_task(&task).unwrap()
+    }
+
+    fn version(store: &Store, id: i64) -> i64 {
+        store.item_version("task", id).unwrap().version
+    }
+
+    fn set_version(store: &Store, id: i64, version: i64) {
+        store
+            .conn
+            .execute(
+                "UPDATE item_versions SET version=?1 WHERE kind='task' AND item_id=?2",
+                rusqlite::params![version, id],
+            )
+            .unwrap();
+    }
+
+    /// Another computer saved the task with `edit` and the exchange left it
+    /// on the number the batch or the form holds.
+    fn changed_there_on_the_same_number(store: &mut Store, id: i64, edit: impl Fn(&mut Task)) {
+        let held = version(store, id);
+        let mut there = get(store, id);
+        edit(&mut there);
+        store.save_task_checked(&there, Some(held)).unwrap();
+        set_version(store, id, held);
+    }
+
+    /// Finding 1, the field: "Concluída" chosen in the form and saved, a
+    /// plain exchange, then another edit. Nobody else touched the task.
+    #[test]
+    fn rev5_concluded_in_the_form_an_exchange_and_another_save() {
+        let mut p = pair();
+        let id = p.task;
+        let mut panel = TaskPanel::default();
+        assert!(panel.open_task(&get(&p.a, id), &p.a));
+        panel.draft.as_mut().unwrap().status = "concluida".into();
+        panel.save_draft(&mut p.a).unwrap();
+        let stamped = get(&p.a, id).completed_at;
+        assert!(stamped.is_some());
+        later();
+        sync(&mut p.a);
+        assert_eq!(
+            get(&p.a, id).completed_at,
+            stamped,
+            "the replay keeps the moment the store stamped"
+        );
+        panel.set_draft_title("depois");
+        panel
+            .save_draft(&mut p.a)
+            .expect("nobody else edited the task");
+        assert_eq!(get(&p.a, id).title, "depois");
+        // Every computer has the same moment.
+        sync(&mut p.a);
+        sync(&mut p.b);
+        assert_eq!(get(&p.b, id).completed_at, stamped);
+        assert_eq!(get(&p.b, id).title, "depois");
+    }
+
+    /// Finding 1, the button: "Concluir" in the ficha, a plain exchange,
+    /// then an edit of the open form.
+    #[test]
+    fn rev5_concluded_by_the_button_an_exchange_and_a_save() {
+        let mut p = pair();
+        let id = p.task;
+        let mut panel = TaskPanel::default();
+        assert!(panel.open_task(&get(&p.a, id), &p.a));
+        panel.apply_status_change(&mut p.a, id, true).unwrap();
+        let stamped = get(&p.a, id).completed_at;
+        later();
+        sync(&mut p.a);
+        assert_eq!(get(&p.a, id).completed_at, stamped);
+        panel.set_draft_title("depois");
+        panel
+            .save_draft(&mut p.a)
+            .expect("nobody else edited the task");
+        assert_eq!(get(&p.a, id).title, "depois");
+        assert_eq!(get(&p.a, id).status, "concluida");
+    }
+
+    /// The moment of a conclusion moved and nothing else (a change queued
+    /// by an older Ponte, without the moment, replayed): no conflict, and
+    /// the save keeps the moment saved now. A reopening elsewhere still is
+    /// a conflict.
+    #[test]
+    fn rev5_only_the_moment_of_the_conclusion_moved() {
+        let (_dir, mut store) = local();
+        let mut task = Task::standalone();
+        task.title = "Concluída".into();
+        task.status = "concluida".into();
+        let id = store.save_task(&task).unwrap();
+        let mut panel = TaskPanel::default();
+        assert!(panel.open_task(&get(&store, id), &store));
+        changed_there_on_the_same_number(&mut store, id, |t| {
+            t.completed_at = Some("2026-01-02T03:04:05+00:00".into())
+        });
+        panel.set_draft_title("revisada");
+        panel.save_draft(&mut store).expect("only the stamp moved");
+        let now = get(&store, id);
+        assert_eq!(now.title, "revisada");
+        assert_eq!(
+            now.completed_at.as_deref(),
+            Some("2026-01-02T03:04:05+00:00"),
+            "the moment saved now is kept"
+        );
+        changed_there_on_the_same_number(&mut store, id, |t| t.status = "pendente".into());
+        panel.set_draft_title("de novo");
+        assert!(panel.save_draft(&mut store).is_err(), "a real change");
+        assert_eq!(get(&store, id).status, "pendente");
+    }
+
+    /// Finding 3: the undo of a batch writes only over the task the batch
+    /// left. Changed elsewhere on the same number: refused and kept; only
+    /// the version moved: undone.
+    #[test]
+    fn rev5_the_undo_of_a_batch_never_writes_over_another_edit() {
+        let (_dir, mut store) = local();
+        let a = add(&mut store, "A");
+        let b = add(&mut store, "B");
+        let snap = snapshot(
+            &store,
+            &[a, b].into_iter().collect(),
+            &store.list_tasks().unwrap(),
+        );
+        let out = apply_batch(&mut store, &snap, &Change::Priority("alta".into()));
+        assert_eq!(out.done, 2);
+        changed_there_on_the_same_number(&mut store, a, |t| t.priority = "urgente".into());
+        // b: saved again with the same content, the version moved.
+        let same = get(&store, b);
+        store
+            .save_task_checked(&same, Some(version(&store, b)))
+            .unwrap();
+        let undone = undo_batch(&mut store, &out.undo);
+        assert_eq!((undone.done, undone.skipped.len()), (1, 1));
+        assert_eq!(undone.skipped[0].id, a);
+        assert_eq!(undone.skipped[0].reason, Reason::Changed);
+        assert_eq!(get(&store, a).priority, "urgente", "the other edit stays");
+        assert_eq!(get(&store, b).priority, "normal", "only the version moved");
+    }
+
+    fn capture(number: &str, text: &str) -> crate::model::Capture {
+        let mut c = crate::model::sample_capture();
+        c.document_number = number.into();
+        c.source_url = format!(
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibir?sigla={}-A",
+            number.replace('/', "%2F")
+        );
+        c.title = format!("Documento {number}");
+        c.text = text.into();
+        c
+    }
+
+    /// Finding 3: a task concluded by the cascade of the batch was put back
+    /// whole; changed elsewhere on the same number, it is now left alone.
+    #[test]
+    fn rev5_the_undo_of_a_cascade_never_writes_over_another_edit() {
+        let (_dir, mut store) = local();
+        let parent = store
+            .import_capture(&capture("ORG-DIC-2026/97546", "Processo principal."))
+            .unwrap();
+        let child = store
+            .import_capture(&capture(
+                "ORG-DES-2026/39019",
+                "| Juntada | Juntado ao documento: ORG-DIC-2026/97546-A |",
+            ))
+            .unwrap();
+        let of = |store: &Store, document: i64| {
+            store
+                .list_tasks()
+                .unwrap()
+                .into_iter()
+                .find(|t| t.document_id == Some(document))
+                .unwrap()
+                .id
+        };
+        let (p, c) = (
+            of(&store, parent.document_id),
+            of(&store, child.document_id),
+        );
+        let snap = snapshot(
+            &store,
+            &[p].into_iter().collect(),
+            &store.list_tasks().unwrap(),
+        );
+        let out = apply_batch(&mut store, &snap, &Change::Conclude);
+        assert_eq!(get(&store, c).status, "concluida", "by the cascade");
+        assert!(out.undo.iter().any(|u| u.id == c));
+        changed_there_on_the_same_number(&mut store, c, |t| t.notes = "nota de lá".into());
+        let undone = undo_batch(&mut store, &out.undo);
+        assert_eq!(undone.done, 1);
+        assert_eq!(undone.skipped.len(), 1);
+        assert_eq!(undone.skipped[0].id, c);
+        assert_eq!(get(&store, c).notes, "nota de lá", "the other edit stays");
+        assert_eq!(get(&store, c).status, "concluida");
+        assert_eq!(get(&store, p).status, "pendente");
+    }
+
+    /// Finding 3: changing the document of the open task went by the number
+    /// alone, refused when only the version moved. Now: only the version
+    /// moved, it goes through; another content, refused and the ficha
+    /// shows the task as saved now.
+    #[test]
+    fn rev5_the_change_of_document_follows_the_content_not_the_number() {
+        let (_dir, mut store) = local();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let id = add(&mut store, "Pedir a sala");
+        let mut panel = TaskPanel::default();
+        assert!(panel.open_task(&get(&store, id), &store));
+        let same = get(&store, id);
+        store
+            .save_task_checked(&same, Some(version(&store, id)))
+            .unwrap();
+        panel.apply_relink(&mut store, id, Some(document), Some("SEFAZ".into()));
+        assert_eq!(panel.message, "Tarefa vinculada a SEFAZ.", "{}", panel.message);
+        assert_eq!(get(&store, id).document_id, Some(document));
+
+        changed_there_on_the_same_number(&mut store, id, |t| t.notes = "de lá".into());
+        panel.apply_relink(&mut store, id, None, None);
+        assert_eq!(get(&store, id).document_id, Some(document), "refused");
+        assert!(panel.message.contains("alterada"), "{}", panel.message);
+        assert_eq!(panel.draft.as_ref().unwrap().notes, "de lá");
+        assert!(!panel.dirty());
+        panel.apply_relink(&mut store, id, None, None);
+        assert_eq!(get(&store, id).document_id, None, "on the task shown now");
+    }
+
+    /// Finding 4: a category of the task deleted while the form is open is
+    /// said as such, not as an edit on another computer.
+    #[test]
+    fn rev5_a_deleted_category_is_said_as_deleted() {
+        let (_dir, mut store) = local();
+        let category = store
+            .save_category(&crate::categories::Category::new("Urgências", 1))
+            .unwrap();
+        let mut task = Task::standalone();
+        task.title = "Com categoria".into();
+        task.categories = vec![category.uid.clone()];
+        let id = store.save_task(&task).unwrap();
+        let mut panel = TaskPanel::default();
+        assert!(panel.open_task(&get(&store, id), &store));
+        store.delete_category(&category.uid).unwrap();
+        panel.set_draft_title("revisada");
+        let error = panel.save_draft(&mut store).unwrap_err();
+        assert!(error.contains("categoria"), "{error}");
+        assert!(error.contains("apagada"), "{error}");
+        assert!(!error.contains("outro computador"), "{error}");
+        assert!(panel.merge_conflict());
+        panel.save_draft(&mut store).expect("joined");
+        let now = get(&store, id);
+        assert_eq!(now.title, "revisada");
+        assert!(now.categories.is_empty());
+    }
+
+    /// The same for the project of the task.
+    #[test]
+    fn rev5_a_deleted_project_is_said_as_deleted() {
+        let (_dir, mut store) = local();
+        let project = store
+            .save_project(&crate::projects::Project::new("Projeto X"))
+            .unwrap();
+        let mut task = Task::standalone();
+        task.title = "Com projeto".into();
+        task.project_uid = project.uid.clone();
+        let id = store.save_task(&task).unwrap();
+        let mut panel = TaskPanel::default();
+        assert!(panel.open_task(&get(&store, id), &store));
+        store.delete_project(&project.uid).unwrap();
+        panel.set_draft_title("revisada");
+        let error = panel.save_draft(&mut store).unwrap_err();
+        assert!(error.contains("projeto"), "{error}");
+        assert!(error.contains("apagado"), "{error}");
+        assert!(!error.contains("outro computador"), "{error}");
+    }
+}

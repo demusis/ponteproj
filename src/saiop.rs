@@ -7814,3 +7814,194 @@ mod follow_up_panel_tests {
         );
     }
 }
+
+/// Review 4 of the fixes of the real test (0.52.0): what the store writes
+/// by itself on a change of situation or assignee (the event, the day of
+/// the stage, the day it closed) is no edit of another computer. Red at
+/// c1320d3.
+#[cfg(all(test, feature = "desktop"))]
+mod rev5_tests {
+    use super::*;
+    use crate::tarefa_tests::{pair, sync};
+
+    fn find(store: &Store, id: i64) -> SaiopAttendance {
+        store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap()
+    }
+
+    fn later() {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+
+    fn saved(store: &mut Store) -> i64 {
+        let mut att = SaiopAttendance::new_manual();
+        att.reference_raw = "ORG-OFI-2026/00042".into();
+        att.subject = "Assunto".into();
+        store.save_saiop_attendance(&att, None).unwrap()
+    }
+
+    /// The ficha changes `edit`, saves, the folder is exchanged, and the
+    /// observation typed next is saved.
+    fn change_exchange_and_save(edit: impl Fn(&mut SaiopAttendance)) {
+        let mut p = pair();
+        let id = saved(&mut p.a);
+        sync(&mut p.a);
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&p.a, find(&p.a, id));
+        edit(panel.editor.as_mut().unwrap());
+        panel.save_current(&mut p.a);
+        assert!(!panel.error, "{}", panel.message);
+        later();
+        sync(&mut p.a);
+        panel.editor.as_mut().unwrap().observation = "Depois".into();
+        panel.save_current(&mut p.a);
+        assert!(!panel.error, "nobody else edited it: {}", panel.message);
+        let now = find(&p.a, id);
+        assert_eq!(now.observation, "Depois");
+        let mut expected = SaiopAttendance::new_manual();
+        edit(&mut expected);
+        assert_eq!(
+            (now.status.as_str(), now.assignee.as_str()),
+            (expected.status.as_str(), expected.assignee.as_str())
+        );
+        let generated = now
+            .events
+            .iter()
+            .filter(|e| e.kind == "situacao" || e.kind == "distribuicao")
+            .count();
+        assert_eq!(generated, 1, "one event for one change: {:?}", now.events);
+    }
+
+    #[test]
+    fn rev5_a_change_of_situation_then_an_exchange_is_no_conflict() {
+        change_exchange_and_save(|a| a.status = "suspenso".into());
+    }
+
+    #[test]
+    fn rev5_a_change_of_assignee_then_an_exchange_is_no_conflict() {
+        change_exchange_and_save(|a| a.assignee = "Ana".into());
+    }
+
+    #[test]
+    fn rev5_closing_then_an_exchange_is_no_conflict() {
+        change_exchange_and_save(|a| {
+            a.status = "encerrado".into();
+            a.closed_at = Local::now().format("%Y-%m-%d").to_string();
+        });
+    }
+
+    /// The aggravation: a second save before the exchange. The queued change
+    /// then carries the event the store wrote, and its replay must not write
+    /// another one; the next save is no conflict either.
+    #[test]
+    fn rev5_two_saves_before_the_exchange_write_one_event() {
+        let mut p = pair();
+        let id = saved(&mut p.a);
+        sync(&mut p.a);
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&p.a, find(&p.a, id));
+        panel.editor.as_mut().unwrap().status = "suspenso".into();
+        panel.save_current(&mut p.a);
+        panel.editor.as_mut().unwrap().subject = "Outro assunto".into();
+        panel.save_current(&mut p.a);
+        assert!(!panel.error, "{}", panel.message);
+        later();
+        sync(&mut p.a);
+        let situation = |store: &Store| {
+            find(store, id)
+                .events
+                .iter()
+                .filter(|e| e.kind == "situacao")
+                .count()
+        };
+        assert_eq!(situation(&p.a), 1, "{:?}", find(&p.a, id).events);
+        panel.editor.as_mut().unwrap().observation = "Depois".into();
+        panel.save_current(&mut p.a);
+        assert!(!panel.error, "{}", panel.message);
+        sync(&mut p.a);
+        sync(&mut p.b);
+        assert_eq!(situation(&p.b), 1, "{:?}", find(&p.b, id).events);
+        assert_eq!(find(&p.b, id).observation, "Depois");
+    }
+
+    /// What the comparison leaves aside is only what the store derives:
+    /// an event typed elsewhere, or a situation changed elsewhere, on the
+    /// number the ficha holds, is still refused, and nothing is lost.
+    #[test]
+    fn rev5_a_real_event_or_situation_elsewhere_is_still_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let id = saved(&mut store);
+        let same_number = |store: &mut Store, edit: &dyn Fn(&mut SaiopAttendance)| {
+            let held = store.item_version("saiop", id).unwrap().version;
+            let mut there = find(store, id);
+            edit(&mut there);
+            store.save_saiop_attendance(&there, Some(held)).unwrap();
+            store
+                .conn
+                .execute(
+                    "UPDATE item_versions SET version=?1 WHERE kind='saiop' AND item_id=?2",
+                    rusqlite::params![held, id],
+                )
+                .unwrap();
+        };
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&store, find(&store, id));
+        same_number(&mut store, &|a| {
+            a.events.push(SaiopEvent {
+                when: Utc::now().to_rfc3339(),
+                actor: "Ana".into(),
+                kind: "anotacao".into(),
+                detail: "Cobrado por telefone".into(),
+            })
+        });
+        panel.editor.as_mut().unwrap().observation = "Digitado".into();
+        panel.save_current(&mut store);
+        assert!(panel.error, "{}", panel.message);
+        assert!(find(&store, id)
+            .events
+            .iter()
+            .any(|e| e.detail == "Cobrado por telefone"));
+
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&store, find(&store, id));
+        same_number(&mut store, &|a| a.status = "suspenso".into());
+        panel.editor.as_mut().unwrap().observation = "Digitado".into();
+        panel.save_current(&mut store);
+        assert!(panel.error, "{}", panel.message);
+        assert_eq!(find(&store, id).status, "suspenso");
+    }
+
+    /// An event the person adds in the ficha after an exchange is kept,
+    /// with the event the store wrote for the earlier change.
+    #[test]
+    fn rev5_an_event_typed_after_the_exchange_is_kept() {
+        let mut p = pair();
+        let id = saved(&mut p.a);
+        sync(&mut p.a);
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&p.a, find(&p.a, id));
+        panel.editor.as_mut().unwrap().status = "suspenso".into();
+        panel.save_current(&mut p.a);
+        later();
+        sync(&mut p.a);
+        panel.editor.as_mut().unwrap().events.push(SaiopEvent {
+            when: Utc::now().to_rfc3339(),
+            actor: "CARLO".into(),
+            kind: "anotacao".into(),
+            detail: "Anotado aqui".into(),
+        });
+        panel.save_current(&mut p.a);
+        assert!(!panel.error, "{}", panel.message);
+        let now = find(&p.a, id);
+        assert!(now.events.iter().any(|e| e.detail == "Anotado aqui"));
+        assert_eq!(
+            now.events.iter().filter(|e| e.kind == "situacao").count(),
+            1
+        );
+    }
+}
