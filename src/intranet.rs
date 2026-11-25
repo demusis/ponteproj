@@ -993,10 +993,43 @@ pub struct OutboxEntry {
     pub leaves: Option<i64>,
 }
 
+/// How far past its own step a change may leave its item (see
+/// [`OutboxEntry::leaves`]): one version per save merged into it. Far more
+/// saves of one item than anyone makes between two exchanges; a `leaves`
+/// beyond it (or not past the step, or that would overflow a later save)
+/// comes from a damaged or hostile copy and is ignored: the replay takes
+/// its own step, as a Ponte without the field does.
+const MAX_LEAVES_AHEAD: i64 = 1_000_000;
+
+/// The version one replay of `mutation` leaves its item at by itself: one
+/// past the version it expects, or 1 for a creation (no version expected,
+/// the item has none yet). `None` when that would overflow.
+fn one_step(mutation: &IntranetMutation) -> Option<i64> {
+    match expected_version_of(mutation) {
+        Some(expected) if expected >= 0 => expected.checked_add(1),
+        Some(_) => None,
+        None => Some(1),
+    }
+}
+
+/// The `leaves` of a change when it is sound: past the replay's own step
+/// and not too far past it ([`MAX_LEAVES_AHEAD`]). Anything else, from
+/// this computer or from a peer, is taken as absent.
+pub(crate) fn sound_leaves(mutation: &IntranetMutation, leaves: Option<i64>) -> Option<i64> {
+    let leaves = leaves?;
+    let step = one_step(mutation)?;
+    (leaves > step && leaves - step <= MAX_LEAVES_AHEAD && version_kind(mutation).is_some())
+        .then_some(leaves)
+}
+
 /// The version a queued change leaves its item at on the computer that
 /// made it: its `leaves`, or one past the version it expects.
 fn leaves_of(mutation: &IntranetMutation, leaves: Option<i64>) -> Option<i64> {
-    leaves.or_else(|| expected_version_of(mutation).map(|v| v + 1))
+    sound_leaves(mutation, leaves).or_else(|| {
+        expected_version_of(mutation)
+            .filter(|v| *v >= 0)
+            .and_then(|v| v.checked_add(1))
+    })
 }
 
 /// The kind of the version an edit merged by item checks, as
@@ -1008,7 +1041,9 @@ fn version_kind(mutation: &IntranetMutation) -> Option<String> {
 /// The version a replay must leave its item at (see [`OutboxEntry::leaves`]).
 struct LeavesFloor {
     kind: String,
-    expected: i64,
+    /// `None`: a creation that absorbed later saves; it takes the floor only
+    /// where the item has no version yet.
+    expected: Option<i64>,
     leaves: i64,
 }
 
@@ -1035,14 +1070,10 @@ pub(crate) fn replaying_to<T>(
             REPLAY_LEAVES.with(|cell| cell.borrow_mut().take());
         }
     }
-    let floor = match (
-        version_kind(mutation),
-        expected_version_of(mutation),
-        leaves,
-    ) {
-        (Some(kind), Some(expected), Some(leaves)) if leaves > expected + 1 => Some(LeavesFloor {
+    let floor = match (version_kind(mutation), sound_leaves(mutation, leaves)) {
+        (Some(kind), Some(leaves)) => Some(LeavesFloor {
             kind,
-            expected,
+            expected: expected_version_of(mutation),
             leaves,
         }),
         _ => None,
@@ -1053,13 +1084,20 @@ pub(crate) fn replaying_to<T>(
 }
 
 /// The version the replay of a queued change must leave this item at, when
-/// the change carries one (see [`replaying_to`]); taken once.
-fn replay_floor(item_kind: &str, expected_version: Option<i64>) -> Option<i64> {
+/// the change carries one (see [`replaying_to`]); taken once. An edit takes
+/// it when the version it expects is the one found (`current`); a creation
+/// that absorbed later saves, where the item has no version yet.
+fn replay_floor(item_kind: &str, expected_version: Option<i64>, current: i64) -> Option<i64> {
     REPLAY_LEAVES.with(|cell| {
         let mut floor = cell.borrow_mut();
-        let matches = floor
-            .as_ref()
-            .is_some_and(|f| f.kind == item_kind && Some(f.expected) == expected_version);
+        let matches = floor.as_ref().is_some_and(|f| {
+            f.kind == item_kind
+                && f.expected == expected_version
+                && match expected_version {
+                    Some(expected) => expected == current,
+                    None => current == 0,
+                }
+        });
         if matches {
             floor.take().map(|f| f.leaves)
         } else {
@@ -2286,11 +2324,11 @@ pub(crate) fn record_mutation(
     }
     // The replay of several saves merged into one change leaves the item
     // where they left it on the computer that made them.
-    let next_version = (current.version + 1).max(
-        replay_floor(item_kind, expected_version)
-            .filter(|_| expected_version == Some(current.version))
-            .unwrap_or(0),
-    );
+    let next_version = current
+        .version
+        .checked_add(1)
+        .context("A versão deste registro chegou ao limite e não pode avançar.")?
+        .max(replay_floor(item_kind, expected_version, current.version).unwrap_or(0));
     let timestamp = now_iso();
     let actor_clean = if actor.trim().is_empty() {
         "Integrante"
@@ -6915,6 +6953,8 @@ impl Store {
                         report.pushed += 1;
                         let revision = store.cabinet_revision()?;
                         applied.insert(entry.uid.clone());
+                        // What another copy says is republished only when sound.
+                        let leaves = sound_leaves(&mutation, entry.leaves);
                         journal.push(JournalEntry {
                             uid: entry.uid.clone(),
                             created_at: entry.created_at.clone(),
@@ -6930,7 +6970,7 @@ impl Store {
                             // legacy entry stays legacy above `refs_since`.
                             legacy: refs.is_none(),
                             refs: refs.map(|refs| framed(refs, before)),
-                            leaves: entry.leaves,
+                            leaves,
                         });
                     }
                     (remapped, outcome) => {
@@ -8915,11 +8955,12 @@ impl Store {
                 // what its screens hold (a false "edição simultânea" and,
                 // once the number is reached again, an edit of another
                 // computer saved over without a question).
+                // A creation that absorbs later saves (an item addressed by
+                // its uid, created and edited before the first exchange)
+                // keeps where they left it too.
                 let made_on = expected_version_of(&mutation);
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
-                let leaves = made_on.map(|v| v + 1).filter(|&leaves| {
-                    expected_version_of(&coalesced).is_some_and(|e| leaves > e + 1)
-                });
+                let leaves = sound_leaves(&coalesced, made_on.and_then(|v| v.checked_add(1)));
                 // The proofs follow what is kept: the new mutation's, and the
                 // base's of the entry whose base is kept.
                 let merged_refs = refs.map(|refs| crate::idrefs::Refs {
