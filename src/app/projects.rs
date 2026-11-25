@@ -1168,7 +1168,27 @@ impl ProjectsPanel {
     fn delete_now(&mut self, store: &mut Store, project: &Project, asked: &mut Option<Asked>) {
         self.confirm_delete = false;
         let tasks = self.data.project_tasks.len();
-        match store.delete_project_checked(&project.uid, Some(self.data.version)) {
+        // The version alone never proves the project is the one shown: one
+        // changed elsewhere (even on the same number) is not deleted, and
+        // the screen reads it again for the person to decide on it.
+        let version = match ProjectForm::changed_since(store, project) {
+            Ok(None) => store.project_version(&project.uid).ok(),
+            Ok(Some((_, _, _))) => {
+                let meta = store
+                    .item_version("project", crate::work_templates::version_key(&project.uid))
+                    .unwrap_or_default();
+                self.data.stale = true;
+                self.refused(crate::edit_check::changed_before_delete(
+                    "este projeto foi alterado",
+                    &meta,
+                    &store.active_actor(),
+                    "A tela mostra agora o projeto como está salvo; confira-o e exclua de novo, se ainda for o caso.",
+                ));
+                return;
+            }
+            Err(()) => Some(self.data.version),
+        };
+        match store.delete_project_checked(&project.uid, version) {
             Ok(()) => {
                 self.open = None;
                 self.data.stale = true;
@@ -2443,8 +2463,15 @@ mod tests {
         let mut asked = None;
         panel.delete_now(&mut store, &project, &mut asked);
         assert!(asked.is_none());
-        assert!(store.get_project(&project.uid).unwrap().is_some(), "not deleted");
-        let text = panel.banner.as_ref().map(|b| b.text.clone()).unwrap_or_default();
+        assert!(
+            store.get_project(&project.uid).unwrap().is_some(),
+            "not deleted"
+        );
+        let text = panel
+            .banner
+            .as_ref()
+            .map(|b| b.text.clone())
+            .unwrap_or_default();
         assert!(text.contains("Nada foi apagado"), "{text}");
 
         // Only the version moved.
@@ -2455,7 +2482,14 @@ mod tests {
         store.save_project(&shown).unwrap();
         let mut asked = None;
         panel.delete_now(&mut store, &shown, &mut asked);
-        assert!(asked.is_some(), "{:?}", panel.banner.as_ref().map(|b| &b.text));
-        assert!(store.get_project(&project.uid).unwrap().is_none(), "deleted");
+        assert!(
+            asked.is_some(),
+            "{:?}",
+            panel.banner.as_ref().map(|b| &b.text)
+        );
+        assert!(
+            store.get_project(&project.uid).unwrap().is_none(),
+            "deleted"
+        );
     }
 }

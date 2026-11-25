@@ -2908,7 +2908,24 @@ impl ResourcesPanel {
             }
             UseAction::Delete => {
                 self.confirm_delete_use = false;
-                match store.delete_resource_use(&ed.uid, self.use_version) {
+                // Changed elsewhere since the ficha read it (whatever its
+                // number): nothing is deleted.
+                let version = match self.use_check(store, &ed) {
+                    Ok(version) => version,
+                    Err(meta) => {
+                        self.use_error = error_sentence(
+                            &crate::edit_check::changed_before_delete(
+                                "este uso foi alterado",
+                                &meta,
+                                &store.active_actor(),
+                                "Use “Descartar alterações” para ver o uso como está salvo agora e decida de novo.",
+                            ),
+                            "apagar o uso",
+                        );
+                        return;
+                    }
+                };
+                match store.delete_resource_use(&ed.uid, version) {
                     Ok(()) => {
                         self.close_ficha();
                         self.changed = true;
@@ -3044,6 +3061,26 @@ impl ResourcesPanel {
                 None => return,
             }
         }
+        // The use is written again with its task: the use saved now must be
+        // the one the ficha read (the version alone never proves it), or the
+        // ficha's copy would go over an edit made elsewhere. Checked before
+        // the task is made, so a refusal leaves nothing behind.
+        let version = match self.use_check(store, &item) {
+            Ok(version) => version,
+            Err(meta) => {
+                self.use_error = error_sentence(
+                    &crate::edit_check::changed_then(
+                        "este uso foi alterado",
+                        &meta,
+                        &store.active_actor(),
+                        "Nada foi gravado e nenhuma tarefa foi criada.",
+                        "Use “Descartar alterações” para ver o uso como está salvo agora e peça a tarefa de devolução de novo, se ainda for o caso.",
+                    ),
+                    "criar a tarefa de devolução",
+                );
+                return;
+            }
+        };
         let name = data.name(&item.resource_uid).to_owned();
         let mut task = match item.document_id {
             Some(id) => Task::new(id),
@@ -3067,7 +3104,6 @@ impl ResourcesPanel {
         match made {
             Ok(id) => {
                 item.task_id = Some(id);
-                let version = self.use_version;
                 match store.save_resource_use(&item, version) {
                     Ok(uid) => {
                         let reloaded = store
@@ -3479,6 +3515,29 @@ impl ResourcesPanel {
     /// The same (only the version moved): its current version. Another
     /// content: the refusal, and nothing is written.
     fn use_version_now(&self, store: &Store, item: &ResourceUse) -> Result<Option<i64>, String> {
+        self.use_check(store, item).map_err(|meta| {
+            error_sentence(
+                &crate::edit_check::changed_since_read(
+                    "este uso foi alterado",
+                    &meta,
+                    &store.active_actor(),
+                    "Use “Descartar alterações” para ver o uso como está salvo agora e digite de novo o que mudou.",
+                ),
+                "salvar o uso",
+            )
+        })
+    }
+
+    /// The version a write over the ficha's use goes on: `Ok` with the
+    /// current one when the use saved now says what the ficha read (or with
+    /// the one held when there is nothing to compare: a new use, or one no
+    /// longer saved, which the write then refuses); `Err` with who saved it
+    /// when it changed elsewhere, whatever its number.
+    fn use_check(
+        &self,
+        store: &Store,
+        item: &ResourceUse,
+    ) -> Result<Option<i64>, crate::intranet::VersionMeta> {
         let Some(read) = self
             .use_saved
             .as_ref()
@@ -3488,9 +3547,8 @@ impl ResourcesPanel {
         };
         let current = store
             .list_resource_uses()
-            .map_err(|e| error_sentence(&e.to_string(), "salvar o uso"))?
-            .into_iter()
-            .find(|u| u.uid == item.uid);
+            .ok()
+            .and_then(|uses| uses.into_iter().find(|u| u.uid == item.uid));
         let Some(current) = current else {
             return Ok(self.use_version);
         };
@@ -3501,21 +3559,32 @@ impl ResourcesPanel {
             )
             .unwrap_or_default();
         if !current.same_content(read) {
-            return Err(error_sentence(
-                &crate::edit_check::changed_since_read(
-                    "este uso foi alterado",
-                    &meta,
-                    &store.active_actor(),
-                    "Use “Descartar alterações” para ver o uso como está salvo agora e digite de novo o que mudou.",
-                ),
-                "salvar o uso",
-            ));
+            return Err(meta);
         }
         Ok(Some(meta.version))
     }
 
     /// The same for the ficha's resource (see [`Self::use_version_now`]).
     fn resource_version_now(&self, store: &Store, item: &Resource) -> Result<Option<i64>, String> {
+        self.resource_check(store, item).map_err(|meta| {
+            error_sentence(
+                &crate::edit_check::changed_since_read(
+                    "este recurso foi alterado",
+                    &meta,
+                    &store.active_actor(),
+                    "Use “Descartar alterações” para ver o recurso como está salvo agora e digite de novo o que mudou.",
+                ),
+                "salvar o recurso",
+            )
+        })
+    }
+
+    /// The same as [`Self::use_check`] for the ficha's resource.
+    fn resource_check(
+        &self,
+        store: &Store,
+        item: &Resource,
+    ) -> Result<Option<i64>, crate::intranet::VersionMeta> {
         let Some(read) = self
             .res_saved
             .as_ref()
@@ -3525,9 +3594,8 @@ impl ResourcesPanel {
         };
         let current = store
             .list_resources()
-            .map_err(|e| error_sentence(&e.to_string(), "salvar o recurso"))?
-            .into_iter()
-            .find(|r| r.uid == item.uid);
+            .ok()
+            .and_then(|all| all.into_iter().find(|r| r.uid == item.uid));
         let Some(current) = current else {
             return Ok(self.res_version);
         };
@@ -3535,15 +3603,7 @@ impl ResourcesPanel {
             .item_version("resource", crate::work_templates::version_key(&item.uid))
             .unwrap_or_default();
         if !current.same_content(read) {
-            return Err(error_sentence(
-                &crate::edit_check::changed_since_read(
-                    "este recurso foi alterado",
-                    &meta,
-                    &store.active_actor(),
-                    "Use “Descartar alterações” para ver o recurso como está salvo agora e digite de novo o que mudou.",
-                ),
-                "salvar o recurso",
-            ));
+            return Err(meta);
         }
         Ok(Some(meta.version))
     }
@@ -3551,7 +3611,24 @@ impl ResourcesPanel {
     /// "Apagar" in the ficha of a resource, confirmed.
     fn delete_resource_now(&mut self, store: &mut Store, ed: &Resource) {
         self.confirm_delete_res = false;
-        match store.delete_resource(&ed.uid, self.res_version) {
+        // Changed elsewhere since the ficha read it (whatever its number):
+        // nothing is deleted, the person decides again on what is saved now.
+        let version = match self.resource_check(store, ed) {
+            Ok(version) => version,
+            Err(meta) => {
+                self.res_error = error_sentence(
+                    &crate::edit_check::changed_before_delete(
+                        "este recurso foi alterado",
+                        &meta,
+                        &store.active_actor(),
+                        "Use “Descartar alterações” para ver o recurso como está salvo agora e decida de novo.",
+                    ),
+                    "apagar o recurso",
+                );
+                return;
+            }
+        };
+        match store.delete_resource(&ed.uid, version) {
             Ok(()) => {
                 let name = ed.name.trim().to_owned();
                 self.close_ficha();
@@ -4599,9 +4676,14 @@ mod tests {
         let (_dir, mut store) = seeded_store();
         let (mut panel, data) = panel_with_a_saved_use(&mut store);
         let tasks_before = store.list_tasks().unwrap().len();
-        // The use changed elsewhere meanwhile: linking the task is refused.
-        let good_version = panel.use_version;
-        panel.use_version = Some(9999);
+        // The use was deleted elsewhere after the ficha read it: the task
+        // made a moment ago cannot be linked. (A wrong number alone no
+        // longer does it: when the use saved now is the one the ficha read,
+        // only the version moved and the link goes on the current one.)
+        let read = panel.use_saved.clone().unwrap();
+        store
+            .delete_resource_use(&read.uid, panel.use_version)
+            .unwrap();
         panel.create_return_task(&mut store, &data);
         assert!(!panel.use_error.is_empty(), "the error is shown");
         assert_eq!(
@@ -4610,8 +4692,23 @@ mod tests {
             "the task made a moment ago was taken back"
         );
         assert!(panel.pending_task.is_none());
-        // Trying again once the version is right makes exactly one.
-        panel.use_version = good_version;
+        // Saved again elsewhere and shown again: trying again makes
+        // exactly one.
+        let now = store
+            .item_version(
+                "resource_use",
+                crate::work_templates::version_key(&read.uid),
+            )
+            .unwrap()
+            .version;
+        store.save_resource_use(&read, Some(now)).unwrap();
+        let back = store
+            .list_resource_uses()
+            .unwrap()
+            .into_iter()
+            .find(|u| u.uid == read.uid)
+            .unwrap();
+        panel.load_use(&store, back);
         panel.use_error.clear();
         panel.create_return_task(&mut store, &data);
         assert!(panel.use_error.is_empty(), "{}", panel.use_error);
@@ -5047,7 +5144,12 @@ mod rev5_tests {
             "no task left behind"
         );
         // "Descartar" shows the use as saved now; the button then works.
-        panel.run_use_action(&mut store, &data, panel.use_editor.clone().unwrap(), UseAction::Revert);
+        panel.run_use_action(
+            &mut store,
+            &data,
+            panel.use_editor.clone().unwrap(),
+            UseAction::Revert,
+        );
         panel.create_return_task(&mut store, &data);
         let now = stored_use(&store, &uid).unwrap();
         assert_eq!(now.sector, "Setor de lá");
@@ -5060,9 +5162,7 @@ mod rev5_tests {
         let (_dir, mut store) = seeded_store();
         let (mut panel, data) = panel_with_a_saved_use(&mut store);
         let same = panel.use_saved.clone().unwrap();
-        store
-            .save_resource_use(&same, panel.use_version)
-            .unwrap();
+        store.save_resource_use(&same, panel.use_version).unwrap();
         panel.create_return_task(&mut store, &data);
         assert!(panel.use_error.is_empty(), "{}", panel.use_error);
         assert!(stored_use(&store, &same.uid).unwrap().task_id.is_some());
@@ -5079,14 +5179,16 @@ mod rev5_tests {
         let ed = panel.use_editor.clone().unwrap();
         panel.run_use_action(&mut store, &data, ed, UseAction::Delete);
         assert!(stored_use(&store, &uid).is_some(), "not deleted");
-        assert!(panel.use_error.contains("Nada foi apagado"), "{}", panel.use_error);
+        assert!(
+            panel.use_error.contains("Nada foi apagado"),
+            "{}",
+            panel.use_error
+        );
 
         let (_dir, mut store) = seeded_store();
         let (mut panel, data) = panel_with_a_saved_use(&mut store);
         let same = panel.use_saved.clone().unwrap();
-        store
-            .save_resource_use(&same, panel.use_version)
-            .unwrap();
+        store.save_resource_use(&same, panel.use_version).unwrap();
         let ed = panel.use_editor.clone().unwrap();
         panel.run_use_action(&mut store, &data, ed, UseAction::Delete);
         assert!(panel.use_error.is_empty(), "{}", panel.use_error);
@@ -5123,7 +5225,11 @@ mod rev5_tests {
         let ed = panel.res_editor.clone().unwrap();
         panel.delete_resource_now(&mut store, &ed);
         assert!(read(&store).is_some(), "not deleted");
-        assert!(panel.res_error.contains("Nada foi apagado"), "{}", panel.res_error);
+        assert!(
+            panel.res_error.contains("Nada foi apagado"),
+            "{}",
+            panel.res_error
+        );
 
         // Only the version moved.
         panel.load_resource(&store, read(&store).unwrap());

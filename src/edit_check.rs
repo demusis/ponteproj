@@ -113,8 +113,33 @@ pub fn saved_by(meta: &VersionMeta, me: &str) -> String {
 /// its version number: `subject` says what changed ("Este projeto foi
 /// alterado"), `way_out` what the person can do now.
 pub fn changed_since_read(subject: &str, meta: &VersionMeta, me: &str, way_out: &str) -> String {
+    changed_then(
+        subject,
+        meta,
+        me,
+        "Nada foi gravado e o que você digitou continua aqui.",
+        way_out,
+    )
+}
+
+/// The refusal of a delete asked from a screen whose record changed after
+/// it was read, whatever its version number: nothing is deleted, and the
+/// person decides again on what is saved now.
+pub fn changed_before_delete(subject: &str, meta: &VersionMeta, me: &str, way_out: &str) -> String {
+    changed_then(subject, meta, me, "Nada foi apagado.", way_out)
+}
+
+/// The refusal of a screen whose record changed after it was read: `done`
+/// says what was (not) done, `way_out` what the person can do now.
+pub fn changed_then(
+    subject: &str,
+    meta: &VersionMeta,
+    me: &str,
+    done: &str,
+    way_out: &str,
+) -> String {
     format!(
-        "Conflito de edição simultânea: {subject} {} depois que você abriu esta tela (versão #{}). Nada foi gravado e o que você digitou continua aqui. {way_out}",
+        "Conflito de edição simultânea: {subject} {} depois que você abriu esta tela (versão #{}). {done} {way_out}",
         saved_by(meta, me),
         meta.version
     )
