@@ -398,7 +398,7 @@ impl ProjectForm {
             "este projeto foi alterado",
             &meta,
             &store.active_actor(),
-            &format!("{what} Use “Juntar as duas versões” para trazer o que mudou lá e revisar antes de salvar, ou “Ficar com a versão de lá” para descartar as suas alterações.").trim_start().to_owned(),
+            format!("{what} Use “Juntar as duas versões” para trazer o que mudou lá e revisar antes de salvar, ou “Ficar com a versão de lá” para descartar as suas alterações.").trim_start(),
         );
         Ok(Some((current, text, meta.version)))
     }
