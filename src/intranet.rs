@@ -8474,6 +8474,7 @@ impl Store {
         {
             pause();
         }
+        let queued_mutation = self.carry_store_stamps(queued_mutation, &reply);
         let created = crate::idmap::created_ids(&*self, &queued_mutation, &reply)?;
         // The change is applied: it is queued whatever happens to its
         // identities. Identities that cannot be read (or read back) go
@@ -8500,6 +8501,45 @@ impl Store {
         #[cfg(test)]
         crate::idents::test_support::check_f1_step(&self.conn, "uma alteração na fila");
         Ok(reply)
+    }
+
+    /// What the store stamped when it applied `mutation` here goes with the
+    /// queued change: the moment a task was concluded. Its replay (this
+    /// library rebuilt from the folder, the other computers, a 0.51 one,
+    /// the main computer) then keeps that moment instead of stamping its
+    /// own, and a form that read the task after saving it finds it as it
+    /// left it (review 4, finding 1). A change that names the moment
+    /// already, or a task that is not concluded, goes as it is.
+    fn carry_store_stamps(
+        &self,
+        mutation: IntranetMutation,
+        reply: &MutationReply,
+    ) -> IntranetMutation {
+        match mutation {
+            IntranetMutation::SaveTask {
+                mut task,
+                expected_version,
+                no_project,
+            } if task.status == "concluida" && task.completed_at.is_none() => {
+                let id = match reply {
+                    MutationReply::Id(id) => *id,
+                    _ => task.id,
+                };
+                let stored = self
+                    .list_tasks()
+                    .ok()
+                    .and_then(|tasks| tasks.into_iter().find(|t| t.id == id));
+                if let Some(stored) = stored.filter(|t| t.status == "concluida") {
+                    task.completed_at = stored.completed_at;
+                }
+                IntranetMutation::SaveTask {
+                    task,
+                    expected_version,
+                    no_project,
+                }
+            }
+            other => other,
+        }
     }
 
     fn prepare_mutation_for_outbox(&self, mutation: IntranetMutation) -> IntranetMutation {

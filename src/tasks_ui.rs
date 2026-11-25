@@ -1067,6 +1067,18 @@ mod batch {
         pub touched: Touched,
         /// Version of the task right after the batch saved it.
         pub version: i64,
+        /// The task as the batch left it: the undo writes only over this
+        /// very task (the number alone never proves that nobody changed it
+        /// since). `None`: as the version says.
+        pub after: Option<Task>,
+    }
+
+    /// The task `id` as it is saved now.
+    fn read_task(store: &Store, id: i64) -> Option<Task> {
+        store
+            .list_tasks()
+            .ok()
+            .and_then(|tasks| tasks.into_iter().find(|t| t.id == id))
     }
 
     pub struct Skip {
@@ -1229,6 +1241,7 @@ mod batch {
                 before: task.clone(),
                 touched: Touched::Untrash,
                 version: 0,
+                after: None,
             });
         }
         let mut changed = task.clone();
@@ -1241,6 +1254,7 @@ mod batch {
             before: task.clone(),
             touched: touched(change),
             version: version_of(store, id),
+            after: read_task(store, id),
         })
     }
 
@@ -1355,6 +1369,7 @@ mod batch {
                                         before: before.clone(),
                                         touched: Touched::Whole,
                                         version: version_of(store, other),
+                                        after: fresh.iter().find(|t| t.id == other).cloned(),
                                     });
                                     cascaded.insert(other);
                                 }
@@ -1407,6 +1422,7 @@ mod batch {
                             before: before.clone(),
                             touched: Touched::Whole,
                             version: version_of(store, task.id),
+                            after: Some(task.clone()),
                         });
                     }
                 }
@@ -1417,9 +1433,11 @@ mod batch {
     }
 
     /// Puts back what the batch changed, task by task. One changed again
-    /// since (its version is not the one the batch left) is skipped; the
-    /// version is compared right before each write. The task list is read
-    /// once.
+    /// since is skipped: the task saved now is compared with the one the
+    /// batch left, right before each write (the same content with another
+    /// version is only the version that moved: undone on it; another
+    /// content, even on the version the batch left, is an edit of someone
+    /// and is kept). The task list is read once.
     pub fn undo_batch(store: &mut Store, items: &[UndoItem]) -> Outcome {
         let mut out = Outcome::default();
         let list = store.list_tasks().unwrap_or_default();
@@ -1440,16 +1458,21 @@ mod batch {
                 }
                 continue;
             }
-            if version_of(store, item.id) != item.version {
-                out.skipped.push(skip(Reason::Changed));
-                continue;
-            }
             let Some(mut task) = list.iter().find(|t| t.id == item.id).cloned() else {
                 out.skipped.push(skip(Reason::Missing));
                 continue;
             };
+            let now = version_of(store, item.id);
+            let unchanged = match &item.after {
+                Some(after) => super::same_task_read(after, &task),
+                None => now == item.version,
+            };
+            if !unchanged {
+                out.skipped.push(skip(Reason::Changed));
+                continue;
+            }
             restore_fields(item.touched, &item.before, &mut task);
-            match store.save_task_checked(&task, Some(item.version)) {
+            match store.save_task_checked(&task, Some(now)) {
                 Ok(_) => out.done += 1,
                 Err(e) => out.skipped.push(skip(classify(&e.to_string()))),
             }
@@ -1904,6 +1927,68 @@ pub struct EditConflict {
     pub changed_there: Vec<&'static str>,
     /// Who saved it and when, as the conflict sentence says it.
     pub by: String,
+    /// When all that differs is a category or the project of the task
+    /// deleted meanwhile (here, in Ajustes, or on another device): what
+    /// was deleted, said as such instead of an edit of another computer.
+    pub gone: Option<&'static str>,
+}
+
+/// Whether the task saved now (`current`) says what the form read
+/// (`read`). The moment of a conclusion is the store's own stamp: when both
+/// are concluded, a different moment is no edit of anyone (a change queued
+/// by an older Ponte, or the cascade of a conclusion, stamps it again when
+/// it is replayed).
+pub(crate) fn same_task_read(read: &Task, current: &Task) -> bool {
+    if read == current {
+        return true;
+    }
+    read.status == "concluida"
+        && current.status == "concluida"
+        && *current
+            == Task {
+                completed_at: current.completed_at.clone(),
+                ..read.clone()
+            }
+}
+
+/// When the only difference between what the form read and the task saved
+/// now is a category or the project of the task that no longer exists
+/// (deleted meanwhile, which takes it out of every task): what was deleted,
+/// as the conflict sentence starts.
+fn links_gone(store: &Store, read: &Task, current: &Task) -> Option<&'static str> {
+    let categories = store.known_categories_of(&read.categories).ok()?;
+    let project = store.known_project_of(&read.project_uid).ok()?;
+    let categories_gone = categories != read.categories;
+    let project_gone = project != read.project_uid;
+    if !categories_gone && !project_gone {
+        return None;
+    }
+    let many = read.categories.len() > categories.len() + 1;
+    let without = Task {
+        categories,
+        project_uid: project,
+        ..read.clone()
+    };
+    if !same_task_read(&without, current) {
+        return None;
+    }
+    Some(match (categories_gone, project_gone, many) {
+        (true, true, _) => "Categorias e o projeto desta tarefa foram apagados",
+        (true, false, false) => "Uma categoria desta tarefa foi apagada",
+        (true, false, true) => "Categorias desta tarefa foram apagadas",
+        _ => "O projeto desta tarefa foi apagado",
+    })
+}
+
+/// `task` (the form's) on top of the task saved now, when what the form
+/// read is the same as it (see [`same_task_read`]): the moment of the
+/// conclusion the person did not touch is the one saved now.
+fn with_stamp_of(mut task: Task, read: Option<&Task>, current: &Task) -> Task {
+    let untouched = read.is_some_and(|read| read.completed_at == task.completed_at);
+    if untouched && task.status == "concluida" && current.status == "concluida" {
+        task.completed_at = current.completed_at.clone();
+    }
+    task
 }
 
 /// A save refused because the record has another version now.
@@ -2063,11 +2148,15 @@ impl TaskPanel {
         // (two computers that saved it the same number of times reach the
         // same number with different contents): what is saved now is
         // compared with what the form read before anything is written.
+        let mut task = task;
         let mut expected = self.base_version;
         if task.id > 0 && self.original.is_some() {
             match self.look_at_conflict(store, task.id) {
                 // Unchanged: saved on the version it has now.
-                Some(Ok(version)) => expected = Some(version),
+                Some(Ok((version, current))) => {
+                    expected = Some(version);
+                    task = with_stamp_of(task, self.original.as_ref(), &current);
+                }
                 Some(Err(conflict)) => {
                     self.conflict = Some(conflict);
                     let text = self.conflict_text();
@@ -2082,7 +2171,10 @@ impl TaskPanel {
             if is_edit_conflict(error) && task.id > 0 {
                 match self.look_at_conflict(store, task.id) {
                     // Only the version moved: saved on the current one.
-                    Some(Ok(version)) => saved = self.save_on(store, &task, Some(version)),
+                    Some(Ok((version, current))) => {
+                        task = with_stamp_of(task, self.original.as_ref(), &current);
+                        saved = self.save_on(store, &task, Some(version))
+                    }
                     Some(Err(conflict)) => {
                         self.conflict = Some(conflict);
                         let text = self.conflict_text();
@@ -2145,22 +2237,35 @@ impl TaskPanel {
     /// task saved now is the one the form read (only the version moved),
     /// `Err` with what changed there otherwise; `None` when the task can no
     /// longer be read (deleted, say): the refusal is then said as it came.
-    fn look_at_conflict(&self, store: &Store, id: i64) -> Option<Result<i64, EditConflict>> {
+    fn look_at_conflict(
+        &self,
+        store: &Store,
+        id: i64,
+    ) -> Option<Result<(i64, Task), EditConflict>> {
         let current = store.list_tasks().ok()?.into_iter().find(|t| t.id == id)?;
         let meta = store.item_version("task", id).ok()?;
-        if self.original.as_ref() == Some(&current) {
-            return Some(Ok(meta.version));
+        if self
+            .original
+            .as_ref()
+            .is_some_and(|read| same_task_read(read, &current))
+        {
+            return Some(Ok((meta.version, current)));
         }
         let changed_there = self
             .original
             .as_ref()
             .map(|o| changed_fields(o, &current))
             .unwrap_or_default();
+        let gone = self
+            .original
+            .as_ref()
+            .and_then(|read| links_gone(store, read, &current));
         Some(Err(EditConflict {
             current,
             version: meta.version,
             changed_there,
             by: saved_by(&meta, &store.active_actor()),
+            gone,
         }))
     }
 
@@ -2180,6 +2285,11 @@ impl TaskPanel {
         let Some(conflict) = &self.conflict else {
             return String::new();
         };
+        if let Some(gone) = conflict.gone {
+            return format!(
+                "{gone} depois que você abriu a tarefa. Nada foi gravado e o que você digitou continua na ficha. Use “Juntar as duas versões” para tirar da ficha o que foi apagado e revisar antes de salvar, ou “Ficar com a versão de lá” para descartar as suas alterações."
+            );
+        }
         let what = if conflict.changed_there.is_empty() {
             String::new()
         } else {
@@ -5022,7 +5132,32 @@ impl TaskPanel {
         if self.dirty() || task_id == 0 {
             return;
         }
-        match store.relink_task(task_id, target, self.base_version) {
+        // The version alone never proves the task is the one shown: the
+        // task saved now is compared with what the ficha read. The same
+        // (only the version moved): moved on the current version. Another
+        // content: nothing is moved, and the ficha (with nothing typed in
+        // it) shows the task as saved now, for the person to choose again.
+        let mut expected = self.base_version;
+        if self.original.is_some() {
+            match self.look_at_conflict(store, task_id) {
+                Some(Ok((version, _))) => expected = Some(version),
+                Some(Err(conflict)) => {
+                    let by = conflict.by.clone();
+                    self.draft = Some(conflict.current.clone());
+                    self.original = Some(conflict.current);
+                    self.base_version = Some(conflict.version);
+                    self.notice(
+                        format!(
+                            "O documento da tarefa não foi trocado: esta tarefa foi alterada {by} depois que você a abriu. A ficha agora mostra a tarefa como está salva; escolha o documento de novo, se ainda for o caso."
+                        ),
+                        true,
+                    );
+                    return;
+                }
+                None => {}
+            }
+        }
+        match store.relink_task(task_id, target, expected) {
             Ok(id) => {
                 let task = store
                     .list_tasks()
@@ -7227,7 +7362,11 @@ mod rev5_tests {
             .save_task_checked(&same, Some(version(&store, id)))
             .unwrap();
         panel.apply_relink(&mut store, id, Some(document), Some("SEFAZ".into()));
-        assert_eq!(panel.message, "Tarefa vinculada a SEFAZ.", "{}", panel.message);
+        assert_eq!(
+            panel.message, "Tarefa vinculada a SEFAZ.",
+            "{}",
+            panel.message
+        );
         assert_eq!(get(&store, id).document_id, Some(document));
 
         changed_there_on_the_same_number(&mut store, id, |t| t.notes = "de lá".into());
