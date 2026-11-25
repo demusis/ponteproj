@@ -1014,8 +1014,20 @@ fn one_step(mutation: &IntranetMutation) -> Option<i64> {
 
 /// The `leaves` of a change when it is sound: past the replay's own step
 /// and not too far past it ([`MAX_LEAVES_AHEAD`]). Anything else, from
-/// this computer or from a peer, is taken as absent.
+/// this computer or from a peer, is taken as absent. A deletion never has
+/// one: the item is gone and no screen holds its version (and the file of
+/// format 8 stays the one 0.51 writes for it).
 pub(crate) fn sound_leaves(mutation: &IntranetMutation, leaves: Option<i64>) -> Option<i64> {
+    use IntranetMutation as M;
+    if matches!(
+        mutation,
+        M::DeleteCategory { .. }
+            | M::DeleteProject { .. }
+            | M::DeleteResource { .. }
+            | M::DeleteResourceUse { .. }
+    ) {
+        return None;
+    }
     let leaves = leaves?;
     let step = one_step(mutation)?;
     (leaves > step && leaves - step <= MAX_LEAVES_AHEAD && version_kind(mutation).is_some())

@@ -935,3 +935,31 @@ fn rev3_the_next_save_never_overflows() {
         Err(_) => panic!("the next save overflowed"),
     }
 }
+
+/// Review 3: a creation merged with later edits and then with its deletion
+/// is queued as a deletion without `leaves` (the item is gone; the file of
+/// format 8 stays the one 0.51 writes).
+#[test]
+fn rev3_a_deletion_never_carries_leaves() {
+    let mut p = pair();
+    let project =
+        p.a.save_project(&crate::projects::Project::new("Projeto efêmero"))
+            .unwrap();
+    let held = p.a.project_version(&project.uid).unwrap();
+    let mut edited = project.clone();
+    edited.objective = "um".into();
+    p.a.save_project_checked(&edited, Some(held)).unwrap();
+    let held = p.a.project_version(&project.uid).unwrap();
+    p.a.delete_project_checked(&project.uid, Some(held))
+        .unwrap();
+    let queue = p.a.list_offline_outbox().unwrap();
+    let entry = queue
+        .iter()
+        .find(|e| {
+            matches!(&e.mutation, crate::intranet::IntranetMutation::DeleteProject { uid, .. } if *uid == project.uid)
+        })
+        .expect("the deletion is queued");
+    assert_eq!(entry.leaves, None);
+    sync(&mut p.a);
+    assert!(p.a.get_project(&project.uid).unwrap().is_none());
+}
