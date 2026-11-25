@@ -487,6 +487,7 @@ fn lixeira_old_copy_purge_already_done_is_no_card() {
         idents: Vec::new(),
         refs: None,
         legacy: false,
+        leaves: None,
     };
     payload.applied.push(purge.uid.clone());
     payload.journal.push(purge);
@@ -548,6 +549,7 @@ fn lixeira_keep_mine_still_purges_the_proven_record_in_the_lixeira() {
         attempted: false,
         idents: Vec::new(),
         refs,
+        leaves: None,
     };
     let mut card = crate::intranet::build_sync_conflict(
         &entry,
